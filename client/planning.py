@@ -24,7 +24,7 @@ class PlanningClient:
         self.client = OpenAI(api_key=api_key)
         self.model = model
         
-    def check_Option(option: str):
+    def check_Option(self, option: str):
         if option == "--help":
             console.print("--help : Display the available commands.", style="bold yellow")
             console.print("--file : Paste the challenge source code to locate potential vulnerabilities.", style="bold yellow")
@@ -49,6 +49,7 @@ class PlanningClient:
 
         elif option == "--instruction":
             console.print("I will provide step-by-step instructions based on a Tree-of-Thought plan.", style="blue")
+            planning_instruction = build_prompt(option)
 
         elif option == "--quit":
             console.print("Goodbye!")
@@ -60,18 +61,28 @@ class PlanningClient:
             
         def build_prompt(self, option : str, query):
             if (option == "--file"):
-                return(
-                    f"{query}\n"
-                    f"Please analyze the code and give me information about the vulnerable parts."
+                return (
+                    f"{query}\n\n"
+                    "Analyze ONLY the code above. Summarize vulnerabilities in STRICT JSON:\n"
+                    "{cwes:[string], findings:[{name,location,root_cause,impact,poc_idea}]}\n"
                 )
+
                 
-            elif (option == "discuss"):
-                return(
-                    f"{query}\n"
-                    f""
+            elif (option == "--discuss"):
+                return (
+                    f"{query}\n\n"
+                    "Suggest alternative ways we could approach this and ask what I think. Reply in STRICT JSON only:\n"
+                    "{alternatives:[{name,idea}], rationale:[string], tradeoffs:[string], questions:[string], next_actions:[string]}\n"
                 )
+
+
                 
             elif (option == "--instruction"):
-            
+                return (
+                    "Based on the following Planning JSON, output ONLY the commands in STRICT JSON:\n"
+                    "{planning_json}\n"
+                    "{steps:[{id,action,command,expected_signal}]}\n"
+                )
+
 
             
