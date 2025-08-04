@@ -59,30 +59,30 @@ class PlanningClient:
             console.print("This command does not exist.", style="bold yellow")
             console.print("If you are unsure about the commands, run '--help'.", style="bold yellow")
             
-        def build_prompt(self, option : str, query):
-            if (option == "--file"):
-                return (
-                    f"{query}\n\n"
-                    "Analyze ONLY the code above. Summarize vulnerabilities in STRICT JSON:\n"
-                    "{cwes:[string], findings:[{name,location,root_cause,impact,poc_idea}]}\n"
-                )
+    def build_prompt(self, option : str, query):
+        if (option == "--file"):
+            return (
+                f"{query}\n\n"
+                "Analyze ONLY the code above. Summarize vulnerabilities in STRICT JSON:\n"
+                "{cwes:[string], findings:[{name,location,root_cause,impact,poc_idea}]}\n"
+            )
 
-                
-            elif (option == "--discuss"):
-                return (
-                    f"{query}\n\n"
-                    "Suggest alternative ways we could approach this and ask what I think. Reply in STRICT JSON only:\n"
-                    "{alternatives:[{name,idea}], rationale:[string], tradeoffs:[string], questions:[string], next_actions:[string]}\n"
-                )
+            
+        elif (option == "--discuss"):
+            return (
+                f"{query}\n\n"
+                "Suggest alternative ways we could approach this and ask what I think. Reply in STRICT JSON only:\n"
+                "{alternatives:[{name,idea}], rationale:[string], tradeoffs:[string], questions:[string], next_actions:[string]}\n"
+            )
 
 
-                
-            elif (option == "--instruction"):
-                return (
-                    "Based on the following Planning JSON, output ONLY the commands in STRICT JSON:\n"
-                    "{planning_json}\n"
-                    "{steps:[{id,action,command,expected_signal}]}\n"
-                )
+            
+        elif (option == "--instruction"):
+            return (
+                "Based on the following Planning JSON, output ONLY the commands in STRICT JSON:\n"
+                "{planning_json}\n"
+                "{steps:[{id,action,command,expected_signal}]}\n"
+            )
 
 
             
