@@ -1,5 +1,3 @@
-# main.py
-
 import os
 from rich.console import Console
 from client.pre_infomation import PreInformationClient
