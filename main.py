@@ -45,6 +45,7 @@ def pre_Information(api_key):
     # Create an instance of PreInformationClient and request analysis from the LLM
     client = PreInformationClient(api_key=api_key)
     result = client.ask_PreInformation(title, description, category)
+    console.print("wait...", style='bold green')
 
     # Output LLM analysis result
     console.print("\n=== LLM Analysis ===\n", style='bold yellow')
@@ -65,9 +66,7 @@ def main():
     api_key = test_API_KEY() # Verify and retrieve API key
     
     pre_Information(api_key) # Run the Pre-Information client
-
+    planning(api_key)
 
 if __name__ == "__main__":
-    api_key = "dd"
-    # main()
-    planning(api_key)
+    main()

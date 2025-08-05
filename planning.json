@@ -1,0 +1,51 @@
+You are a cybersecurity assistant specializing in Capture The Flag (CTF) challenges.
+
+You are tasked with performing a Tree-of-Thought (ToT) analysis to classify the challenge.
+
+Your job is NOT to solve the problem.
+Your goal is to generate candidate hypotheses (possible vulnerabilities), evaluate them step-by-step, and select the most likely one.
+
+Here is the challenge code:
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <signal.h>
+#include <unistd.h>
+
+void alarm_handler() {
+    puts("TIME OUT");
+    exit(-1);
+}
+
+void initialize() {
+    setvbuf(stdin, NULL, _IONBF, 0);
+    setvbuf(stdout, NULL, _IONBF, 0);
+
+    signal(SIGALRM, alarm_handler);
+    alarm(30);
+}
+
+void read_flag() {
+    system("cat /flag");
+}
+
+int main(int argc, char *argv[]) {
+
+    char buf[0x80];
+
+    initialize();
+
+    gets(buf);
+
+    return 0;
+}<<<END>>>
+
+
+Respond in the following STRICT JSON format:
+{
+  "goal": string,
+  "hypotheses": [{"name": string, "confidence": int, "reason": string}],
+  "selected": string,
+  "toolset": [string],
+  "constraints": [string]
+}
