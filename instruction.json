@@ -1,3 +1,7 @@
+You are given a Tree-of-Thought (ToT) plan from a CTF challenge.
+Convert it into a sequence of terminal commands that should be executed to validate the selected hypothesis.
+
+Plan JSON:
 ```json
 {
   "goal": "Classify the most likely vulnerability in the provided CTF challenge code.",
@@ -33,3 +37,10 @@
   "constraints": ["Limited execution time due to alarm", "No direct user input to 'system' call"]
 }
 ```
+
+Respond in STRICT JSON format:
+{
+  "steps": [
+    {"id": string, "action": string, "command": string, "expected_signal": string}
+  ]
+}

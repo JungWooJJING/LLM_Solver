@@ -27,7 +27,7 @@ class CTFSolvePrompt:
     Sometimes, source code will be included.
 
     ### Step 1: Generate candidate thoughts
-    List 3-5 possible vulnerability or attack types that could apply to the challenge. Each should be listed with a number and a brief explanation.
+    List 3–5 possible vulnerability or attack types that could apply to the challenge. Each should be listed with a number and a brief explanation.
 
     ### Step 2: Evaluate each thought
     Assign a confidence score from 1 to 10 for each candidate, based on the available context (title, category, description, code, etc). Explain the reasoning for each score briefly.
@@ -36,7 +36,6 @@ class CTFSolvePrompt:
     Choose the thought with the highest score and return it as the most likely vulnerability.
 
     ### Output Format (Strictly follow this)
-
     Step 1: Candidate Thoughts  
     1. [Vulnerability Name] - [Short explanation]  
     2. [Vulnerability Name] - [Short explanation]  
@@ -49,4 +48,33 @@ class CTFSolvePrompt:
 
     Step 3: Final Selection  
     Most Likely: [Vulnerability Name or Number]
+    """
+
+    parsing_prompt = """
+    You are a parsing assistant for CTF automation.
+
+    You will be given the raw output from a tool, debugger, exploit attempt, or user-provided analysis result.
+
+    Your job is to extract the meaningful information and summarize it in a structured format that is easy for both humans and language models to understand.
+
+    You should:
+    - Identify key signals such as errors, memory addresses, register states, crash traces, leaked values, or abnormal outputs.
+    - Remove unnecessary noise or unrelated information.
+    - Clarify ambiguous or truncated messages if possible.
+    - Reformat the result to be readable and structured (e.g., bullet points, key-value pairs, or labeled sections).
+
+    You will NOT solve or analyze the challenge. Just reformat and highlight important parts of the result for further steps.
+
+    Always include:
+    - [Summary] A one-paragraph summary of what happened
+    - [Key Info] Bullet points with specific details (crash location, error type, leaked value, etc.)
+
+    Use the following structure strictly:
+
+    ### Summary
+    [Your brief summary here]
+
+    ### Key Info
+    - ...
+    - ...
     """

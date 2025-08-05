@@ -3,6 +3,7 @@ import json
 
 from openai import OpenAI
 from templates.prompting import CTFSolvePrompt
+from client.parsing import ParsingClient
 from rich.console import Console
 
 console = Console()
@@ -16,33 +17,6 @@ def multi_line_input():
             break
         lines.append(line)
     return "\n".join(lines)
-
-def pretty_print_tot_plan(json_str: str):
-    try:
-        plan = json.loads(json_str)
-    except json.JSONDecodeError:
-        console.print("Invalid JSON format.", style="red")
-        return
-
-    console.print("\nGoal", style="bold underline")
-    console.print(plan["goal"])
-
-    console.print("\nHypotheses", style="bold underline")
-    for i, h in enumerate(plan["hypotheses"], 1):
-        console.print(f"{i}. {h['name']} (Confidence: {h['confidence']}/10)")
-        console.print(f"   Reason: {h['reason']}")
-
-    console.print("\nSelected Hypothesis", style="bold underline")
-    console.print(plan["selected"])
-
-    console.print("\nToolset", style="bold underline")
-    for tool in plan["toolset"]:
-        console.print(f"- {tool}")
-
-    console.print("\nConstraints", style="bold underline")
-    for constraint in plan["constraints"]:
-        console.print(f"- {constraint}")
-    
 
 class PlanningClient:
     def __init__(self, api_key: str, model: str = "gpt-4o"):
@@ -59,9 +33,7 @@ class PlanningClient:
                 ],
                 temperature=0.3
             )
-            
             return response.choices[0].message.content
-        
         except Exception as e:
             raise RuntimeError(f"Failed to get response from LLM: {e}")        
 
@@ -70,7 +42,7 @@ class PlanningClient:
             f.write(content)
         console.print(f"[Prompt saved to {filename}]", style="green")
 
-    def check_Option(self, option: str):
+    def check_Option(self, option: str, ctx):
         if option == "--help":
             console.print("--help : Display the available commands.", style="bold yellow")
             console.print("--file : Paste the challenge source code to locate potential vulnerabilities.", style="bold yellow")
@@ -92,55 +64,64 @@ class PlanningClient:
         elif option == "--file":
             console.print("Paste the challenge’s source code. Submit an empty line to finish.", style="blue")
             planning_Code = multi_line_input()
+            
             console.print("wait...", style='bold green')
+            
             planning_Prompt = self.build_prompt(option, planning_Code)
-            self.save_prompt("planning.json", planning_Prompt)
+            
             response = self.run_prompt(planning_Prompt)
-            console.print(pretty_print_tot_plan(response))
+            self.save_prompt("planning.json", response)
+            parsing_response = ctx.parsing.human_translation(response)
+            console.print(parsing_response)
 
         elif option == "--discuss":
             console.print("Ask questions or describe your intended approach.", style="blue")
             planning_Discuss = multi_line_input()
+            
             console.print("wait...", style='bold green')
+            
             planning_Prompt = self.build_prompt(option, planning_Discuss)
-            self.save_prompt("planning.json", planning_Prompt)
+            
             response = self.run_prompt(planning_Prompt)
-            console.print(pretty_print_tot_plan(response))
-
+            self.save_prompt("planning.json", response)
+            parsing_response = ctx.parsing.human_translation(response)
+            console.print(parsing_response)
+            
         elif option == "--exploit":  
             console.print("Please wait. I will prepare an exploit script or a step-by-step procedure.", style="blue")
 
         elif option == "--instruction":
             console.print("I will provide step-by-step instructions based on a Tree-of-Thought plan.", style="blue")
+            
             if not os.path.exists("planning.json"):
                 console.print("planning.json not found. Run --file or --discuss first.", style="bold red")
                 return
+            
             with open("planning.json", "r") as f:
                 plan_json = f.read()
+            
             planning_instruction = self.build_prompt(option, plan_json)
+            
             self.save_prompt("instruction.json", planning_instruction)
+            
             console.print("wait...", style='bold green')
-            response = self.run_prompt(planning_instruction)
-            console.print(pretty_print_tot_plan(response))
+            # instruction client run_prompt
 
         elif option == "--result":
-            console.print("Paste the result of your command execution. Submit an empty line to finish.", style="blue")
+            console.print("Paste the result of your command execution. Submit <<<END>>> to finish.", style="blue")
             result_output = multi_line_input()
 
             if not os.path.exists("planning.json"):
                 console.print("planning.json not found. Run --file or --discuss first.", style="bold red")
                 return
-            with open("planning.json", "r") as f:
-                previous_plan = f.read()
 
-            planning_result = self.build_prompt(option, result_output, previous_plan)
-            console.print("wait...", style='bold green')
-            self.save_prompt("planning.json", planning_result)
-            response = self.run_prompt(planning_result)
-            console.print(pretty_print_tot_plan(response))
+            with open("planning.json", "r") as f:
+                previous_plan = json.load(f)
+
+            # parsing client -> feedback -> planning 
 
         elif option == "--quit":
-            console.print("Goodbye!", style="bold yellow")
+            console.print("\nGoodbye!\n", style="bold yellow")
             exit(0)
 
         else:
