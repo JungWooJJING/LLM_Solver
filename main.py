@@ -52,11 +52,13 @@ def pre_Information(api_key):
     console.print("====================\n", style='bold yellow')
 
 def planning(api_key):
+    client = PlanningClient(api_key=api_key)  
 
-    while(1):
+    while True:
         console.print("Please choose which option you want to choose.", style="blue")
         option = input("> ")
-        PlanningClient.check_Option(option)
+        client.check_Option(option)           
+
     
     
 def main():
