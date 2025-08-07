@@ -18,6 +18,13 @@ def multi_line_input():
         lines.append(line)
     return "\n".join(lines)
 
+def cleanUp():
+    if os.path.exists("planning.json"):
+        os.remove("planning.json")
+
+    if os.path.exists("instruction.json"):
+        os.remove("instruction.json")
+
 class PlanningClient:
     def __init__(self, api_key: str, model: str = "gpt-4o"):
         self.client = OpenAI(api_key=api_key)
@@ -116,11 +123,17 @@ class PlanningClient:
                 return
 
             with open("planning.json", "r") as f:
-                previous_plan = json.load(f)
+                previous_plan = f.read() 
+            
+            parsing_response = ctx.parsing.LLM_translation(response)
+            # feedback client run_prompt -> result 
 
-            # parsing client -> feedback -> planning 
+            # plan_Update = self.build_prompt("--plan", previous_plan, "feedback client_result")
+
+            # Update planning.json
 
         elif option == "--quit":
+            cleanUp()
             console.print("\nGoodbye!\n", style="bold yellow")
             exit(0)
 
@@ -137,7 +150,15 @@ class PlanningClient:
                 f"Your goal is to generate candidate hypotheses (possible vulnerabilities), evaluate them step-by-step, and select the most likely one.\n\n"
                 f"Here is the challenge code:\n\n{query}\n\n"
                 f"Respond in the following STRICT JSON format:\n"
-                f"{{\n  \"goal\": string,\n  \"hypotheses\": [{{\"name\": string, \"confidence\": int, \"reason\": string}}],\n  \"selected\": string,\n  \"toolset\": [string],\n  \"constraints\": [string]\n}}"
+                f"{{\n"
+                f"  \"goal\": string,\n"
+                f"  \"hypotheses\": [\n"
+                f"    {{\"name\": string, \"confidence\": int, \"reason\": string}}\n"
+                f"  ],\n"
+                f"  \"selected\": string,\n"
+                f"  \"toolset\": [string],\n"
+                f"  \"constraints\": [string]\n"
+                f"}}"
             )
 
         elif option == "--discuss":
@@ -147,7 +168,15 @@ class PlanningClient:
                 f"You must produce candidate vulnerability types, score them, and choose the most likely one.\n\n"
                 f"Here is the challenge description:\n\n{query}\n\n"
                 f"Respond in STRICT JSON:\n"
-                f"{{\n  \"goal\": string,\n  \"hypotheses\": [{{\"name\": string, \"confidence\": int, \"reason\": string}}],\n  \"selected\": string,\n  \"toolset\": [string],\n  \"constraints\": [string]\n}}"
+                f"{{\n"
+                f"  \"goal\": string,\n"
+                f"  \"hypotheses\": [\n"
+                f"    {{\"name\": string, \"confidence\": int, \"reason\": string}}\n"
+                f"  ],\n"
+                f"  \"selected\": string,\n"
+                f"  \"toolset\": [string],\n"
+                f"  \"constraints\": [string]\n"
+                f"}}"
             )
 
         elif option == "--instruction":
@@ -156,7 +185,11 @@ class PlanningClient:
                 f"Convert it into a sequence of terminal commands that should be executed to validate the selected hypothesis.\n\n"
                 f"Plan JSON:\n{query}\n\n"
                 f"Respond in STRICT JSON format:\n"
-                f"{{\n  \"steps\": [\n    {{\"id\": string, \"action\": string, \"command\": string, \"expected_signal\": string}}\n  ]\n}}"
+                f"{{\n"
+                f"  \"steps\": [\n"
+                f"    {{\"id\": string, \"action\": string, \"command\": string, \"expected_signal\": string}}\n"
+                f"  ]\n"
+                f"}}"
             )
 
         elif option == "--result":
@@ -166,5 +199,44 @@ class PlanningClient:
                 f"[Current Plan]\n{plan_json}\n\n"
                 f"Update the ToT plan accordingly. If the execution reveals failure or unexpected output, consider adding new hypotheses or adjusting the next steps.\n"
                 f"Respond in STRICT JSON:\n"
-                f"{{\n  \"goal\": string,\n  \"hypotheses\": [{{\"name\": string, \"confidence\": int, \"reason\": string}}],\n  \"selected\": string,\n  \"toolset\": [string],\n  \"constraints\": [string]\n}}"
+                f"{{\n"
+                f"  \"goal\": string,\n"
+                f"  \"hypotheses\": [\n"
+                f"    {{\"name\": string, \"confidence\": int, \"reason\": string}}\n"
+                f"  ],\n"
+                f"  \"selected\": string,\n"
+                f"  \"toolset\": [string],\n"
+                f"  \"constraints\": [string]\n"
+                f"}}"
+            )
+
+        elif option == "--plan":
+            return (
+                f"You are a cybersecurity assistant updating a Tree-of-Thought (ToT) plan for a CTF challenge.\n\n"
+                f"[Feedback from Execution Result]\n{query}\n\n"
+                f"[Previous ToT Plan JSON]\n{plan_json}\n\n"
+                f"Update the ToT plan based on the feedback **without regenerating it from scratch**.\n"
+                f"Strictly follow these instructions:\n\n"
+                f"1. Do NOT remove or rewrite existing hypotheses.\n"
+                f"2. You MAY:\n"
+                f"   - Modify confidence scores of existing hypotheses based on feedback.\n"
+                f"   - Append new follow-up tasks if feedback reveals additional actionable steps.\n"
+                f"   - Add a new section named 'result' to reflect the execution outcome.\n"
+                f"   - Update 'toolset' and 'constraints' if justified.\n"
+                f"3. You MUST include a new section named 'next_steps', which contains specific instructions for what to do next (e.g., find offset, bypass canary, ROP chain construction).\n"
+                f"4. Do NOT regenerate or reorder the original plan. Only append or annotate based on findings.\n\n"
+                f"Respond ONLY in the following STRICT JSON format:\n"
+                f"{{\n"
+                f"  \"goal\": string,\n"
+                f"  \"hypotheses\": [\n"
+                f"    {{\"name\": string, \"confidence\": int, \"reason\": string}}\n"
+                f"  ],\n"
+                f"  \"selected\": string,\n"
+                f"  \"toolset\": [string],\n"
+                f"  \"constraints\": [string],\n"
+                f"  \"result\": string,\n"
+                f"  \"next_steps\": [\n"
+                f"    {{\"id\": string, \"action\": string, \"description\": string}}\n"
+                f"  ]\n"
+                f"}}"
             )

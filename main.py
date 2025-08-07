@@ -3,6 +3,7 @@ from rich.console import Console
 from client.pre_infomation import PreInformationClient
 from client.planning import PlanningClient
 from client.parsing import ParsingClient
+from client.instruction import InstructionClient
 
 console = Console()
 
@@ -33,6 +34,7 @@ class AppContext:
         self.preinfo = PreInformationClient(api_key)
         self.planning = PlanningClient(api_key)
         self.parsing = ParsingClient(api_key)
+        self.instruction = InstructionClient(api_key)
 
 # === Setting: Initialize Context ===
 def setting():

@@ -16,12 +16,16 @@ class ParsingClient:
         parsing_human_propmt = self.build_prompt_parsing("human", query)
         response = self.run_prompt_parsing(parsing_human_propmt)
         console.print(response)
+        
+        return response
     
     def LLM_translation(self, query : str):
         console.print("\nWait... LLM is currently being translated.\n", style="green")
         parsing_LLM_propmt = self.build_prompt_parsing("LLM", query)
         response = self.run_prompt_parsing(parsing_LLM_propmt)
         console.print(response)
+        
+        return response
 
 
     def run_prompt_parsing(self, prompt : str):
