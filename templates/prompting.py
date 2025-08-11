@@ -15,40 +15,94 @@ class CTFSolvePrompt:
     Do not solve the challenge. Just analyze and classify it.
     """
 
-    planning_prompt = """
-    You are a cybersecurity assistant specializing in Capture The Flag (CTF) challenges.
+    planning_prompt_CoT = """
+    You are a planning assistant for CTF automation.
 
-    You are tasked with performing a Tree-of-Thought (ToT) analysis to classify the challenge.
+    You will be given the current known facts, artifacts, and context for a CTF challenge.
 
-    Your job is NOT to solve the problem.  
-    Your goal is to generate candidate hypotheses (possible vulnerabilities), evaluate them step-by-step, and select the most likely one.
+    Your job is to propose multiple distinct, strategic next-step approaches — not to solve the challenge itself, but to outline possible investigative or preparatory actions that could be taken in the immediate next step.
 
-    You will be given the challenge title, category, and description.  
-    Sometimes, source code will be included.
+    You should:
+    - Provide diverse and non-overlapping alternatives (avoid duplicates or trivial variations).
+    - For each alternative, write a short Chain-of-Thought (3–5 sentences) explaining WHY this step is useful, HOW to attempt it, and WHAT evidence or artifacts it might produce.
+    - From each CoT, extract one concise "thought" (a one-line actionable idea).
+    - Estimate the cost and risk for each alternative.
+    - Keep reasoning focused on preparation and investigation, NOT on producing the final solution, flag, or exploit.
 
-    ### Step 1: Generate candidate thoughts
-    List 3–5 possible vulnerability or attack types that could apply to the challenge. Each should be listed with a number and a brief explanation.
+    You will NOT attempt to solve or exploit the challenge. Your goal is only to produce structured, well-reasoned options for the next step.
 
-    ### Step 2: Evaluate each thought
-    Assign a confidence score from 1 to 10 for each candidate, based on the available context (title, category, description, code, etc). Explain the reasoning for each score briefly.
+    Always include:
+    - [CoT] The 3–5 sentence reasoning
+    - [Thought] One-line actionable step
+    - [Expected Artifacts] List of files, outputs, or data likely to be generated
+    - [Requires] Tools, permissions, or dependencies needed
+    - [Risk] Brief note on potential issues or pitfalls
+    - [Estimated Cost] low / medium / high
 
-    ### Step 3: Select the best candidate
-    Choose the thought with the highest score and return it as the most likely vulnerability.
+    Use the following structure strictly (JSON only):
 
-    ### Output Format (Strictly follow this)
-    Step 1: Candidate Thoughts  
-    1. [Vulnerability Name] - [Short explanation]  
-    2. [Vulnerability Name] - [Short explanation]  
-    3. ...
+    {
+    "candidates": [
+        {
+        "cot": "3–5 sentences reasoning",
+        "thought": "one-line concrete next step",
+        "expected_artifacts": ["file1", "file2"],
+        "requires": ["tool/permission/dependency"],
+        "risk": "short note",
+        "estimated_cost": "low|medium|high"
+        }
+    ]
+    }
 
-    Step 2: Evaluation  
-    1. Score: [X/10] - [Explanation]  
-    2. Score: [X/10] - [Explanation]  
-    3. ...
-
-    Step 3: Final Selection  
-    Most Likely: [Vulnerability Name or Number]
+    No prose outside the JSON.
     """
+
+    planning_prompt_ToT = """
+    You are an evaluation assistant for CTF planning (NOT a solver).
+
+    INPUT
+    - You will receive a JSON object with an array "candidates".
+    - Each item has: cot, thought, expected_artifacts, requires, risk, estimated_cost.
+    - There may be NO extra context. Do not ask questions.
+
+    TASK
+    Evaluate each candidate ONLY for the NEXT step (investigative/prep, not solving).
+    Return scores per candidate in [0,1] using the rubric below.
+
+    SUB-METRICS (0..1)
+    - feasibility: Can we realistically do this now with common tools?
+    - novelty: Adds a genuinely new angle vs typical first steps?
+    - info_gain: Likelihood to produce useful evidence quickly.
+    - cost: Operational cost (time/compute). Lower cost → BETTER (so invert accordingly).
+    - risk: Chance of dead-end/waste. Lower risk → BETTER (so invert accordingly).
+
+    PENALTIES (optional; sum of values subtracted from total):
+    - duplicate/near-duplicate with another candidate
+    - obviously infeasible / meaningless for CTF investigation
+    - policy/ethical issues (e.g., heavy brute-force)
+
+    COMBINATION (clip to [0,1]):
+    total = 0.30*feasibility + 0.35*info_gain + 0.15*novelty + 0.10*(1-cost) + 0.10*(1-risk) - sum(penalties)
+
+    OUTPUT — JSON ONLY, keep same order as input and include an index:
+    {
+    "results": [
+        {
+        "idx": 0,
+        "thought": "…",
+        "feasibility": 0.xx,
+        "novelty": 0.xx,
+        "info_gain": 0.xx,
+        "cost": 0.xx,
+        "risk": 0.xx,
+        "penalties": [{"reason":"...", "value":0.xx}],
+        "notes": "≤120 chars justification"
+        }
+    ],
+    }
+    No prose outside JSON.
+    """
+
 
     parsing_prompt = """
     You are a parsing assistant for CTF automation.

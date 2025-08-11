@@ -7,7 +7,7 @@ from rich.console import Console
 console = Console()
 
 class ParsingClient:
-    def __init__(self, api_key: str, model: str = "gpt-4o"):
+    def __init__(self, api_key: str, model: str = "gpt-5"):
         self.client = OpenAI(api_key=api_key)
         self.model = model
         
@@ -15,7 +15,7 @@ class ParsingClient:
         console.print("\nWait... LLM is currently being translated.\n", style="green")
         parsing_human_propmt = self.build_prompt_parsing("human", query)
         response = self.run_prompt_parsing(parsing_human_propmt)
-        console.print(response)
+        # console.print(response)
         
         return response
     
@@ -23,7 +23,7 @@ class ParsingClient:
         console.print("\nWait... LLM is currently being translated.\n", style="green")
         parsing_LLM_propmt = self.build_prompt_parsing("LLM", query)
         response = self.run_prompt_parsing(parsing_LLM_propmt)
-        console.print(response)
+        # console.print(response)
         
         return response
 
@@ -36,7 +36,6 @@ class ParsingClient:
                     {"role": "system", "content": CTFSolvePrompt.parsing_prompt},
                     {"role": "user", "content": prompt}                    
                 ],
-                temperature=0.3
             )
             
             return response.choices[0].message.content

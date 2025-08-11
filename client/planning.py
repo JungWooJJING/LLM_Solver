@@ -7,6 +7,7 @@ from client.parsing import ParsingClient
 from rich.console import Console
 
 console = Console()
+expand_k = 3 
 
 def multi_line_input():
     console.print("Enter multiple lines. Type <<<END>>> on a new line to finish input.", style="bold yellow")
@@ -26,23 +27,45 @@ def cleanUp():
         os.remove("instruction.json")
 
 class PlanningClient:
-    def __init__(self, api_key: str, model: str = "gpt-4o"):
+    def __init__(self, api_key: str, model: str = "gpt-5"):
         self.client = OpenAI(api_key=api_key)
         self.model = model
 
-    def run_prompt(self, prompt: str):
+    def run_prompt_CoT(self, prompt: str):
         try:
             response = self.client.chat.completions.create(
                 model = self.model,
                 messages=[
-                    {"role": "system", "content": CTFSolvePrompt.planning_prompt},
+                    {"role": "system", "content": CTFSolvePrompt.planning_prompt_CoT},
                     {"role": "user", "content": prompt}                    
                 ],
-                temperature=0.3
             )
             return response.choices[0].message.content
         except Exception as e:
             raise RuntimeError(f"Failed to get response from LLM: {e}")        
+        
+    def run_prompt_ToT(self, prompt: str):
+        try:
+            response = self.client.chat.completions.create(
+                model = self.model,
+                messages=[
+                    {"role": "system", "content": CTFSolvePrompt.planning_prompt_ToT},
+                    {"role": "user", "content": prompt}                    
+                ],
+            )
+            return response.choices[0].message.content
+        except Exception as e:
+            raise RuntimeError(f"Failed to get response from LLM: {e}")  
+    
+    def safe_json_loads(self, JSON: str) -> dict:
+        try:
+            return json.loads(JSON)
+        except Exception:
+            JSON = JSON[JSON.find('{'): JSON.rfind('}')+1]
+            return json.loads(JSON)
+        
+    def cal_ToT(self, tot: str):
+        
 
     def save_prompt(self, filename: str, content: str):
         with open(filename, "w") as f:
@@ -76,9 +99,15 @@ class PlanningClient:
             
             planning_Prompt = self.build_prompt(option, planning_Code)
             
-            response = self.run_prompt(planning_Prompt)
-            self.save_prompt("planning.json", response)
-            parsing_response = ctx.parsing.human_translation(response)
+            console.print("=== run_prompt_CoT ===", style='bold green')
+            response_CoT = self.run_prompt_CoT(planning_Prompt)
+            self.save_prompt("CoT.json", response_CoT)
+
+            console.print("=== run_prompt_ToT ===", style='bold green')
+            response_ToT = self.run_prompt_ToT(response_CoT)
+            self.save_prompt("ToT.json", response_ToT)
+            
+            parsing_response = ctx.parsing.human_translation(response_ToT)
             console.print(parsing_response)
 
         elif option == "--discuss":
@@ -89,9 +118,11 @@ class PlanningClient:
             
             planning_Prompt = self.build_prompt(option, planning_Discuss)
             
-            response = self.run_prompt(planning_Prompt)
-            self.save_prompt("planning.json", response)
-            parsing_response = ctx.parsing.human_translation(response)
+            response_CoT = self.run_prompt_CoT(planning_Prompt)
+            response_ToT = self.run_prompt_ToT(response_CoT)
+            
+            self.save_prompt("planning.json", response_ToT)
+            parsing_response = ctx.parsing.human_translation(response_ToT)
             console.print(parsing_response)
             
         elif option == "--exploit":  
@@ -125,7 +156,7 @@ class PlanningClient:
             with open("planning.json", "r") as f:
                 previous_plan = f.read() 
             
-            parsing_response = ctx.parsing.LLM_translation(response)
+            parsing_response = ctx.parsing.LLM_translation(result_output)
             # feedback client run_prompt -> result 
 
             # plan_Update = self.build_prompt("--plan", previous_plan, "feedback client_result")
@@ -144,99 +175,159 @@ class PlanningClient:
     def build_prompt(self, option: str, query: str, plan_json: str = ""):
         if option == "--file":
             return (
-                f"You are a cybersecurity assistant specializing in Capture The Flag (CTF) challenges.\n\n"
-                f"You are tasked with performing a Tree-of-Thought (ToT) analysis to classify the challenge.\n\n"
-                f"Your job is NOT to solve the problem.\n"
-                f"Your goal is to generate candidate hypotheses (possible vulnerabilities), evaluate them step-by-step, and select the most likely one.\n\n"
-                f"Here is the challenge code:\n\n{query}\n\n"
-                f"Respond in the following STRICT JSON format:\n"
+                f"You are a planning assistant for CTF automation.\n\n"
+                f"You will be given the content of a file related to a CTF challenge "
+                f"(e.g., source code, binary disassembly, script, or captured data).\n"
+                f"Your job is NOT to solve or exploit the challenge directly, "
+                f"but to propose multiple distinct investigative or preparatory actions "
+                f"for the very next step.\n\n"
+                f"[File Content]\n{query}\n\n"
+                f"Generate {expand_k} distinct candidates.\n"
+                f"For each candidate:\n"
+                f"- Provide a short Chain-of-Thought (3–5 sentences) explaining WHY this step is useful, "
+                f"HOW to attempt it, and WHAT evidence or artifacts it may produce.\n"
+                f"- Extract a one-line actionable 'thought'.\n"
+                f"- List expected artifacts, required tools/permissions, a brief risk note, and estimated cost.\n"
+                f"- Avoid trivial variations; each candidate must be meaningfully different.\n\n"
+                f"Respond ONLY in the following STRICT JSON format:\n"
                 f"{{\n"
-                f"  \"goal\": string,\n"
-                f"  \"hypotheses\": [\n"
-                f"    {{\"name\": string, \"confidence\": int, \"reason\": string}}\n"
-                f"  ],\n"
-                f"  \"selected\": string,\n"
-                f"  \"toolset\": [string],\n"
-                f"  \"constraints\": [string]\n"
+                f"  \"candidates\": [\n"
+                f"    {{\n"
+                f"      \"cot\": \"3-5 sentences reasoning\",\n"
+                f"      \"thought\": \"one-line concrete next step\",\n"
+                f"      \"expected_artifacts\": [\"file1\", \"file2\"],\n"
+                f"      \"requires\": [\"tool/permission/dependency\"],\n"
+                f"      \"risk\": \"short note\",\n"
+                f"      \"estimated_cost\": \"low|medium|high\"\n"
+                f"    }}\n"
+                f"  ]\n"
                 f"}}"
             )
-
+            
         elif option == "--discuss":
             return (
-                f"You are a cybersecurity assistant specializing in Capture The Flag (CTF) challenges.\n\n"
-                f"Analyze the following challenge description and generate a Tree-of-Thought plan.\n"
-                f"You must produce candidate vulnerability types, score them, and choose the most likely one.\n\n"
-                f"Here is the challenge description:\n\n{query}\n\n"
-                f"Respond in STRICT JSON:\n"
+                f"You are an adjuster for CTF ToT planning (NOT a solver).\n"
+                f"Your role is to make SMALL, LOCAL UPDATES to an ALREADY-EVALUATED ToT plan:\n"
+                f"- fine-tune scores,\n"
+                f"- tweak or append next-step tasks,\n"
+                f"- optionally reorder within the same beam level.\n"
+                f"Do NOT regenerate the plan from scratch. Do NOT attempt to solve or output flags.\n\n"
+                f"[User Message]\n{query}\n\n"
+                f"[Current ToT Plan JSON]\n{plan_json}\n\n"
+                f"POLICY\n"
+                f"- Keep existing node IDs stable. No wholesale rewrites.\n"
+                f"- Only DELTA updates are allowed (score deltas, minor edits, appends, soft-deprecations).\n"
+                f"- Stay in planning mode (investigation/preparation only).\n"
+                f"- If user request is off-scope (solve/flag/exploit), refuse and suggest safe planning alternatives.\n"
+                f"- If critical info is missing, ask up to 2 crisp clarifying questions.\n\n"
+                f"TASK\n"
+                f"1) Diagnose the user message (ok | ambiguity | off-topic | solve-request).\n"
+                f"2) Propose SMALL DELTAS to the plan:\n"
+                f"   - score_adjustments: +/- deltas with reasons (clipped to [0,1] when applied by the system).\n"
+                f"   - task_updates: update/append/deprecate tasks, referencing existing IDs when possible.\n"
+                f"   - reorder: optional local reordering list for same-depth siblings.\n"
+                f"   - constraints_append/toolset_append: OPTIONAL short additions if justified.\n"
+                f"3) Optionally set a new short 'next_goal' if the user intent shifted.\n"
+                f"4) Keep it minimal. No long prose. No solving.\n\n"
+                f"OUTPUT — STRICT JSON ONLY:\n"
                 f"{{\n"
-                f"  \"goal\": string,\n"
-                f"  \"hypotheses\": [\n"
-                f"    {{\"name\": string, \"confidence\": int, \"reason\": string}}\n"
+                f"  \"mode\": \"ok|clarify|redirect|refuse\",\n"
+                f"  \"clarifying_questions\": [\"q1\", \"q2\"],\n"
+                f"  \"score_adjustments\": [\n"
+                f"    {{\"node_id\": \"A1\", \"delta\": +0.10, \"reason\": \"new evidence X\"}}\n"
                 f"  ],\n"
-                f"  \"selected\": string,\n"
-                f"  \"toolset\": [string],\n"
-                f"  \"constraints\": [string]\n"
-                f"}}"
+                f"  \"task_updates\": [\n"
+                f"    {{\"op\": \"update\", \"task_id\": \"T3\", \"fields\": {{\"description\": \"short fix\", \"risk\": \"lower\"}}}},\n"
+                f"    {{\"op\": \"append\", \"parent_node\": \"B2\", \"new_task\": {{\"id\": \"T9\", \"action\": \"checksec\", \"description\": \"run checksec\", \"artifact\": \"checksec.json\"}}}},\n"
+                f"    {{\"op\": \"deprecate\", \"task_id\": \"T1\", \"reason\": \"duplicate\"}}\n"
+                f"  ],\n"
+                f"  \"reorder\": [\n"
+                f"    {{\"depth\": 2, \"order\": [\"B2\",\"A1\",\"C1\"]}}\n"
+                f"  ],\n"
+                f"  \"constraints_append\": [\"no brute-force > 1000 tries\"],\n"
+                f"  \"toolset_append\": [\"gdb-peda\"],\n"
+                f"  \"next_goal\": \"one-line immediate goal\",\n"
+                f"  \"nudges\": [\"keep investigative\", \"save artifacts\" ]\n"
+                f"}}\n"
+                f"No prose outside the JSON."
             )
+
+
 
         elif option == "--instruction":
             return (
-                f"You are given a Tree-of-Thought (ToT) plan from a CTF challenge.\n"
-                f"Convert it into a sequence of terminal commands that should be executed to validate the selected hypothesis.\n\n"
-                f"Plan JSON:\n{query}\n\n"
-                f"Respond in STRICT JSON format:\n"
+                f"You are an instruction generator for CTF automation.\n\n"
+                f"You are given a selected planning candidate (thought + minimal context).\n"
+                f"Convert it into a concrete, minimal sequence of terminal actions to execute.\n"
+                f"BEFORE listing actions, reason briefly (2–3 sentences) about execution order and expected results "
+                f"(Do NOT attempt to solve; focus on preparation and evidence collection).\n\n"
+                f"[Selected Candidate]\n{query}\n\n"
+                f"Respond ONLY in this STRICT JSON format:\n"
                 f"{{\n"
-                f"  \"steps\": [\n"
-                f"    {{\"id\": string, \"action\": string, \"command\": string, \"expected_signal\": string}}\n"
+                f"  \"intra_cot\": \"2-3 sentences about order and expectations\",\n"
+                f"  \"actions\": [\n"
+                f"    {{\n"
+                f"      \"name\": \"short label\",\n"
+                f"      \"cmd\": \"exact terminal command\",\n"
+                f"      \"success\": \"observable success signal\",\n"
+                f"      \"artifact\": \"output file/log to save (or '-')\",\n"
+                f"      \"fallback\": \"alternative command if primary fails (or '-')\"\n"
+                f"    }}\n"
                 f"  ]\n"
                 f"}}"
             )
 
+
         elif option == "--result":
             return (
-                f"You are updating a Tree-of-Thought (ToT) plan based on the latest execution result.\n\n"
+                f"You are updating a planning state based on the latest execution result.\n"
+                f"Do NOT regenerate a new plan from scratch.\n"
+                f"Summarize observations, classify issues, and provide rescoring hints for BFS/Beam selection.\n"
+                f"(You are NOT solving the challenge.)\n\n"
                 f"[Execution Result]\n{query}\n\n"
-                f"[Current Plan]\n{plan_json}\n\n"
-                f"Update the ToT plan accordingly. If the execution reveals failure or unexpected output, consider adding new hypotheses or adjusting the next steps.\n"
-                f"Respond in STRICT JSON:\n"
+                f"[Current Plan JSON]\n{plan_json}\n\n"
+                f"Respond ONLY in this STRICT JSON format:\n"
                 f"{{\n"
-                f"  \"goal\": string,\n"
-                f"  \"hypotheses\": [\n"
-                f"    {{\"name\": string, \"confidence\": int, \"reason\": string}}\n"
-                f"  ],\n"
-                f"  \"selected\": string,\n"
-                f"  \"toolset\": [string],\n"
-                f"  \"constraints\": [string]\n"
+                f"  \"observations\": [\"concise fact 1\", \"concise fact 2\"],\n"
+                f"  \"issues\": [\"env/tool/logical/permission/timeout/etc\"],\n"
+                f"  \"new_evidence\": int,\n"
+                f"  \"delta_score\": 0.0,\n"
+                f"  \"updates\": {{\n"
+                f"    \"hypotheses_confidence\": [{{\"name\": \"...\", \"delta\": +0.1}}],\n"
+                f"    \"toolset_append\": [\"...\"],\n"
+                f"    \"constraints_append\": [\"...\"]\n"
+                f"  }},\n"
+                f"  \"next_goal\": \"one-line immediate goal\",\n"
+                f"  \"suggested_actions\": [\n"
+                f"    {{\"thought\": \"concise next step\", \"reason\": \"why it helps\"}}\n"
+                f"  ]\n"
                 f"}}"
             )
 
+
         elif option == "--plan":
             return (
-                f"You are a cybersecurity assistant updating a Tree-of-Thought (ToT) plan for a CTF challenge.\n\n"
-                f"[Feedback from Execution Result]\n{query}\n\n"
-                f"[Previous ToT Plan JSON]\n{plan_json}\n\n"
-                f"Update the ToT plan based on the feedback **without regenerating it from scratch**.\n"
-                f"Strictly follow these instructions:\n\n"
-                f"1. Do NOT remove or rewrite existing hypotheses.\n"
-                f"2. You MAY:\n"
-                f"   - Modify confidence scores of existing hypotheses based on feedback.\n"
-                f"   - Append new follow-up tasks if feedback reveals additional actionable steps.\n"
-                f"   - Add a new section named 'result' to reflect the execution outcome.\n"
-                f"   - Update 'toolset' and 'constraints' if justified.\n"
-                f"3. You MUST include a new section named 'next_steps', which contains specific instructions for what to do next (e.g., find offset, bypass canary, ROP chain construction).\n"
-                f"4. Do NOT regenerate or reorder the original plan. Only append or annotate based on findings.\n\n"
-                f"Respond ONLY in the following STRICT JSON format:\n"
+                f"You are a planning assistant updating an existing plan based on feedback.\n"
+                f"Do NOT regenerate or reorder the original plan; only append or annotate.\n"
+                f"Adjust confidence, add next steps, and record result notes as needed.\n"
+                f"(You are NOT solving the challenge.)\n\n"
+                f"[Feedback]\n{query}\n\n"
+                f"[Previous Plan JSON]\n{plan_json}\n\n"
+                f"Strictly follow:\n"
+                f"1) Do NOT delete existing hypotheses.\n"
+                f"2) You MAY modify confidence scores, append follow-up tasks, and update toolset/constraints if justified.\n"
+                f"3) Add a 'result' note if execution produced a concrete outcome.\n"
+                f"4) MUST include 'next_steps' with specific, small-grained actions.\n\n"
+                f"Respond ONLY in this STRICT JSON format:\n"
                 f"{{\n"
-                f"  \"goal\": string,\n"
-                f"  \"hypotheses\": [\n"
-                f"    {{\"name\": string, \"confidence\": int, \"reason\": string}}\n"
-                f"  ],\n"
-                f"  \"selected\": string,\n"
-                f"  \"toolset\": [string],\n"
-                f"  \"constraints\": [string],\n"
-                f"  \"result\": string,\n"
+                f"  \"goal\": \"...\",\n"
+                f"  \"hypotheses\": [{{\"name\": \"...\", \"confidence\": int, \"reason\": \"...\"}}],\n"
+                f"  \"selected\": \"...\",\n"
+                f"  \"toolset\": [\"...\"],\n"
+                f"  \"constraints\": [\"...\"],\n"
+                f"  \"result\": \"short note or '-'\",\n"
                 f"  \"next_steps\": [\n"
-                f"    {{\"id\": string, \"action\": string, \"description\": string}}\n"
+                f"    {{\"id\": \"S1\", \"action\": \"short label\", \"description\": \"what to do next\"}}\n"
                 f"  ]\n"
                 f"}}"
             )

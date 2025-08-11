@@ -2,7 +2,7 @@ from openai import OpenAI
 from templates.prompting import CTFSolvePrompt
 
 class PreInformationClient:
-    def __init__(self, api_key: str, model: str = "gpt-4o"):
+    def __init__(self, api_key: str, model: str = "gpt-5"):
         self.client = OpenAI(api_key=api_key)
         self.model = model
 
@@ -16,7 +16,6 @@ class PreInformationClient:
                     {"role": "system", "content": CTFSolvePrompt.pre_information_prompt},
                     {"role": "user", "content": user_prompt}
                 ],
-                temperature=0.3
             )
             return response.choices[0].message.content
         except Exception as e:
