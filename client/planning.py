@@ -1,5 +1,5 @@
 import os
-import json
+import json, re
 
 from openai import OpenAI
 from templates.prompting import CTFSolvePrompt
@@ -8,6 +8,26 @@ from rich.console import Console
 
 console = Console()
 expand_k = 3 
+
+w = { "feasibility":0.20, "info_gain":0.30, "novelty":0.20, "cost":0.15, "risk":0.15 } 
+
+STATE_FILE = "state.json"
+COT_FILE = "CoT.json"
+TOT_FILE = "ToT.json"
+TOT_SCORED_FILE = "ToT_scored.json"
+INSTRUCTION_FILE = "instruction.json"
+
+DEFAULT_STATE = {
+    "goal": "",
+    "constraints": ["no brute-force > 1000"],
+    "env": {},
+    "artifacts": {"binary": "", "logs": [], "hashes": {}},
+    "candidates_topk": [],
+    "selected": {},
+    "evidence": [],
+    "next_action_hint": "",
+    "summary": ""
+}
 
 def multi_line_input():
     console.print("Enter multiple lines. Type <<<END>>> on a new line to finish input.", style="bold yellow")
@@ -20,52 +40,134 @@ def multi_line_input():
     return "\n".join(lines)
 
 def cleanUp():
-    if os.path.exists("planning.json"):
-        os.remove("planning.json")
+    for f in (COT_FILE, TOT_FILE, TOT_SCORED_FILE, INSTRUCTION_FILE, STATE_FILE):
+        if os.path.exists(f):
+            os.remove(f)
+        
+def load_state():
+    if not os.path.exists(STATE_FILE):
+        save_state(DEFAULT_STATE.copy())
+    with open(STATE_FILE, "r", encoding="utf-8") as f:
+        return json.load(f)
 
-    if os.path.exists("instruction.json"):
-        os.remove("instruction.json")
+def save_state(state: dict):
+    with open(STATE_FILE, "w", encoding="utf-8") as f:
+        json.dump(state, f, ensure_ascii=False, indent=2)
+        
+def safe_json_loads(s: str):
+    try:
+        return json.loads(s)
+    except Exception:
+        s = s[s.find("{"): s.rfind("}")+1]
+        s = re.sub(r"```(json)?|```", "", s).strip()
+        return json.loads(s)
+
 
 class PlanningClient:
     def __init__(self, api_key: str, model: str = "gpt-5"):
         self.client = OpenAI(api_key=api_key)
         self.model = model
+        
+    def _build_messages_stateless(self, phase_system_prompt: str, user_prompt: str, include_state: bool = True):
+        msgs = [
+            {"role": "system", "content": "You are a CTF planning assistant. Keep answers concise."},
+            {"role": "system", "content": phase_system_prompt},
+        ]
+        if include_state:
+            state = load_state()
+            msgs.append({"role": "user", "content": json.dumps(state, ensure_ascii=False)})
+        msgs.append({"role": "user", "content": user_prompt})
+        
+        return msgs
+        
+    def _ask_stateless(self, phase_system_prompt: str, user_prompt: str, include_state: bool = True):
+        
+        messages = self._build_messages_stateless(phase_system_prompt, user_prompt, include_state)
+        
+        res = self.client.chat.completions.create(model=self.model, messages=messages)
+        
+        return res.choices[0].message.content
 
     def run_prompt_CoT(self, prompt: str):
-        try:
-            response = self.client.chat.completions.create(
-                model = self.model,
-                messages=[
-                    {"role": "system", "content": CTFSolvePrompt.planning_prompt_CoT},
-                    {"role": "user", "content": prompt}                    
-                ],
-            )
-            return response.choices[0].message.content
-        except Exception as e:
-            raise RuntimeError(f"Failed to get response from LLM: {e}")        
-        
+
+        return self._ask_stateless(CTFSolvePrompt.planning_prompt_CoT, prompt, include_state=True)
+
     def run_prompt_ToT(self, prompt: str):
-        try:
-            response = self.client.chat.completions.create(
-                model = self.model,
-                messages=[
-                    {"role": "system", "content": CTFSolvePrompt.planning_prompt_ToT},
-                    {"role": "user", "content": prompt}                    
-                ],
-            )
-            return response.choices[0].message.content
-        except Exception as e:
-            raise RuntimeError(f"Failed to get response from LLM: {e}")  
-    
-    def safe_json_loads(self, JSON: str) -> dict:
-        try:
-            return json.loads(JSON)
-        except Exception:
-            JSON = JSON[JSON.find('{'): JSON.rfind('}')+1]
-            return json.loads(JSON)
+
+        return self._ask_stateless(CTFSolvePrompt.planning_prompt_ToT, prompt, include_state=True)
+
+    def update_state_from_cot(self, cot_text: str):
+        data = safe_json_loads(cot_text)
+        candidates = data.get("candidates", [])
+        compact = []
+        for c in candidates:
+            compact.append({
+                "cot": c.get("cot", "")[:400],
+                "thought": c.get("thought", ""),
+                "expected_artifacts": c.get("expected_artifacts", [])[:5],
+                "requires": c.get("requires", [])[:5],
+                "risk": c.get("risk", ""),
+                "estimated_cost": c.get("estimated_cost", "low")
+            })
+        state = load_state()
+        state["candidates_topk"] = compact  
+        save_state(state)
         
-    def cal_ToT(self, tot: str):
+    def update_state_from_tot(self, tot_results_dict: dict, topk: int = 3):
+        results = tot_results_dict.get("results", [])
+        state = load_state()
+        state["candidates_topk"] = [{
+            "idx": r.get("idx"),
+            "thought": r.get("thought", ""),
+            "score": r.get("calculated_score", r.get("score", 0.0)),
+            "notes": r.get("notes", "")
+        } for r in results[:topk]]
+
+        if results:
+            top1 = results[0]
+            state["selected"] = {
+                "idx": top1.get("idx", 0),
+                "thought": top1.get("thought", ""),
+                "score": top1.get("calculated_score", 0.0),
+                "notes": top1.get("notes", "")
+            }
+            state["next_action_hint"] = top1.get("thought", "")
+        save_state(state)
+
+    def cal_ToT(self, tot_json_str: str = None, infile: str = "ToT.json", outfile: str = "ToT_scored.json"):
+
+        if tot_json_str is None:
+            with open(infile, "r", encoding="utf-8") as f:
+                data = safe_json_loads(f.read())
+        else:
+            data = safe_json_loads(tot_json_str)
+
+        cal = ["feasibility", "novelty", "info_gain", "cost", "risk"]
+
+        for item in data.get("results", []):
+            g = {k: float(item.get(k, 0.5)) for k in cal}
+            penalties = sum(float(p.get("value", 0.0)) for p in item.get("penalties", []))
+
+            score = 0.0
+            for k in cal:
+                v = g[k]
+                if k in ("cost", "risk"):
+                    score += w[k] * (1 - v)
+                else:
+                    score += w[k] * v
+
+            score -= penalties
+            score = max(0.0, min(1.0, score))
+            item["calculated_score"] = round(score, 3)
+
+        data["results"].sort(key=lambda x: x.get("calculated_score", 0.0), reverse=True)
+
+        with open(outfile, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
+
+        console.print(f"Save: {outfile}", style='green')
         
+        return data
 
     def save_prompt(self, filename: str, content: str):
         with open(filename, "w") as f:
@@ -84,84 +186,106 @@ class PlanningClient:
             console.print("--quit : Exit the program.", style="bold yellow")
 
         elif option == "--showplan":
-            if not os.path.exists("planning.json"):
-                console.print("planning.json not found. Run --file or --discuss first.", style="bold red")
+            if not os.path.exists(TOT_SCORED_FILE):
+                console.print("ToT_scored.json not found. Run --file or --discuss first.", style="bold red")
                 return
-            with open("planning.json", "r") as f:
-                console.print("[bold cyan]Current ToT Plan:[/bold cyan]\n")
+            with open(TOT_SCORED_FILE, "r", encoding="utf-8") as f:
+                console.print("[bold cyan]Current ToT Plan (scored):[/bold cyan]\n")
                 console.print(f.read(), style="white")
 
         elif option == "--file":
             console.print("Paste the challenge’s source code. Submit an empty line to finish.", style="blue")
             planning_Code = multi_line_input()
-            
+
             console.print("wait...", style='bold green')
-            
+
             planning_Prompt = self.build_prompt(option, planning_Code)
-            
+
             console.print("=== run_prompt_CoT ===", style='bold green')
             response_CoT = self.run_prompt_CoT(planning_Prompt)
-            self.save_prompt("CoT.json", response_CoT)
+            self.save_prompt(COT_FILE, response_CoT)
+
+            self.update_state_from_cot(response_CoT)
 
             console.print("=== run_prompt_ToT ===", style='bold green')
             response_ToT = self.run_prompt_ToT(response_CoT)
-            self.save_prompt("ToT.json", response_ToT)
-            
-            parsing_response = ctx.parsing.human_translation(response_ToT)
-            console.print(parsing_response)
+            self.save_prompt(TOT_FILE, response_ToT)
+
+            tot_cal = self.cal_ToT()  
+
+            self.update_state_from_tot(tot_cal)
+
+            parsing_response = ctx.parsing.human_translation(
+                json.dumps(tot_cal, ensure_ascii=False, indent=2)
+            )
+            console.print(parsing_response, style='bold green')
 
         elif option == "--discuss":
             console.print("Ask questions or describe your intended approach.", style="blue")
             planning_Discuss = multi_line_input()
-            
+
             console.print("wait...", style='bold green')
-            
+
             planning_Prompt = self.build_prompt(option, planning_Discuss)
-            
+
+            console.print("=== run_prompt_CoT ===", style='bold green')
             response_CoT = self.run_prompt_CoT(planning_Prompt)
+            self.save_prompt(COT_FILE, response_CoT)
+            self.update_state_from_cot(response_CoT)
+
+            console.print("=== run_prompt_ToT ===", style='bold green')
             response_ToT = self.run_prompt_ToT(response_CoT)
-            
-            self.save_prompt("planning.json", response_ToT)
-            parsing_response = ctx.parsing.human_translation(response_ToT)
-            console.print(parsing_response)
+            self.save_prompt(TOT_FILE, response_ToT)
+
+            tot_cal = self.cal_ToT()
+            self.update_state_from_tot(tot_cal)
+
+            parsing_response = ctx.parsing.human_translation(
+                json.dumps(tot_cal, ensure_ascii=False, indent=2)
+            )
+            console.print(parsing_response, style='bold green')
             
         elif option == "--exploit":  
             console.print("Please wait. I will prepare an exploit script or a step-by-step procedure.", style="blue")
 
         elif option == "--instruction":
             console.print("I will provide step-by-step instructions based on a Tree-of-Thought plan.", style="blue")
-            
-            if not os.path.exists("planning.json"):
-                console.print("planning.json not found. Run --file or --discuss first.", style="bold red")
-                return
-            
-            with open("planning.json", "r") as f:
-                plan_json = f.read()
-            
-            planning_instruction = self.build_prompt(option, plan_json)
-            
-            self.save_prompt("instruction.json", planning_instruction)
-            
-            console.print("wait...", style='bold green')
-            # instruction client run_prompt
 
+            if not os.path.exists(TOT_SCORED_FILE):
+                console.print("ToT_scored.json not found. Run --file or --discuss first.", style="bold red")
+                return
+
+            # state에서 Top-1 선택 사용
+            state = load_state()
+            selected = state.get("selected", {})
+            if not selected:
+                console.print("No selected candidate in state.json. Run ToT first.", style="bold red")
+                return
+
+            planning_instruction = self.build_prompt("--instruction", json.dumps(selected, ensure_ascii=False))
+            self.save_prompt(INSTRUCTION_FILE, planning_instruction)
+
+            console.print("wait...", style='bold green')
+
+            # TODO: instruction 실행 클라이언트 연결
         elif option == "--result":
             console.print("Paste the result of your command execution. Submit <<<END>>> to finish.", style="blue")
             result_output = multi_line_input()
 
-            if not os.path.exists("planning.json"):
-                console.print("planning.json not found. Run --file or --discuss first.", style="bold red")
+            if not os.path.exists(TOT_SCORED_FILE):
+                console.print("ToT_scored.json not found. Run --file or --discuss first.", style="bold red")
                 return
 
-            with open("planning.json", "r") as f:
-                previous_plan = f.read() 
-            
+            # 실행 결과를 파서로 요약
             parsing_response = ctx.parsing.LLM_translation(result_output)
-            # feedback client run_prompt -> result 
 
-            # plan_Update = self.build_prompt("--plan", previous_plan, "feedback client_result")
+            # 요약을 state.evidence에 반영(안전하게 500자 트렁크)
+            state = load_state()
+            state.setdefault("evidence", [])
+            state["evidence"].append(str(parsing_response)[:500])
+            save_state(state)
 
-            # Update planning.json
+            console.print("Result summary saved into state.json:evidence", style="bold green")
 
         elif option == "--quit":
             cleanUp()
