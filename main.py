@@ -4,6 +4,7 @@ from client.pre_infomation import PreInformationClient
 from client.planning import PlanningClient
 from client.parsing import ParsingClient
 from client.instruction import InstructionClient
+from client.feedback import FeedbackClient
 
 console = Console()
 
@@ -35,6 +36,7 @@ class AppContext:
         self.planning = PlanningClient(api_key)
         self.parsing = ParsingClient(api_key)
         self.instruction = InstructionClient(api_key)
+        self.feedback = FeedbackClient(api_key)
 
 # === Setting: Initialize Context ===
 def setting():
@@ -46,21 +48,21 @@ def main():
     ctx = setting()
 
     # === Pre-Information Phase ===
-    console.print("Enter the challenge title:", style="blue")
-    title = input("> ")
+    # console.print("Enter the challenge title:", style="blue")
+    # title = input("> ")
 
-    console.print("Enter the challenge description (Press <<<END>>> to finish):", style="blue")
-    description = multi_line_input()
+    # console.print("Enter the challenge description (Press <<<END>>> to finish):", style="blue")
+    # description = multi_line_input()
 
-    console.print("Enter the challenge category:", style="blue")
-    category = input("> ")
+    # console.print("Enter the challenge category:", style="blue")
+    # category = input("> ")
 
-    console.print("wait...", style='bold green')
-    result = ctx.preinfo.ask_PreInformation(title, description, category)
+    # console.print("wait...", style='bold green')
+    # result = ctx.preinfo.ask_PreInformation(title, description, category)
 
-    console.print("\n=== LLM Analysis ===\n", style='bold yellow')
-    console.print(result, style='bold yellow')
-    console.print("====================\n", style='bold yellow')
+    # console.print("\n=== LLM Analysis ===\n", style='bold yellow')
+    # console.print(result, style='bold yellow')
+    # console.print("====================\n", style='bold yellow')
 
     # === Planning Phase ===
     while True:

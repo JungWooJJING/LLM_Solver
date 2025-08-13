@@ -1,0 +1,40 @@
+{
+  "intra_cot": "We will first generate a deterministic cyclic pattern, then attempt to crash the target via argument input and, if needed, via stdin to produce a core dump. With a core available, we will use gdb to extract the crashed instruction pointer and compute the exact offset within the cyclic pattern, capturing all outputs as artifacts aligned with the selected thought.",
+  "actions": [
+    {
+      "name": "generate cyclic pattern",
+      "cmd": "python3 - <<'PY' > pattern.txt\nimport sys\n\ndef de_bruijn(k, n):\n    a=[0]*(k*n); s=[]\n    def db(t,p):\n        if t>n:\n            if n%p==0: s.extend(a[1:p+1])\n        else:\n            a[t]=a[t-p]; db(t+1,p)\n            for j in range(a[t-p]+1,k):\n                a[t]=j; db(t+1,t)\n    db(1,1); return s\n\nalphabet=b'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789'\nN=600\nseq=de_bruijn(len(alphabet),3)\npat=bytes(alphabet[i] for i in seq)\nout=(pat*((N//len(pat))+1))[:N]\nsys.stdout.buffer.write(out)\nPY",
+      "success": "pattern.txt exists and is non-empty",
+      "artifact": "pattern.txt",
+      "fallback": "python3 -c 'from pwn import cyclic; import sys; sys.stdout.buffer.write(cyclic(600))' > pattern.txt"
+    },
+    {
+      "name": "run with arg to induce crash",
+      "cmd": "sh -c 'BIN=$(for f in *; do [ -f \"$f\" ] && [ -x \"$f\" ] && file -b \"$f\" | grep -q \"^ELF .* executable\" && printf \"%s\\n\" \"$f\" && break; done); test -n \"$BIN\" || { echo \"No ELF executable found\" >&2; exit 1; }; mkdir -p logs; ulimit -c unlimited; ARG=$(tr -d \"\\n\" < pattern.txt); (\"./$BIN\" \"$ARG\") > logs/cyclic_run_arg.log 2>&1 || true; ls -1t core* 2>/dev/null | head -n1'",
+      "success": "core file present: core* (or crash evidence in logs/cyclic_run_arg.log)",
+      "artifact": "logs/cyclic_run_arg.log",
+      "fallback": "-"
+    },
+    {
+      "name": "run with stdin if no core yet",
+      "cmd": "sh -c 'test -n \"$(ls -1t core* 2>/dev/null | head -n1)\" && echo \"core exists; skipping stdin run\" || { BIN=$(for f in *; do [ -f \"$f\" ] && [ -x \"$f\" ] && file -b \"$f\" | grep -q \"^ELF .* executable\" && printf \"%s\\n\" \"$f\" && break; done); test -n \"$BIN\" || { echo \"No ELF executable found\" >&2; exit 1; }; mkdir -p logs; ulimit -c unlimited; (./\"$BIN\" < pattern.txt) > logs/cyclic_run_stdin.log 2>&1 || true; ls -1t core* 2>/dev/null | head -n1; }'",
+      "success": "core file present: core* (or crash evidence in logs/cyclic_run_stdin.log)",
+      "artifact": "logs/cyclic_run_stdin.log",
+      "fallback": "-"
+    },
+    {
+      "name": "gdb core analysis",
+      "cmd": "sh -c 'BIN=$(for f in *; do [ -f \"$f\" ] && [ -x \"$f\" ] && file -b \"$f\" | grep -q \"^ELF .* executable\" && printf \"%s\\n\" \"$f\" && break; done); CORE=$(ls -1t core* 2>/dev/null | head -n1); test -n \"$BIN\" -a -n \"$CORE\" || { echo \"Missing BIN or CORE\" >&2; exit 1; }; mkdir -p logs; gdb -q -batch \"./$BIN\" \"$CORE\" -ex \"set pagination off\" -ex \"info files\" -ex \"info registers\" -ex \"bt\" -ex \"x/16gx $rsp\" > logs/gdb_core.txt 2>&1; grep -E \"rip|eip\" logs/gdb_core.txt'",
+      "success": "logs/gdb_core.txt contains 'rip' or 'eip'",
+      "artifact": "logs/gdb_core.txt",
+      "fallback": "sh -c 'BIN=$(for f in *; do [ -f \"$f\" ] && [ -x \"$f\" ] && file -b \"$f\" | grep -q \"^ELF .* executable\" && printf \"%s\\n\" \"$f\" && break; done); CORE=$(ls -1t core* 2>/dev/null | head -n1); test -n \"$BIN\" -a -n \"$CORE\" || { echo \"Missing BIN or CORE\" >&2; exit 1; }; gdb -q -batch -ex \"set pagination off\" -ex \"core-file $CORE\" \"./$BIN\" -ex \"info registers\" -ex \"bt\" -ex \"x/16gx $rsp\" > logs/gdb_core.txt 2>&1; grep -E \"rip|eip\" logs/gdb_core.txt'"
+    },
+    {
+      "name": "compute exact offset",
+      "cmd": "sh -c 'mkdir -p evidence; python3 - <<'\"'\"'PY'\"'\"' > evidence/offset.txt\nimport re, sys\nlog = open(\"logs/gdb_core.txt\",\"r\",errors=\"ignore\").read()\npat = open(\"pattern.txt\",\"rb\").read()\nm = re.search(r\"\\b(rip|eip)\\s+0x([0-9a-fA-F]+)\", log)\nif not m:\n    print(\"NO_RIP_EIP_FOUND\"); sys.exit(1)\nval = int(m.group(2), 16)\nfor sz in (8,4):\n    b = val.to_bytes(sz, \"little\")\n    idx = pat.find(b)\n    if idx != -1:\n        print(f\"OFFSET_{sz*8}={idx}\")\n        break\nelse:\n    print(\"PATTERN_NOT_FOUND\")\nPY'",
+      "success": "evidence/offset.txt contains 'OFFSET_'",
+      "artifact": "evidence/offset.txt",
+      "fallback": "-"
+    }
+  ]
+}

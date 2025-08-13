@@ -1,4 +1,3 @@
-import os
 import json
 
 from openai import OpenAI
@@ -7,18 +6,18 @@ from rich.console import Console
 
 console = Console()
 
-class InstructionClient:
+class FeedbackClient:
     
-    def __init__(self, api_key: str, model: str = "gpt-5"):
+    def __init__(self, api_key : str, model : str = "gpt-5"):
         self.client = OpenAI(api_key=api_key)
         self.model = model
         
-    def run_prompt_instruction(self, prompt):
+    def run_prompt_feedback(self, prompt):
         try:
             response = self.client.chat.completions.create(
                 model = self.model,
                 messages=[
-                    {"role": "system", "content": CTFSolvePrompt.instruction_prompt},
+                    {"role": "system", "content": CTFSolvePrompt.feedback_prompt},
                     {"role": "user", "content": prompt}                    
                 ],
             )

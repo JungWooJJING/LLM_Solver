@@ -1,0 +1,15 @@
+{
+  "results": [
+    {
+      "idx": 0,
+      "thought": "Run checksec on ./basic_exploitation_001 to enumerate RELRO/Canary/NX/PIE before deeper analysis.",
+      "feasibility": 0.96,
+      "novelty": 0.25,
+      "info_gain": 0.9,
+      "cost": 0.98,
+      "risk": 0.94,
+      "penalties": [],
+      "notes": "Quick mitigations snapshot; high signal for planning; very low cost and risk."
+    }
+  ]
+}

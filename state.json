@@ -1,0 +1,29 @@
+{
+  "goal": "",
+  "constraints": [
+    "no brute-force > 1000"
+  ],
+  "env": {},
+  "artifacts": {
+    "binary": "",
+    "logs": [],
+    "hashes": {}
+  },
+  "candidates_topk": [
+    {
+      "idx": 0,
+      "thought": "Run checksec on ./basic_exploitation_001 to enumerate RELRO/Canary/NX/PIE before deeper analysis.",
+      "score": 0.524,
+      "notes": "Quick mitigations snapshot; high signal for planning; very low cost and risk."
+    }
+  ],
+  "selected": {
+    "idx": 0,
+    "thought": "Run checksec on ./basic_exploitation_001 to enumerate RELRO/Canary/NX/PIE before deeper analysis.",
+    "score": 0.524,
+    "notes": "Quick mitigations snapshot; high signal for planning; very low cost and risk."
+  },
+  "evidence": [],
+  "next_action_hint": "Run checksec on ./basic_exploitation_001 to enumerate RELRO/Canary/NX/PIE before deeper analysis.",
+  "summary": ""
+}

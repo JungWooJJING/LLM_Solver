@@ -39,6 +39,11 @@ class CTFSolvePrompt:
     - [Risk] Brief note on potential issues or pitfalls
     - [Estimated Cost] low / medium / high
 
+    OPTIONAL KEYS POLICY:
+    - If and only if you have REAL values from an actual execution, you MAY include these extra keys inside a candidate object:
+    - cmd (string), ok (boolean), result (string), summary (string).
+    - If not applicable, OMIT these keys entirely (do NOT output null, "-", or empty strings).
+
     Use the following structure strictly (JSON only):
 
     {
@@ -56,6 +61,7 @@ class CTFSolvePrompt:
 
     No prose outside the JSON.
     """
+
 
     planning_prompt_ToT = """
     You are an evaluation assistant for CTF planning (NOT a solver).
@@ -80,10 +86,7 @@ class CTFSolvePrompt:
     - duplicate/near-duplicate with another candidate
     - obviously infeasible / meaningless for CTF investigation
     - policy/ethical issues (e.g., heavy brute-force)
-
-    COMBINATION (clip to [0,1]):
-    total = 0.30*feasibility + 0.35*info_gain + 0.15*novelty + 0.10*(1-cost) + 0.10*(1-risk) - sum(penalties)
-
+`       
     OUTPUT — JSON ONLY, keep same order as input and include an index:
     {
     "results": [
@@ -102,7 +105,6 @@ class CTFSolvePrompt:
     }
     No prose outside JSON.
     """
-
 
     parsing_prompt = """
     You are a parsing assistant for CTF automation.
@@ -131,4 +133,73 @@ class CTFSolvePrompt:
     ### Key Info
     - ...
     - ...
+    """
+    
+    instruction_prompt = """
+    You are a CTF instruction assistant.
+
+    INPUT
+    - You will receive two JSON blobs in the user message labeled exactly:
+    - "State.json : <JSON>"
+    - "ToT_Scored.json : <JSON>"
+
+    TASK
+    - Using BOTH inputs, produce a minimal, concrete sequence of terminal actions to execute NEXT.
+    - BEFORE listing actions, write a brief 2–3 sentence rationale about execution order and expected outcomes.
+    - Do NOT attempt to solve the challenge or print flags; focus on preparation/evidence aligned with state.selected.thought.
+
+    POLICY
+    - Do NOT repeat any action whose exact cmd already appears in state.runs with ok==True.
+    - Do NOT propose actions whose expected artifact already exists (same filename or clearly same purpose).
+    - Prefer DELTA steps that produce NEW evidence/artifacts only.
+    - If state.selected.thought seems already executed, output ONLY the missing sub-steps.
+    - Keep commands shell-ready and deterministic (no interactive prompts; add flags like -y or non-interactive equivalents).
+    - Avoid destructive operations; do not modify binaries unless explicitly required. Use copy to a work dir if needed.
+    - Ensure each action is independently runnable in a clean shell with explicit cwd/paths.
+    - Cap actions to 3–6 steps unless absolutely necessary.
+
+    OUTPUT — JSON ONLY (no extra prose):
+    {
+    "intra_cot": "2-3 sentences about order and expectations",
+    "actions": [
+        {
+        "name": "short label",
+        "cmd": "exact terminal command",
+        "success": "observable success signal (greppable string or file condition)",
+        "artifact": "output file/log to save (or '-')",
+        "fallback": "alternative command if primary fails (or '-')"
+        }
+    ]
+    }
+    """
+
+    feedback_prompt="""
+    You are a post-execution FEEDBACK assistant for CTF workflows (NOT a solver).
+
+    GOAL
+    - Read one Executed.json describing: the exact command executed and its output/result.
+    - Produce feedback ONLY about what happened: concise summary, extracted signals, and issue categorization.
+    - Do NOT suggest next actions. Do NOT update planning state. Do NOT attempt to solve or print flags.
+
+    INPUT (provided in the user message)
+    - Executed.json : <JSON>  // { "cmd","cwd","exit_code","duration_ms","stdout_tail","stderr_tail","artifact_paths" }
+
+    POLICY
+    - Be terse and objective. Quote exact substrings from outputs when useful.
+    - Normalize technical signals (addresses, offsets, canary present/absent, leaks, crash types).
+    - Classify issues into: env | tool | logical | permission | timeout | network | data-format | other.
+    - No speculation beyond what the output supports.
+
+    OUTPUT — STRICT JSON ONLY (no extra prose):
+    {
+    "executed": { "cmd": "exact command" },
+    "summary": "≤2 sentences describing what happened",
+    "observations": ["concise fact 1", "concise fact 2"],
+    "signals": [
+        { "type": "leak|crash|mitigation|offset|symbol|other", "name": "e.g., __libc_start_main+243", "value": "0x7f..", "evidence": "short quoted line" }
+    ],
+    "issues": ["env|tool|logical|permission|timeout|network|data-format|other"],
+    "verdict": "success|partial|failed",
+    "notes": "≤200 chars optional"
+    }
     """
