@@ -27,6 +27,21 @@ class ParsingClient:
         
         return response
 
+    def run_prompt_state_compress(self, query : str):
+        try:
+            response = self.client.chat.completions.create(
+                model = self.model,
+                messages=[
+                    {"role": "system", "content": CTFSolvePrompt.parsing_compress},
+                    {"role": "user", "content": query}                    
+                ],
+            )
+            
+            return response.choices[0].message.content
+        
+        except Exception as e:
+            raise RuntimeError(f"Failed to get response from LLM: {e}") 
+
 
     def run_prompt_parsing(self, prompt : str):
         try:

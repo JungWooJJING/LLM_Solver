@@ -6,9 +6,10 @@ from templates.prompting import CTFSolvePrompt
 from rich.console import Console
 
 console = Console()
-expand_k = 3 
+expand_k = 3
 
-w = { "feasibility":0.20, "info_gain":0.30, "novelty":0.20, "cost":0.15, "risk":0.15 } 
+# 가중치(수정 가능)
+w = {"feasibility": 0.20, "info_gain": 0.30, "novelty": 0.20, "cost": 0.15, "risk": 0.15}
 
 STATE_FILE = "state.json"
 COT_FILE = "CoT.json"
@@ -17,10 +18,25 @@ TOT_SCORED_FILE = "ToT_scored.json"
 INSTRUCTION_FILE = "instruction.json"
 
 DEFAULT_STATE = {
+    "iter": 0,  # 회차
     "goal": "",
     "constraints": ["no brute-force > 1000"],
+    "constraints_dynamic": [],  # 실행 중 발견 제약
     "env": {},
     "artifacts": {"binary": "", "logs": [], "hashes": {}},
+
+    # 핵심 저장소
+    "cot_history": [],          # 회차별 CoT 원문 보관(불변)
+    "active_candidates": [],    # 다음 ToT 입력 집합(가변)
+    "disabled_candidates": [],  # 실패·중복 등 비활성 후보
+    "results": [],              # 실행 결과 누적
+
+    # 실행 로그/요약/신호(참조용)
+    "runs": [],
+    "summaries": [],
+    "signals": [],
+
+    # 보기용(옵션)
     "candidates_topk": [],
     "selected": {},
     "evidence": [],
@@ -28,6 +44,10 @@ DEFAULT_STATE = {
     "summary": ""
 }
 
+
+# -------------------------
+# IO Helpers
+# -------------------------
 def multi_line_input():
     console.print("Enter multiple lines. Type <<<END>>> on a new line to finish input.", style="bold yellow")
     lines = []
@@ -38,37 +58,126 @@ def multi_line_input():
         lines.append(line)
     return "\n".join(lines)
 
-def cleanUp():
-    for f in (COT_FILE, TOT_FILE, TOT_SCORED_FILE, INSTRUCTION_FILE, STATE_FILE):
+
+def cleanUp(all=False):
+    """
+    기본적으로 state는 보존. all=True일 때만 전체 삭제.
+    """
+    targets = [COT_FILE, TOT_FILE, TOT_SCORED_FILE, INSTRUCTION_FILE]
+    if all:
+        targets.append(STATE_FILE)
+    for f in targets:
         if os.path.exists(f):
             os.remove(f)
-        
+
+
 def load_state():
     if not os.path.exists(STATE_FILE):
         save_state(DEFAULT_STATE.copy())
-    
+        
     with open(STATE_FILE, "r", encoding="utf-8") as f:
         return json.load(f)
+
 
 def save_state(state: dict):
     with open(STATE_FILE, "w", encoding="utf-8") as f:
         json.dump(state, f, ensure_ascii=False, indent=2)
-        
-def safe_json_loads(s: str):
+
+
+def safe_json_loads(s):
+    """
+    견고한 JSON 파서: dict/list면 그대로, 문자열이면 안전 파싱.
+    """
+    if isinstance(s, (dict, list)):
+        return s
+    if not isinstance(s, str):
+        return {}
     try:
         return json.loads(s)
-    
     except Exception:
-        s = s[s.find("{"): s.rfind("}")+1]
-        s = re.sub(r"```(json)?|```", "", s).strip()
-        return json.loads(s)
+        try:
+            s2 = s[s.find("{"): s.rfind("}") + 1]
+            s2 = re.sub(r"```(json)?|```", "", s2).strip()
+            return json.loads(s2)
+        except Exception:
+            return {}
 
 
+# -------------------------
+# State Append Utilities
+# -------------------------
+def _next_iter():
+    s = load_state()
+    s["iter"] = int(s.get("iter", 0)) + 1
+    save_state(s)
+    return s["iter"]
+
+
+def _gen_cand_id(iter_no: int, i: int) -> str:
+    return f"COT-{iter_no:04d}-{i+1:02d}"
+
+
+def record_execution_result(candidate_id: str, verdict: str, summary: str,
+                            signals=None, artifacts=None, cmd=None, raw_output=None):
+    st = load_state()
+    st.setdefault("results", []).append({
+        "id": candidate_id,
+        "iter_executed": st.get("iter", 0),
+        "verdict": verdict,
+        "summary": summary,
+        "signals": signals or [],
+        "artifacts": artifacts or []
+    })
+    if cmd or raw_output:
+        st.setdefault("runs", []).append({
+            "id": candidate_id,
+            "cmd": cmd or "",
+            "output": (raw_output or "")[:10000]
+        })
+    if signals:
+        st.setdefault("signals", []).extend(signals)
+    save_state(st)
+
+
+def append_summary(title: str, text: str, tags=None):
+    st = load_state()
+    st.setdefault("summaries", []).append({"title": title, "text": text, "tags": tags or []})
+    save_state(st)
+
+
+# -------------------------
+# ToT Input Builder
+# -------------------------
+def build_tot_input_from_state():
+    st = load_state()
+    executed = {r["id"]: r for r in st.get("results", [])}
+
+    tot_in = []
+    for c in st.get("active_candidates", []):
+        cid = c["id"]
+        # 실패 동일 재시도 차단(원하면 패널티로만 처리)
+        if cid in executed and executed[cid].get("verdict") == "failed":
+            continue
+        tot_in.append({
+            "id": cid,
+            "thought": c["thought"],
+            "refined_from": c.get("refined_from"),
+            "hints": {
+                "signals": st.get("signals", [])[-5:],
+                "constraints": st.get("constraints_dynamic", [])[-5:]
+            }
+        })
+    return {"candidates": tot_in}
+
+
+# -------------------------
+# Client
+# -------------------------
 class PlanningClient:
     def __init__(self, api_key: str, model: str = "gpt-5"):
         self.client = OpenAI(api_key=api_key)
         self.model = model
-        
+
     def _build_messages_stateless(self, phase_system_prompt: str, user_prompt: str, include_state: bool = True):
         msgs = [
             {"role": "system", "content": "You are a CTF planning assistant. Keep answers concise."},
@@ -78,65 +187,75 @@ class PlanningClient:
             state = load_state()
             msgs.append({"role": "user", "content": json.dumps(state, ensure_ascii=False)})
         msgs.append({"role": "user", "content": user_prompt})
-        
         return msgs
-        
+
     def _ask_stateless(self, phase_system_prompt: str, user_prompt: str, include_state: bool = True):
-        
         messages = self._build_messages_stateless(phase_system_prompt, user_prompt, include_state)
-        
         res = self.client.chat.completions.create(model=self.model, messages=messages)
-        
         return res.choices[0].message.content
 
     def run_prompt_CoT(self, prompt: str):
-
         return self._ask_stateless(CTFSolvePrompt.planning_prompt_CoT, prompt, include_state=True)
 
     def run_prompt_ToT(self, prompt: str):
-
+        # ToT에는 state를 넣지 않는 것이 안전(요약 입력 별도 전달)
         return self._ask_stateless(CTFSolvePrompt.planning_prompt_ToT, prompt, include_state=False)
 
+    # ---------------------
+    # State Updaters
+    # ---------------------
     def update_state_from_cot(self, cot_text: str):
+        """
+        덮어쓰기 금지. 회차+ID 부여 → cot_history에 원문 보관(불변), active_candidates 교체(가변)
+        """
         data = safe_json_loads(cot_text)
-        candidates = data.get("candidates", [])
-        compact = []
-        for c in candidates:
-            compact.append({
-                "cot": c.get("cot", "")[:400],
-                "thought": c.get("thought", ""),
-                "expected_artifacts": c.get("expected_artifacts", [])[:5],
-                "requires": c.get("requires", [])[:5],
-                "risk": c.get("risk", ""),
-                "estimated_cost": c.get("estimated_cost", "low")
-            })
-        state = load_state()
-        state["candidates_topk"] = compact  
-        save_state(state)
-        
-    def update_state_from_tot(self, tot_results_dict: dict, topk: int = 3):
-        results = tot_results_dict.get("results", [])
-        state = load_state()
-        state["candidates_topk"] = [{
-            "idx": r.get("idx"),
-            "thought": r.get("thought", ""),
-            "score": r.get("calculated_score", r.get("score", 0.0)),
-            "notes": r.get("notes", "")
-        } for r in results[:topk]]
+        cands = data.get("candidates", [])
 
+        it = _next_iter()
+        with_ids, active = [], []
+        for i, c in enumerate(cands):
+            cid = _gen_cand_id(it, i)
+            with_ids.append({
+                "id": cid,
+                "thought": c.get("thought", ""),
+                "cot": c.get("cot", ""),
+                "expected_artifacts": c.get("expected_artifacts", []),
+                "requires": c.get("requires", []),
+                "risk": c.get("risk", ""),
+                "estimated_cost": c.get("estimated_cost", "low"),
+                "meta": {"origin": "file_or_discuss"}
+            })
+            active.append({"id": cid, "thought": c.get("thought", ""), "refined_from": None})
+
+        st = load_state()
+        st.setdefault("cot_history", []).append({"iter": it, "candidates": with_ids})
+        st["active_candidates"] = active
+        save_state(st)
+
+    def update_state_from_tot(self, tot_results_dict: dict, topk: int = 3):
+        """
+        ToT는 반드시 id를 포함해 결과를 반환하도록 프롬프트 설계 필요.
+        예: results[i] = { "id": "COT-0001-01", "thought": "...", "score": 0.565, "notes": "..." }
+        """
+        st = load_state()
+        results = tot_results_dict.get("results", [])
+
+        st["candidates_topk"] = results[:topk]
         if results:
             top1 = results[0]
-            state["selected"] = {
-                "idx": top1.get("idx", 0),
+            st["selected"] = {
+                "id": top1.get("id", ""),
                 "thought": top1.get("thought", ""),
-                "score": top1.get("calculated_score", 0.0),
+                "score": top1.get("calculated_score", top1.get("score", 0.0)),
                 "notes": top1.get("notes", "")
             }
-            state["next_action_hint"] = top1.get("thought", "")
-        save_state(state)
+            st["next_action_hint"] = top1.get("thought", "")
+        save_state(st)
 
+    # ---------------------
+    # ToT Score Calculator
+    # ---------------------
     def cal_ToT(self, tot_json_str: str = None, infile: str = "ToT.json", outfile: str = "ToT_scored.json"):
-
         if tot_json_str is None:
             with open(infile, "r", encoding="utf-8") as f:
                 data = safe_json_loads(f.read())
@@ -161,17 +280,19 @@ class PlanningClient:
             score = max(0.0, min(1.0, score))
             item["calculated_score"] = round(score, 3)
 
-        data["results"].sort(key=lambda x: x.get("calculated_score", 0.0), reverse=True)
+        data["results"].sort(key=lambda x: x.get("calculated_score", x.get("score", 0.0)), reverse=True)
 
         with open(outfile, "w", encoding="utf-8") as f:
             json.dump(data, f, ensure_ascii=False, indent=2)
 
         console.print(f"Save: {outfile}", style='green')
-        
         return data
 
+    # ---------------------
+    # Misc
+    # ---------------------
     def save_prompt(self, filename: str, content: str):
-        with open(filename, "w") as f:
+        with open(filename, "w", encoding="utf-8") as f:
             f.write(content)
         console.print(f"[Prompt saved to {filename}]", style="green")
 
@@ -181,9 +302,10 @@ class PlanningClient:
             console.print("--file : Paste the challenge source code to locate potential vulnerabilities.", style="bold yellow")
             console.print("--discuss : Discuss the approach with the LLM to set a clear direction.", style="bold yellow")
             console.print("--instruction : Get step-by-step guidance based on a Tree-of-Thought plan.", style="bold yellow")
-            console.print("--exploit : Receive an exploit script or detailed exploitation steps.", style="bold yellow")  
+            console.print("--exploit : Receive an exploit script or detailed exploitation steps.", style="bold yellow")
             console.print("--result : Update plan based on execution result.", style="bold yellow")
             console.print("--showplan : Show current Tree-of-Thought plan.", style="bold yellow")
+            console.print("--add-summary : Append a manual human summary into state.json.", style="bold yellow")
             console.print("--quit : Exit the program.", style="bold yellow")
 
         elif option == "--showplan":
@@ -199,26 +321,22 @@ class PlanningClient:
             planning_Code = multi_line_input()
 
             console.print("wait...", style='bold green')
-
             planning_Prompt = self.build_prompt(option, query=planning_Code)
 
             console.print("=== run_prompt_CoT ===", style='bold green')
             response_CoT = self.run_prompt_CoT(planning_Prompt)
             self.save_prompt(COT_FILE, response_CoT)
-
             self.update_state_from_cot(response_CoT)
 
             console.print("=== run_prompt_ToT ===", style='bold green')
-            response_ToT = self.run_prompt_ToT(response_CoT)
+            tot_input = build_tot_input_from_state()
+            response_ToT = self.run_prompt_ToT(json.dumps(tot_input, ensure_ascii=False))
             self.save_prompt(TOT_FILE, response_ToT)
 
-            tot_cal = self.cal_ToT()  
-
+            tot_cal = self.cal_ToT()
             self.update_state_from_tot(tot_cal)
 
-            parsing_response = ctx.parsing.human_translation(
-                json.dumps(tot_cal, ensure_ascii=False, indent=2)
-            )
+            parsing_response = ctx.parsing.human_translation(json.dumps(tot_cal, ensure_ascii=False, indent=2))
             console.print(parsing_response, style='yellow')
 
         elif option == "--discuss":
@@ -226,7 +344,6 @@ class PlanningClient:
             planning_Discuss = multi_line_input()
 
             console.print("wait...", style='bold green')
-
             planning_Prompt = self.build_prompt(option, planning_Discuss)
 
             console.print("=== run_prompt_CoT ===", style='bold green')
@@ -235,18 +352,17 @@ class PlanningClient:
             self.update_state_from_cot(response_CoT)
 
             console.print("=== run_prompt_ToT ===", style='bold green')
-            response_ToT = self.run_prompt_ToT(response_CoT)
+            tot_input = build_tot_input_from_state()
+            response_ToT = self.run_prompt_ToT(json.dumps(tot_input, ensure_ascii=False))
             self.save_prompt(TOT_FILE, response_ToT)
 
             tot_cal = self.cal_ToT()
             self.update_state_from_tot(tot_cal)
 
-            parsing_response = ctx.parsing.human_translation(
-                json.dumps(tot_cal, ensure_ascii=False, indent=2)
-            )
+            parsing_response = ctx.parsing.human_translation(json.dumps(tot_cal, ensure_ascii=False, indent=2))
             console.print(parsing_response, style='bold green')
-            
-        elif option == "--exploit":  
+
+        elif option == "--exploit":
             console.print("Please wait. I will prepare an exploit script or a step-by-step procedure.", style="blue")
 
         elif option == "--instruction":
@@ -261,58 +377,79 @@ class PlanningClient:
                 tot_scored = json.load(f)
 
             state_json = json.dumps(state, ensure_ascii=False)
-            tot_json   = json.dumps(tot_scored, ensure_ascii=False)
+            tot_json = json.dumps(tot_scored, ensure_ascii=False)
 
-            planning_instruction = self.build_prompt(
-                "--instruction",
-                state_json=state_json,
-                tot_json=tot_json
-            )
-            
+            planning_instruction = self.build_prompt("--instruction", state_json=state_json, tot_json=tot_json)
+
             console.print("wait...", style='bold green')
             instruction_json = ctx.instruction.run_prompt_instruction(prompt=planning_instruction)
             self.save_prompt(INSTRUCTION_FILE, instruction_json)
-            
-            parsing_response = ctx.parsing.human_translation(
-                json.dumps(instruction_json, ensure_ascii=False, indent=2)
-            )
-            
+
+            parsing_response = ctx.parsing.human_translation(json.dumps(instruction_json, ensure_ascii=False, indent=2))
             console.print(parsing_response, style="yellow")
-            
+
         elif option == "--result":
             console.print("Paste the result of your command execution. Submit <<<END>>> to finish.", style="blue")
             result_output = multi_line_input()
 
-            state = load_state()
-            
-            result_build_prompt = self.build_prompt(option=option, query=result_output, state_json=state)
-            
+            st = load_state()
+            cand_id = st.get("selected", {}).get("id", "<unknown-id>")
+            last_cmd = "<unknown-cmd>"  # 필요 시 instruction.json에서 추적
+
+            result_build_prompt = self.build_prompt(option=option, query=result_output, state_json=st)
+
             console.print("wait...", style="bold green")
             result_LLM_translation = ctx.parsing.LLM_translation(query=result_build_prompt)
-            
+
             console.print("=== Feedback === ", style="bold green")
             result_feedback = ctx.feedback.run_prompt_feedback(result_LLM_translation)
-            
-            plan_build_prompt = self.build_prompt(option="--plan", state_json=state, feedback_json=result_feedback)
-            
+
+            try:
+                fb = safe_json_loads(result_feedback)
+            except Exception:
+                fb = {"summary": "(parse-error)", "verdict": "unknown", "signals": []}
+
+            verdict = fb.get("verdict", "unknown")
+            summary_line = fb.get("summary", "")
+            signals = fb.get("signals", [])
+
+            record_execution_result(candidate_id=cand_id, verdict=verdict, summary=summary_line,
+                                    signals=signals, artifacts=[], cmd=last_cmd, raw_output=result_output)
+            append_summary(title="Execution Result", text=summary_line, tags=["result", verdict])
+
+            # 실패 후보 비활성화(선택)
+            if verdict == "failed":
+                st = load_state()
+                st.setdefault("disabled_candidates", []).append(cand_id)
+                st["active_candidates"] = [c for c in st.get("active_candidates", []) if c["id"] != cand_id]
+                save_state(st)
+
+            # 계획 업데이트 루프
+            plan_build_prompt = self.build_prompt("--plan", state_json=load_state(), feedback_json=result_feedback)
+
             console.print("=== run_prompt_CoT ===", style='bold green')
             response_CoT = self.run_prompt_CoT(plan_build_prompt)
             self.save_prompt(COT_FILE, response_CoT)
-
             self.update_state_from_cot(response_CoT)
 
             console.print("=== run_prompt_ToT ===", style='bold green')
-            response_ToT = self.run_prompt_ToT(response_CoT)
+            tot_input = build_tot_input_from_state()
+            response_ToT = self.run_prompt_ToT(json.dumps(tot_input, ensure_ascii=False))
             self.save_prompt(TOT_FILE, response_ToT)
 
-            tot_cal = self.cal_ToT()  
-
+            tot_cal = self.cal_ToT()
             self.update_state_from_tot(tot_cal)
 
-            parsing_response = ctx.parsing.human_translation(
-                json.dumps(tot_cal, ensure_ascii=False, indent=2)
-            )
+            parsing_response = ctx.parsing.human_translation(json.dumps(tot_cal, ensure_ascii=False, indent=2))
             console.print(parsing_response, style='yellow')
+
+            console.print("[+] Result appended to state.json (results/runs/summaries/signals).", style="green")
+
+        elif option == "--add-summary":
+            console.print("Write a short human summary. Submit <<<END>>> to finish.", style="blue")
+            text = multi_line_input()
+            append_summary(title="Manual Summary", text=text, tags=["manual"])
+            console.print("[+] Summary appended.", style="green")
 
         elif option == "--quit":
             cleanUp()
@@ -323,9 +460,12 @@ class PlanningClient:
             console.print("This command does not exist.", style="bold yellow")
             console.print("If you are unsure about the commands, run '--help'.", style="bold yellow")
 
+    # ---------------------
+    # Prompt Builders
+    # ---------------------
     def build_prompt(self, option: str, query: str = "", plan_json: str = "",
-                 state_json: str = "", tot_json: str = "", feedback_json: str=""):
-        
+                     state_json: str = "", tot_json: str = "", feedback_json: str = ""):
+
         if option == "--file":
             return (
                 f"You are a planning assistant for CTF automation.\n\n"
@@ -378,7 +518,7 @@ class PlanningClient:
                 f"you MAY include these extra keys inside a candidate object: "
                 f"cmd (string), ok (boolean), result (string), summary (string). "
                 f"If not applicable, OMIT these keys entirely (do NOT output null, '-', or empty strings).\n\n"
-                f"Respond ONLY in the following STRICT JSON format (required fields shown below):\n"
+                f"Respond ONLY in the following STRICT JSON format:\n"
                 "{{\n"
                 '  "candidates": [\n'
                 "    {\n"
@@ -391,8 +531,8 @@ class PlanningClient:
                 "    }\n"
                 "  ]\n"
                 "}}\n"
-                "No prose outside the JSON."
-        )
+                "No prose outside JSON."
+            )
 
         elif option == "--instruction":
             return (
@@ -461,30 +601,35 @@ class PlanningClient:
             return (
                 f"You are a planning assistant updating an existing plan based on feedback (NOT a solver).\n"
                 f"Do NOT regenerate or reorder the original plan; only append or annotate.\n"
-                f"Apply minimal DELTAS based on feedback and select ONE next action to execute.\n\n"
+                f"Apply minimal DELTAS based on feedback and propose up to {expand_k} distinct next-step candidates (DELTA actions).\n\n"
                 f"[State.json]\n{state_json}\n\n"
                 f"[Feedback.json]\n{feedback_json}\n\n"
                 f"POLICY\n"
                 f"- Keep existing hypothesis IDs/names stable; no wholesale rewrites.\n"
+                f"- Generate {expand_k} distinct candidates. Avoid trivial variations; each must be meaningfully different.\n"
                 f"- Only DELTA updates (confidence tweaks, short result note, toolset/constraints appends, and small next steps).\n"
                 f"- Next steps must be investigative/preparatory; no solving/flags.\n"
-                f"- Commands must be shell-ready and non-interactive.\n\n"
+                f"- Commands must be shell-ready and non-interactive.\n"
+                f"- OPTIONAL KEYS: Only include ok/result/summary if you have REAL values from an actual execution; otherwise OMIT them entirely.\n\n"
                 f"Respond ONLY in this STRICT JSON format:\n"
-                f"{{\n"
-                f"  \"candidates\": [\n"
-                f"    {{\n"
-                f"      \"cot\": \"3-5 sentences reasoning\",\n"
-                f"      \"thought\": \"one-line concrete next step\",\n"
-                f"      \"expected_artifacts\": [\"file1\", \"file2\"],\n"
-                f"      \"requires\": [\"tool/permission/dependency\"],\n"
-                f"      \"risk\": \"short note\",\n"
-                f"      \"estimated_cost\": \"low|medium|high\",\n"
-                f"      \"cmd\": \"exact terminal command\",\n"
-                f"      \"ok\": true,\n"
-                f"      \"result\": \"result text (e.g., tail or key line)\",\n"
-                f"      \"summary\": \"<=120 chars one-line summary\"\n"
-                f"    }}\n"
-                f"  ]\n"
-                f"}}"
+                "{{\n"
+                '  "candidates": [\n'
+                "    {\n"
+                '      "cot": "3-5 sentences reasoning",\n'
+                '      "thought": "one-line concrete next step",\n'
+                '      "expected_artifacts": ["file1", "file2"],\n'
+                '      "requires": ["tool/permission/dependency"],\n'
+                '      "risk": "short note",\n'
+                '      "estimated_cost": "low|medium|high",\n'
+                '      "cmd": "exact terminal command",\n'
+                '      "ok": true,\n'
+                '      "result": "result text (e.g., tail or key line)",\n'
+                '      "summary": "<=120 chars one-line summary"\n'
+                "    }\n"
+                "  ]\n"
+                "}}\n"
                 "No prose outside JSON."
             )
+
+        else:
+            return query  # fallback

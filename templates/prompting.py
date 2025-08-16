@@ -135,6 +135,57 @@ class CTFSolvePrompt:
     - ...
     """
     
+    parsing_compress = """
+    You are a JSON compressor for downstream LLMs.
+
+    Input: the next user message will be a single JSON document (no prose).
+    Task: output a MINIMAL, STRICT JSON that preserves ONLY the required fields and aggressively compresses content.
+
+    If the user message is not valid JSON, respond ONLY with:
+    {"error":"INVALID_JSON","reason":"<short reason>"}
+
+    Return VALID JSON only. No markdown, no comments, no backticks, no extra keys.
+
+    REQUIRED TOP-LEVEL SCHEMA (exact keys, no extras):
+    {
+    "iter": int,
+    "goal": string,
+    "constraints": [string],
+    "constraints_dynamic": [string],
+    "env": object,
+    "artifacts": {"binary": string, "logs": [string], "hashes": object},
+    "cot_history": [ {"iter": int, "candidates": [{"id": string, "thought": string}]} ],
+    "active_candidates": [ {"id": string, "thought": string} ],
+    "disabled_candidates": [ {"id": string, "reason": string} ],
+    "results": [ {"id": string, "verdict": "success"|"partial"|"failed", "summary": string,
+                    "signals": [ {"type": string, "name": string, "value": string} ]} ]
+    }
+
+    COMPRESSION RULES (apply all):
+    - Keep ONLY the fields shown in the schema above. Drop every other key.
+    - String caps: thought/summary ≤ 120 chars; any other free text ≤ 80 chars. Truncate with "…".
+    - Array caps:
+    constraints ≤ 3 (first 3),
+    constraints_dynamic ≤ 3 (last 3),
+    artifacts.logs ≤ 5 (last 5),
+    cot_history ≤ 2 (last 2 iters),
+    each cot_history.candidates ≤ 3 (first 3),
+    active_candidates ≤ 3,
+    disabled_candidates ≤ 3,
+    results ≤ 3 (most recent 3),
+    each results.signals ≤ 3 (unique by (type,name,value)).
+    - Deduplicate:
+    signals by (type,name,value);
+    candidates by (id,thought).
+    - Normalize types: numbers as numbers; booleans as true/false; hex like "0x..." stays string.
+    - artifacts.binary: keep only basename (strip directories).
+    - artifacts.hashes: keep at most 3 entries; if a value > 64 chars, truncate and append "…".
+    - Stable ordering: keep recency order within capped windows.
+    - If a required field would be empty, keep it as empty list/object instead of removing it.
+
+    Output: ONLY the compressed JSON matching the schema. No explanations.
+"""
+    
     instruction_prompt = """
     You are a CTF instruction assistant.
 
@@ -182,7 +233,7 @@ class CTFSolvePrompt:
     - Do NOT suggest next actions. Do NOT update planning state. Do NOT attempt to solve or print flags.
 
     INPUT (provided in the user message)
-    - Executed.json : <JSON>  // { "cmd","cwd","exit_code","duration_ms","stdout_tail","stderr_tail","artifact_paths" }
+    - Executed.json : <JSON>  // { "executed", "summary", "signals", "issues", "verdict", "notes"}
 
     POLICY
     - Be terse and objective. Quote exact substrings from outputs when useful.

@@ -2,14 +2,36 @@
   "results": [
     {
       "idx": 0,
-      "thought": "Run checksec on ./basic_exploitation_001 to enumerate RELRO/Canary/NX/PIE before deeper analysis.",
-      "feasibility": 0.96,
-      "novelty": 0.25,
-      "info_gain": 0.9,
-      "cost": 0.98,
-      "risk": 0.94,
+      "thought": "Record mitigations and libc via file/checksec/readelf/ldd on ./basic_exploitation_001.",
+      "feasibility": 1.0,
+      "novelty": 0.3,
+      "info_gain": 0.82,
+      "cost": 0.95,
+      "risk": 0.95,
       "penalties": [],
-      "notes": "Quick mitigations snapshot; high signal for planning; very low cost and risk."
+      "notes": "checksec/readelf/ldd reveal mitigations/libc; fast baseline; minimal cost, low risk."
+    },
+    {
+      "idx": 1,
+      "thought": "Write offset.json and symbols_key.json with i386 context, offsets, symbols, gadgets, and string addresses.",
+      "feasibility": 0.85,
+      "novelty": 0.55,
+      "info_gain": 0.55,
+      "cost": 0.6,
+      "risk": 0.65,
+      "penalties": [],
+      "notes": "Precompute ROP context/gadgets; useful later but a bit premature; moderate effort and risk."
+    },
+    {
+      "idx": 2,
+      "thought": "Save focused disassembly of main/read_flag/alarm_handler and extract flag strings.",
+      "feasibility": 0.95,
+      "novelty": 0.6,
+      "info_gain": 0.88,
+      "cost": 0.8,
+      "risk": 0.9,
+      "penalties": [],
+      "notes": "Targeted disasm of main/ALRM handler likely yields flow/constants; quick and actionable."
     }
   ]
 }
