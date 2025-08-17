@@ -53,7 +53,7 @@ def multi_line_input():
     return "\n".join(lines)
 
 
-def cleanUp(all=False):
+def cleanUp(all=True):
     targets = [COT_FILE, TOT_FILE, TOT_SCORED_FILE, INSTRUCTION_FILE]
     if all:
         targets.append(STATE_FILE)

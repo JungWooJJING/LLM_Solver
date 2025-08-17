@@ -5,6 +5,7 @@ from client.planning import PlanningClient
 from client.parsing import ParsingClient
 from client.instruction import InstructionClient
 from client.feedback import FeedbackClient
+from client.exploit import ExploitClient
 
 console = Console()
 
@@ -37,6 +38,7 @@ class AppContext:
         self.parsing = ParsingClient(api_key)
         self.instruction = InstructionClient(api_key)
         self.feedback = FeedbackClient(api_key)
+        self.exploit = ExploitClient(api_key)
 
 # === Setting: Initialize Context ===
 def setting():

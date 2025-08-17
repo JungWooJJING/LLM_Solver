@@ -254,3 +254,6 @@ class CTFSolvePrompt:
     "notes": "≤200 chars optional"
     }
     """
+    
+    exploit_prompt = """"
+    """
