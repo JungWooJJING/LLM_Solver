@@ -184,7 +184,7 @@ class CTFSolvePrompt:
     - If a required field would be empty, keep it as empty list/object instead of removing it.
 
     Output: ONLY the compressed JSON matching the schema. No explanations.
-"""
+    """
     
     instruction_prompt = """
     You are a CTF instruction assistant.

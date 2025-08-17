@@ -7,7 +7,6 @@ from client.instruction import InstructionClient
 from client.feedback import FeedbackClient
 
 console = Console()
-iteration = 3
 
 # === Common Input Handler ===
 def multi_line_input():
@@ -46,6 +45,8 @@ def setting():
 
 # === Main Program ===
 def main():
+    iteration = 0
+
     ctx = setting()
 
     console.print("Enter the challenge title:", style="blue")
@@ -65,24 +66,35 @@ def main():
     console.print("====================\n", style='bold yellow')
 
     while True:
+        iteration += 1
+        
         console.print("Please choose which option you want to choose.", style="blue")
         option = input("> ")
         ctx.planning.check_Option(option, ctx)
         
+        
         if iteration % 3 == 0:
-                if not os.path.exists("state.json"):
-                    print("Error") 
-                    continue
-                                        
-                with open("state.json", "r", encoding="utf-8") as f:
-                    state = json.load(f)
-                    console.print("Compress state.json", style="bold green")
-                    compress_state_json = ctx.parsing.run_prompt_state_compress(json.dumps(state))
-                    
-                    with open("state.json", "w", encoding="utf-8") as f:
-                        json.dump(compress_state_json, f, ensure_ascii=False, indent=2)
-                        break
-            
+            if not os.path.exists("state.json"):
+                print("Error")
+                continue
+
+            console.print("Compress state.json", style="bold green")
+            with open("state.json", "r", encoding="utf-8") as f:
+                state = json.load(f)
+
+            result_pompress = ctx.parsing.run_prompt_state_compress(json.dumps(state))
+
+            if isinstance(result_pompress, str):
+                obj = json.loads(result_pompress)
+            else:
+                obj = result_pompress
+                
+            if not isinstance(obj, dict):
+                print("Error: compressor returned non-JSON-object")
+                continue
+
+            with open("state.json", "w", encoding="utf-8") as f:
+                json.dump(obj, f, ensure_ascii=False, indent=2)
 
 if __name__ == "__main__":
     main()
