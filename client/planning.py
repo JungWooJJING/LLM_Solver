@@ -17,30 +17,21 @@ TOT_SCORED_FILE = "ToT_scored.json"
 INSTRUCTION_FILE = "instruction.json"
 
 DEFAULT_STATE = {
-    "iter": 0,  
-    "goal": "",
-    "constraints": ["no brute-force > 1000"],
-    "constraints_dynamic": [], 
-    "env": {},
-    "artifacts": {"binary": "", "logs": [], "hashes": {}},
+  "iter": 0,
+  "goal": "",
+  "constraints": ["no brute-force > 1000"],
+  "env": {},
 
-    "cot_history": [],       
-    "active_candidates": [],    # 다음 ToT 입력 집합(가변)
-    "disabled_candidates": [],  # 실패·중복 등 비활성 후보
-    "results": [],              # 실행 결과 누적
+  "history": [],        
+  "cot_history": [],   
+  "tot_scored": [],     
+  "selected": {},       
 
-    # 실행 로그/요약/신호(참조용)
-    "runs": [],
-    "summaries": [],
-    "signals": [],
-
-    # 보기용(옵션)
-    "candidates_topk": [],
-    "selected": {},
-    "evidence": [],
-    "next_action_hint": "",
-    "summary": ""
+  "results": [],        
+  "last_digest_hash": "",
+  "last_digest_summary": ""
 }
+
 
 def multi_line_input():
     console.print("Enter multiple lines. Type <<<END>>> on a new line to finish input.", style="bold yellow")
@@ -158,8 +149,8 @@ class PlanningClient:
 
     def _build_messages_stateless(self, phase_system_prompt: str, user_prompt: str, include_state: bool = True):
         msgs = [
-            {"role": "system", "content": "You are a CTF planning assistant. Keep answers concise."},
-            {"role": "system", "content": phase_system_prompt},
+            {"role": "developer", "content": "You are a CTF planning assistant. Keep answers concise."},
+            {"role": "developer", "content": phase_system_prompt},
         ]
         if include_state:
             state = load_state()
@@ -180,23 +171,18 @@ class PlanningClient:
 
     def update_state_from_cot(self, cot_text: str):
         data = safe_json_loads(cot_text)
-        cands = data.get("candidates", [])
+        raw_cands = data.get("candidates", []) or []
 
         it = _next_iter()
         with_ids, active = [], []
-        for i, c in enumerate(cands):
+        for i, c in enumerate(raw_cands):
             cid = _gen_cand_id(it, i)
             with_ids.append({
                 "id": cid,
-                "thought": c.get("thought", ""),
-                "cot": c.get("cot", ""),
-                "expected_artifacts": c.get("expected_artifacts", []),
-                "requires": c.get("requires", []),
-                "risk": c.get("risk", ""),
-                "estimated_cost": c.get("estimated_cost", "low"),
-                "meta": {"origin": "file_or_discuss"}
+                "thought": c.get("thought", "").strip(),
+                "cot": c.get("cot", "").strip()
             })
-            active.append({"id": cid, "thought": c.get("thought", ""), "refined_from": None})
+            active.append({"id": cid, "thought": c.get("thought", "").strip(), "refined_from": None})
 
         st = load_state()
         st.setdefault("cot_history", []).append({"iter": it, "candidates": with_ids})
@@ -325,6 +311,7 @@ class PlanningClient:
 
         elif option == "--exploit":
             console.print("Please wait. I will prepare an exploit script or a step-by-step procedure.", style="blue")
+            
             # state.json -> exploit client -> result print
 
         elif option == "--instruction":
@@ -579,6 +566,3 @@ class PlanningClient:
                 "}}\n"
                 "No prose outside JSON."
             )
-
-        else:
-            return query  # fallback

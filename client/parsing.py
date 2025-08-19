@@ -32,7 +32,7 @@ class ParsingClient:
             response = self.client.chat.completions.create(
                 model = self.model,
                 messages=[
-                    {"role": "system", "content": CTFSolvePrompt.parsing_compress},
+                    {"role": "developer", "content": CTFSolvePrompt.parsing_compress},
                     {"role": "user", "content": query}                    
                 ],
             )
@@ -48,7 +48,7 @@ class ParsingClient:
             response = self.client.chat.completions.create(
                 model = self.model,
                 messages=[
-                    {"role": "system", "content": CTFSolvePrompt.parsing_prompt},
+                    {"role": "developer", "content": CTFSolvePrompt.parsing_prompt},
                     {"role": "user", "content": prompt}                    
                 ],
             )

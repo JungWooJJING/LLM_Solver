@@ -51,21 +51,21 @@ def main():
 
     ctx = setting()
 
-    console.print("Enter the challenge title:", style="blue")
-    title = input("> ")
+    # console.print("Enter the challenge title:", style="blue")
+    # title = input("> ")
 
-    console.print("Enter the challenge description (Press <<<END>>> to finish):", style="blue")
-    description = multi_line_input()
+    # console.print("Enter the challenge description (Press <<<END>>> to finish):", style="blue")
+    # description = multi_line_input()
 
-    console.print("Enter the challenge category:", style="blue")
-    category = input("> ")
+    # console.print("Enter the challenge category:", style="blue")
+    # category = input("> ")
 
-    console.print("wait...", style='bold green')
-    result = ctx.preinfo.ask_PreInformation(title, description, category)
+    # console.print("wait...", style='bold green')
+    # result = ctx.preinfo.ask_PreInformation(title, description, category)
 
-    console.print("\n=== LLM Analysis ===\n", style='bold yellow')
-    console.print(result, style='bold yellow')
-    console.print("====================\n", style='bold yellow')
+    # console.print("\n=== LLM Analysis ===\n", style='bold yellow')
+    # console.print(result, style='bold yellow')
+    # console.print("====================\n", style='bold yellow')
 
     while True:
         iteration += 1

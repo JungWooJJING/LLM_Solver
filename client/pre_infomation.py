@@ -13,7 +13,7 @@ class PreInformationClient:
             response = self.client.chat.completions.create(
                 model=self.model,
                 messages=[
-                    {"role": "system", "content": CTFSolvePrompt.pre_information_prompt},
+                    {"role": "developer", "content": CTFSolvePrompt.pre_information_prompt},
                     {"role": "user", "content": user_prompt}
                 ],
             )
@@ -27,3 +27,4 @@ class PreInformationClient:
             f"Category: {category.strip()}\n"
             f"Description:\n{description.strip()}\n"
         )
+        

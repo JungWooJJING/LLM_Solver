@@ -18,7 +18,7 @@ class InstructionClient:
             response = self.client.chat.completions.create(
                 model = self.model,
                 messages=[
-                    {"role": "system", "content": CTFSolvePrompt.instruction_prompt},
+                    {"role": "developer", "content": CTFSolvePrompt.instruction_prompt},
                     {"role": "user", "content": prompt}                    
                 ],
             )

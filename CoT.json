@@ -1,0 +1,51 @@
+{
+  "candidates": [
+    {
+      "cot": "Static disassembly can reveal the stack frame layout without running the program, making it quick to estimate the overflow distance. In gdb, disassemble the vulnerable function and inspect the prologue (e.g., push rbp; mov rbp, rsp; sub rsp, 0xNN) and any lea/mov using [rbp-0xXX] that passes the local buffer to gets. The offset from the start of the buffer to the saved return address is typically buffer_displacement + 8 (saved RBP), plus an extra 8 if a stack canary is present. Annotate the disassembly with these findings and record the computed offset for later use.",
+      "thought": "Disassemble the vulnerable function and compute the buffer-to-saved-RIP distance from rbp-based offsets in the prologue and gets argument.",
+      "expected_artifacts": [
+        "disassembly.txt",
+        "offset_notes.md"
+      ],
+      "requires": [
+        "gdb or objdump",
+        "binary file",
+        "basic x86/x64 ABI knowledge"
+      ],
+      "risk": "Omitted frame pointer or aggressive optimizations can obscure rbp-based offsets; inlining may hide gets.",
+      "estimated_cost": "low"
+    },
+    {
+      "cot": "A runtime check verifies assumptions and captures exact addresses despite compiler quirks. Set a breakpoint after the call to gets (or step to the instruction following it), run with minimal input, then in gdb compare the buffer address (from [rbp-0xXX] used by gets) with the saved return address at [rbp+8] to compute the offset. This also exposes canary use if present (look for fs:0x28 loads/stores in the prologue and a canary slot near rbp). Save the gdb commands and session log for reproducibility.",
+      "thought": "Breakpoint after gets, then print &buffer and $rbp+8 to compute their difference at runtime.",
+      "expected_artifacts": [
+        "offset.gdb",
+        "gdb_session.log",
+        "computed_offset.txt"
+      ],
+      "requires": [
+        "gdb",
+        "binary file",
+        "ability to run interactively"
+      ],
+      "risk": "Breakpoints and stepping may be tricky if symbols are stripped; timing/alarms could abort before inspection.",
+      "estimated_cost": "low"
+    },
+    {
+      "cot": "Automated instrumentation reduces manual steps and creates reusable logs for parsing. Prepare a gdb command file that sets a breakpoint right after gets and uses dprintf to print the buffer address (via rbp-relative displacement) and the saved return address ($rbp+8) without stopping execution. Enable logging to capture output, then parse the printed addresses to compute the offset across runs or variants. This approach scales to repeated tests and avoids interactive sessions.",
+      "thought": "Use a gdb dprintf breakpoint after gets to log buf and saved RIP addresses to a file, then parse to derive the offset.",
+      "expected_artifacts": [
+        "instrument.gdb",
+        "run.log",
+        "offset_parsed.json"
+      ],
+      "requires": [
+        "gdb with dprintf support",
+        "binary file",
+        "known instruction address after gets"
+      ],
+      "risk": "Requires identifying the correct post-gets address; dprintf formatting or ASLR may complicate stable breakpoints.",
+      "estimated_cost": "low"
+    }
+  ]
+}

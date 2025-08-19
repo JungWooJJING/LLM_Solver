@@ -17,7 +17,7 @@ class FeedbackClient:
             response = self.client.chat.completions.create(
                 model = self.model,
                 messages=[
-                    {"role": "system", "content": CTFSolvePrompt.feedback_prompt},
+                    {"role": "developer", "content": CTFSolvePrompt.feedback_prompt},
                     {"role": "user", "content": prompt}                    
                 ],
             )

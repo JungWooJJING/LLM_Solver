@@ -1,0 +1,45 @@
+{
+  "results": [
+    {
+      "idx": 1,
+      "thought": "Breakpoint after gets, then print &buffer and $rbp+8 to compute their difference at runtime.",
+      "feasibility": 0.85,
+      "novelty": 0.4,
+      "info_gain": 0.92,
+      "cost": 0.85,
+      "risk": 0.7,
+      "penalties": [],
+      "notes": "BP after gets; compare &buf vs $rbp+8; precise, may need symbols/exprs; low overhead.",
+      "calculated_score": 0.636
+    },
+    {
+      "idx": 0,
+      "thought": "Disassemble the vulnerable function and compute the buffer-to-saved-RIP distance from rbp-based offsets in the prologue and gets argument.",
+      "feasibility": 0.95,
+      "novelty": 0.3,
+      "info_gain": 0.9,
+      "cost": 0.95,
+      "risk": 0.8,
+      "penalties": [],
+      "notes": "Static disasm to compute offset; fast, reliable unless no frame or prologue quirks.",
+      "calculated_score": 0.605
+    },
+    {
+      "idx": 2,
+      "thought": "Use a gdb dprintf breakpoint after gets to log buf and saved RIP addresses to a file, then parse to derive the offset.",
+      "feasibility": 0.8,
+      "novelty": 0.35,
+      "info_gain": 0.88,
+      "cost": 0.7,
+      "risk": 0.65,
+      "penalties": [
+        {
+          "reason": "near-duplicate of candidate 2 (same method, adds logging)",
+          "value": 0.1
+        }
+      ],
+      "notes": "dprintf logs addrs; automates 2 but adds setup/parse; near-duplicate approach.",
+      "calculated_score": 0.532
+    }
+  ]
+}
