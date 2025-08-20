@@ -75,28 +75,28 @@ def main():
         ctx.planning.check_Option(option, ctx)
         
         
-        if iteration % 3 == 0:
-            if not os.path.exists("state.json"):
-                print("Error")
-                continue
+        # if iteration % 3 == 0:
+        #     if not os.path.exists("state.json"):
+        #         print("Error")
+        #         continue
 
-            console.print("Compress state.json", style="bold green")
-            with open("state.json", "r", encoding="utf-8") as f:
-                state = json.load(f)
+        #     console.print("Compress state.json", style="bold green")
+        #     with open("state.json", "r", encoding="utf-8") as f:
+        #         state = json.load(f)
 
-            result_pompress = ctx.parsing.run_prompt_state_compress(json.dumps(state))
+        #     result_pompress = ctx.parsing.run_prompt_state_compress(json.dumps(state))
 
-            if isinstance(result_pompress, str):
-                obj = json.loads(result_pompress)
-            else:
-                obj = result_pompress
+        #     if isinstance(result_pompress, str):
+        #         obj = json.loads(result_pompress)
+        #     else:
+        #         obj = result_pompress
                 
-            if not isinstance(obj, dict):
-                print("Error: compressor returned non-JSON-object")
-                continue
+        #     if not isinstance(obj, dict):
+        #         print("Error: compressor returned non-JSON-object")
+        #         continue
 
-            with open("state.json", "w", encoding="utf-8") as f:
-                json.dump(obj, f, ensure_ascii=False, indent=2)
+        #     with open("state.json", "w", encoding="utf-8") as f:
+        #         json.dump(obj, f, ensure_ascii=False, indent=2)
 
 if __name__ == "__main__":
     main()

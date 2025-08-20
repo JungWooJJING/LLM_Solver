@@ -1,5 +1,9 @@
 import os
-import json, re
+import json
+import re
+import hashlib
+import time
+from typing import List, Dict, Any
 
 from openai import OpenAI
 from templates.prompting import CTFSolvePrompt
@@ -8,13 +12,22 @@ from rich.console import Console
 console = Console()
 expand_k = 3
 
+# 가중치(점수 계산용)
 w = {"feasibility": 0.25, "info_gain": 0.30, "novelty": 0.20, "cost": 0.15, "risk": 0.15}
 
+# 파일들
 STATE_FILE = "state.json"
 COT_FILE = "CoT.json"
 TOT_FILE = "ToT.json"
 TOT_SCORED_FILE = "ToT_scored.json"
 INSTRUCTION_FILE = "instruction.json"
+
+# 보관 한도(슬라이딩 윈도우)
+MAX_SIGNALS = 50
+MAX_RUNS = 50
+MAX_SUMMARIES = 50
+MAX_HISTORY_ITERS = 20   # cot_history 보관 이터레이션 수 제한
+MAX_ACTIVE = 5           # 즉시 시도할 후보 수(활성 후보 노출 상한)
 
 DEFAULT_STATE = {
   "iter": 0,
@@ -22,16 +35,36 @@ DEFAULT_STATE = {
   "constraints": ["no brute-force > 1000"],
   "env": {},
 
-  "history": [],        
-  "cot_history": [],   
-  "tot_scored": [],     
-  "selected": {},       
+  "history": [],
+  "cot_history": [],          # CoT 기록
+  "tot_scored": [],
+  "selected": {},
 
-  "results": [],        
+  "results": [],
   "last_digest_hash": "",
-  "last_digest_summary": ""
+  "last_digest_summary": "",
+
+  # 확장 필드(자동 관리)
+  # "signals": [],
+  # "constraints_dynamic": [],
+  # "runs": [],
+  # "summaries": [],
+  # "candidates_pool": {},    # key -> candidate
+  # "active_candidates": [],  # 표시용
+  # "candidates_topk": [],    # ToT 결과 상위
 }
 
+def _now_ts() -> float:
+    return time.time()
+
+def _normalize_text(s: str) -> str:
+    s = (s or "").strip().lower()
+    s = re.sub(r"\s+", " ", s)
+    return s
+
+def _thought_key(thought: str) -> str:
+    norm = _normalize_text(thought)
+    return hashlib.sha1(norm.encode("utf-8")).hexdigest()[:16]
 
 def multi_line_input():
     console.print("Enter multiple lines. Type <<<END>>> on a new line to finish input.", style="bold yellow")
@@ -43,7 +76,6 @@ def multi_line_input():
         lines.append(line)
     return "\n".join(lines)
 
-
 def cleanUp(all=True):
     targets = [COT_FILE, TOT_FILE, TOT_SCORED_FILE, INSTRUCTION_FILE]
     if all:
@@ -52,19 +84,15 @@ def cleanUp(all=True):
         if os.path.exists(f):
             os.remove(f)
 
-
 def load_state():
     if not os.path.exists(STATE_FILE):
         save_state(DEFAULT_STATE.copy())
-        
     with open(STATE_FILE, "r", encoding="utf-8") as f:
         return json.load(f)
-
 
 def save_state(state: dict):
     with open(STATE_FILE, "w", encoding="utf-8") as f:
         json.dump(state, f, ensure_ascii=False, indent=2)
-
 
 def safe_json_loads(s):
     if isinstance(s, (dict, list)):
@@ -80,17 +108,25 @@ def safe_json_loads(s):
             return json.loads(s2)
         except Exception:
             return {}
-        
+
 def _next_iter():
     s = load_state()
     s["iter"] = int(s.get("iter", 0)) + 1
     save_state(s)
     return s["iter"]
 
-
 def _gen_cand_id(iter_no: int, i: int) -> str:
     return f"COT-{iter_no:04d}-{i+1:02d}"
 
+def _prune_state_windows():
+    st = load_state()
+    if len(st.get("signals", [])) > MAX_SIGNALS:
+        st["signals"] = st["signals"][-MAX_SIGNALS:]
+    if len(st.get("runs", [])) > MAX_RUNS:
+        st["runs"] = st["runs"][-MAX_RUNS:]
+    if len(st.get("summaries", [])) > MAX_SUMMARIES:
+        st["summaries"] = st["summaries"][-MAX_SUMMARIES:]
+    save_state(st)
 
 def record_execution_result(candidate_id: str, verdict: str, summary: str,
                             signals=None, artifacts=None, cmd=None, raw_output=None):
@@ -112,26 +148,179 @@ def record_execution_result(candidate_id: str, verdict: str, summary: str,
     if signals:
         st.setdefault("signals", []).extend(signals)
     save_state(st)
-
+    _prune_state_windows()
 
 def append_summary(title: str, text: str, tags=None):
     st = load_state()
     st.setdefault("summaries", []).append({"title": title, "text": text, "tags": tags or []})
     save_state(st)
+    _prune_state_windows()
+
+# --------- 후보 풀 관리 ---------
+
+def _upsert_candidates(new_list: List[Dict[str, Any]], source: str, iter_no: int):
+    """
+    CoT/ToT 로부터 생성된 후보들을 단일 풀(candidates_pool)에 업서트합니다.
+    중복(thought 기반)은 key로 통합하고 cot/메타를 최신으로 유지합니다.
+    """
+    st = load_state()
+    pool: Dict[str, Dict[str, Any]] = st.setdefault("candidates_pool", {})
+
+    for c in new_list:
+        thought = (c.get("thought") or "").strip()
+        cot = (c.get("cot") or "").strip()
+        if not thought:
+            continue
+
+        k = _thought_key(thought)
+        prev = pool.get(k, {})
+        if not prev:
+            pool[k] = {
+                "id": c.get("id") or f"{source}-{iter_no}-{len(pool)+1}",
+                "key": k,
+                "thought": thought,
+                "cot": cot,
+                "refined_from": c.get("refined_from"),
+                "created_iter": iter_no,
+                "updated_ts": _now_ts(),
+                "status": "pending",                # pending / selected / executed_success / executed_failed / disabled
+                "base_score": float(c.get("calculated_score", c.get("score", 0.0))) if isinstance(c, dict) else 0.0,
+                "dynamic_score": 0.0,
+                "penalties": 0.0,
+                "metadata": {},
+                "stats": {"seen": 0, "selected": 0, "executed": 0, "success": 0, "failed": 0}
+            }
+        else:
+            # 기존 항목 업데이트(더 풍부한 cot, refined_from 등 병합)
+            if cot:
+                pool[k]["cot"] = cot
+            if not pool[k].get("refined_from") and c.get("refined_from"):
+                pool[k]["refined_from"] = c.get("refined_from")
+            # ToT에서 base_score가 들어올 수도 있음
+            if "calculated_score" in c or "score" in c:
+                pool[k]["base_score"] = float(c.get("calculated_score", c.get("score", 0.0)))
+            pool[k]["updated_ts"] = _now_ts()
+
+        # 메타데이터 병합
+        md = pool[k].setdefault("metadata", {})
+        for fld in ("expected_artifacts", "requires", "risk", "estimated_cost", "notes"):
+            if c.get(fld):
+                md[fld] = c[fld]
+
+    st["candidates_pool"] = pool
+    save_state(st)
+
+def _recompute_scores():
+    """
+    후보들의 동적 점수를 재계산합니다.
+    최근 signals/constraints 적합도 보너스, 실패/반복 페널티, 시간 감쇠 등을 반영합니다.
+    """
+    st = load_state()
+    pool: Dict[str, Dict[str, Any]] = st.get("candidates_pool", {})
+    sigs = st.get("signals", [])[-5:]
+    constraints = st.get("constraints_dynamic", [])[-5:]
+
+    for k, c in pool.items():
+        status = c.get("status")
+        if status in ("executed_success", "executed_failed", "disabled"):
+            c["dynamic_score"] = -1.0
+            continue
+
+        base = float(c.get("base_score", 0.0))
+        penalties = float(c.get("penalties", 0.0))
+
+        # 최근 신호/제약과의 키워드 매칭(간단 가산)
+        bonus = 0.0
+        joined = f'{c.get("thought","")} {c.get("cot","")}'.lower()
+        for s in sigs:
+            s_name = str(s)[:64].lower()
+            if s_name and s_name in joined:
+                bonus += 0.03
+        for cons in constraints:
+            cons_l = str(cons).lower()
+            if cons_l and cons_l in joined:
+                bonus += 0.02
+
+        # 실패/반복 페널티
+        tried = c.get("stats", {}).get("executed", 0)
+        failed = c.get("stats", {}).get("failed", 0)
+        repeat_pen = min(tried * 0.02, 0.1) + min(failed * 0.05, 0.3)
+
+        # 시간 감쇠(오래된 pending은 소폭 감점)
+        age = max(1.0, (_now_ts() - c.get("updated_ts", _now_ts())) / 3600.0)
+        decay = max(0.9, 1.0 - min(age / 48.0, 0.1))  # 48시간마다 최대 0.1까지 감쇠
+
+        dyn = (base + bonus - penalties - repeat_pen) * decay
+        c["dynamic_score"] = round(dyn, 4)
+
+    st["candidates_pool"] = pool
+    save_state(st)
+
+def _select_active_topk(k: int = MAX_ACTIVE) -> List[Dict[str, Any]]:
+    """
+    pending 후보 중 동적 점수 상위 k개를 active_candidates로 노출합니다.
+    """
+    st = load_state()
+    pool: Dict[str, Dict[str, Any]] = st.get("candidates_pool", {})
+    pending = [c for c in pool.values() if c.get("status") == "pending"]
+    pending.sort(key=lambda x: x.get("dynamic_score", 0.0), reverse=True)
+    chosen = pending[:k]
+    st["active_candidates"] = [
+        {"id": c["id"], "thought": c["thought"], "refined_from": c.get("refined_from")}
+        for c in chosen
+    ]
+    save_state(st)
+    return st["active_candidates"]
+
+def _mark_candidate_after_run(candidate_id: str, verdict: str):
+    """
+    실행 결과에 따라 후보 상태/통계를 갱신하고, 페널티를 부과합니다.
+    """
+    st = load_state()
+    pool: Dict[str, Dict[str, Any]] = st.get("candidates_pool", {})
+    id2key = {c["id"]: k for k, c in pool.items()}
+    k = id2key.get(candidate_id)
+    if not k:
+        return
+
+    c = pool[k]
+    c["stats"]["executed"] += 1
+    if verdict == "failed":
+        c["stats"]["failed"] += 1
+        c["status"] = "executed_failed"
+        c["penalties"] = float(c.get("penalties", 0.0)) + 0.1
+    elif verdict in ("success", "partial"):
+        c["stats"]["success"] += 1
+        c["status"] = "executed_success"
+    else:
+        # unknown이면 상태 유지(pending)
+        pass
+
+    c["updated_ts"] = _now_ts()
+    pool[k] = c
+    st["candidates_pool"] = pool
+    save_state(st)
+
+    _prune_state_windows()
+    _recompute_scores()
+    _select_active_topk(k=MAX_ACTIVE)
+
+# --------- ToT 입력 생성 ---------
 
 def build_tot_input_from_state():
     st = load_state()
-    executed = {r["id"]: r for r in st.get("results", [])}
+    pool: Dict[str, Dict[str, Any]] = st.get("candidates_pool", {})
+    pending_sorted = sorted(
+        [c for c in pool.values() if c.get("status") == "pending"],
+        key=lambda x: x.get("dynamic_score", 0.0),
+        reverse=True
+    )
+    pick = pending_sorted[:MAX_ACTIVE]
 
     tot_in = []
-    for c in st.get("active_candidates", []):
-        cid = c["id"]
-        
-        if cid in executed and executed[cid].get("verdict") == "failed":
-            continue
-        
+    for c in pick:
         tot_in.append({
-            "id": cid,
+            "id": c["id"],
             "thought": c["thought"],
             "refined_from": c.get("refined_from"),
             "hints": {
@@ -139,8 +328,9 @@ def build_tot_input_from_state():
                 "constraints": st.get("constraints_dynamic", [])[-5:]
             }
         })
-        
     return {"candidates": tot_in}
+
+# --------- 메인 클라이언트 ---------
 
 class PlanningClient:
     def __init__(self, api_key: str, model: str = "gpt-5"):
@@ -169,40 +359,66 @@ class PlanningClient:
     def run_prompt_ToT(self, prompt: str):
         return self._ask_stateless(CTFSolvePrompt.planning_prompt_ToT, prompt, include_state=False)
 
+    # --- 변경: CoT 반영은 후보 풀에 업서트 + 재점수 + active 선정 ---
     def update_state_from_cot(self, cot_text: str):
         data = safe_json_loads(cot_text)
         raw_cands = data.get("candidates", []) or []
 
         it = _next_iter()
-        with_ids, active = [], []
-        for i, c in enumerate(raw_cands):
-            cid = _gen_cand_id(it, i)
-            with_ids.append({
-                "id": cid,
-                "thought": c.get("thought", "").strip(),
-                "cot": c.get("cot", "").strip()
-            })
-            active.append({"id": cid, "thought": c.get("thought", "").strip(), "refined_from": None})
 
+        # 히스토리 저장(보관 개수 제한)
         st = load_state()
-        st.setdefault("cot_history", []).append({"iter": it, "candidates": with_ids})
-        st["active_candidates"] = active
+        st.setdefault("cot_history", []).append({"iter": it, "candidates": raw_cands})
+        if len(st["cot_history"]) > MAX_HISTORY_ITERS:
+            st["cot_history"] = st["cot_history"][-MAX_HISTORY_ITERS:]
         save_state(st)
 
+        # 풀에 업서트
+        _upsert_candidates(raw_cands, source="COT", iter_no=it)
+
+        # 재점수 + active 선정
+        _recompute_scores()
+        _select_active_topk(k=MAX_ACTIVE)
+
+    # --- 변경: ToT 반영은 base_score 갱신 + 재점수 + active/selected 동기화 ---
     def update_state_from_tot(self, tot_results_dict: dict, topk: int = 3):
         st = load_state()
         results = tot_results_dict.get("results", [])
 
         st["candidates_topk"] = results[:topk]
-        if results:
-            top1 = results[0]
+
+        pool = st.setdefault("candidates_pool", {})
+        for item in results:
+            thought = item.get("thought", "")
+            if not thought:
+                continue
+            k = _thought_key(thought)
+            if k in pool:
+                base = item.get("calculated_score", item.get("score", 0.0))
+                pool[k]["base_score"] = float(base)
+                pool[k]["metadata"] = {
+                    **pool[k].get("metadata", {}),
+                    **{fld: item.get(fld) for fld in ("requires", "risk", "estimated_cost") if item.get(fld) is not None}
+                }
+                pool[k]["updated_ts"] = _now_ts()
+
+        st["candidates_pool"] = pool
+        save_state(st)
+
+        _recompute_scores()
+        active = _select_active_topk(k=MAX_ACTIVE)
+
+        # selected를 동적 점수 최상위로 동기화
+        st = load_state()
+        if active:
+            top1 = active[0]
             st["selected"] = {
-                "id": top1.get("id", ""),
-                "thought": top1.get("thought", ""),
-                "score": top1.get("calculated_score", top1.get("score", 0.0)),
-                "notes": top1.get("notes", "")
+                "id": top1["id"],
+                "thought": top1["thought"],
+                "score": pool[_thought_key(top1["thought"])]["dynamic_score"],
+                "notes": ""
             }
-            st["next_action_hint"] = top1.get("thought", "")
+            st["next_action_hint"] = top1["thought"]
         save_state(st)
 
     def cal_ToT(self, tot_json_str: str = None, infile: str = "ToT.json", outfile: str = "ToT_scored.json"):
@@ -311,7 +527,6 @@ class PlanningClient:
 
         elif option == "--exploit":
             console.print("Please wait. I will prepare an exploit script or a step-by-step procedure.", style="blue")
-            
             # state.json -> exploit client -> result print
 
         elif option == "--instruction":
@@ -366,12 +581,17 @@ class PlanningClient:
                                     signals=signals, artifacts=[], cmd=last_cmd, raw_output=result_output)
             append_summary(title="Execution Result", text=summary_line, tags=["result", verdict])
 
+            # 후보 상태 반영(성공/실패/unknown)
+            _mark_candidate_after_run(cand_id, verdict)
+
+            # 실패 시 비활성 처리(선택사항: 이미 _mark_candidate_after_run에서 상태 반영됨)
             if verdict == "failed":
                 st = load_state()
                 st.setdefault("disabled_candidates", []).append(cand_id)
-                st["active_candidates"] = [c for c in st.get("active_candidates", []) if c["id"] != cand_id]
+                # active 후보 목록은 _select_active_topk에서 자동 갱신되므로 여기서 삭제 불필요
                 save_state(st)
 
+            # 피드백 기반 델타 계획(COT→ToT 재실행)
             plan_build_prompt = self.build_prompt("--plan", state_json=load_state(), feedback_json=result_feedback)
 
             console.print("=== run_prompt_CoT ===", style='bold green')
@@ -389,7 +609,7 @@ class PlanningClient:
 
             parsing_response = ctx.parsing.human_translation(json.dumps(tot_cal, ensure_ascii=False, indent=2))
             console.print(parsing_response, style='yellow')
-            
+
         elif option == "--quit":
             cleanUp()
             console.print("\nGoodbye!\n", style="bold yellow")
