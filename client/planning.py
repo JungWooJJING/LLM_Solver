@@ -30,28 +30,13 @@ MAX_HISTORY_ITERS = 20   # cot_history 보관 이터레이션 수 제한
 MAX_ACTIVE = 5           # 즉시 시도할 후보 수(활성 후보 노출 상한)
 
 DEFAULT_STATE = {
-  "iter": 0,
-  "goal": "",
-  "constraints": ["no brute-force > 1000"],
-  "env": {},
-
-  "history": [],
-  "cot_history": [],          # CoT 기록
-  "tot_scored": [],
-  "selected": {},
-
-  "results": [],
-  "last_digest_hash": "",
-  "last_digest_summary": "",
-
-  # 확장 필드(자동 관리)
-  # "signals": [],
-  # "constraints_dynamic": [],
-  # "runs": [],
-  # "summaries": [],
-  # "candidates_pool": {},    # key -> candidate
-  # "active_candidates": [],  # 표시용
-  # "candidates_topk": [],    # ToT 결과 상위
+  "iter": 0,                     # 현재 반복 횟수(Iteration)
+  "goal": "",                    # 전체 목표
+  "constraints": ["no brute-force > 1000"],  # 고정 제약 조건
+  "env": {},                     # 환경 변수/설정 값
+  "cot_history": [],             # 각 Iteration별 후보(CoT) 기록
+  "selected": {},                # 현재 선택된 후보(id 등)
+  "results": []                  # 실행 결과 (id, verdict, signals, artifacts 등)
 }
 
 def _now_ts() -> float:
@@ -61,6 +46,9 @@ def _normalize_text(s: str) -> str:
     s = (s or "").strip().lower()
     s = re.sub(r"\s+", " ", s)
     return s
+
+def _sha1(s: str) -> str:
+    return hashlib.sha1(s.encode("utf-8")).hexdigest()
 
 def _thought_key(thought: str) -> str:
     norm = _normalize_text(thought)
@@ -211,10 +199,7 @@ def _upsert_candidates(new_list: List[Dict[str, Any]], source: str, iter_no: int
     save_state(st)
 
 def _recompute_scores():
-    """
-    후보들의 동적 점수를 재계산합니다.
-    최근 signals/constraints 적합도 보너스, 실패/반복 페널티, 시간 감쇠 등을 반영합니다.
-    """
+
     st = load_state()
     pool: Dict[str, Dict[str, Any]] = st.get("candidates_pool", {})
     sigs = st.get("signals", [])[-5:]
@@ -305,30 +290,9 @@ def _mark_candidate_after_run(candidate_id: str, verdict: str):
     _recompute_scores()
     _select_active_topk(k=MAX_ACTIVE)
 
-# --------- ToT 입력 생성 ---------
-
-def build_tot_input_from_state():
-    st = load_state()
-    pool: Dict[str, Dict[str, Any]] = st.get("candidates_pool", {})
-    pending_sorted = sorted(
-        [c for c in pool.values() if c.get("status") == "pending"],
-        key=lambda x: x.get("dynamic_score", 0.0),
-        reverse=True
-    )
-    pick = pending_sorted[:MAX_ACTIVE]
-
-    tot_in = []
-    for c in pick:
-        tot_in.append({
-            "id": c["id"],
-            "thought": c["thought"],
-            "refined_from": c.get("refined_from"),
-            "hints": {
-                "signals": st.get("signals", [])[-5:],
-                "constraints": st.get("constraints_dynamic", [])[-5:]
-            }
-        })
-    return {"candidates": tot_in}
+def _norm(s: str) -> str:
+    # thought 매칭 안정화: 공백 압축 + 소문자
+    return " ".join((s or "").split()).lower()
 
 # --------- 메인 클라이언트 ---------
 
@@ -359,67 +323,58 @@ class PlanningClient:
     def run_prompt_ToT(self, prompt: str):
         return self._ask_stateless(CTFSolvePrompt.planning_prompt_ToT, prompt, include_state=False)
 
-    # --- 변경: CoT 반영은 후보 풀에 업서트 + 재점수 + active 선정 ---
     def update_state_from_cot(self, cot_text: str):
         data = safe_json_loads(cot_text)
         raw_cands = data.get("candidates", []) or []
 
         it = _next_iter()
-
-        # 히스토리 저장(보관 개수 제한)
         st = load_state()
-        st.setdefault("cot_history", []).append({"iter": it, "candidates": raw_cands})
+
+        cands = []
+        for idx, cand in enumerate(raw_cands, start=1):
+            cands.append({
+                "id": f"COT-{it}-{idx}",
+                "cot": cand.get("cot"),
+                "thought": cand.get("thought"),
+                "requires": cand.get("requires"),
+                "rf": None 
+            })
+
+        st.setdefault("cot_history", []).append({"iter": it, "candidates": cands})
+
         if len(st["cot_history"]) > MAX_HISTORY_ITERS:
             st["cot_history"] = st["cot_history"][-MAX_HISTORY_ITERS:]
+
         save_state(st)
 
-        # 풀에 업서트
-        _upsert_candidates(raw_cands, source="COT", iter_no=it)
-
-        # 재점수 + active 선정
-        _recompute_scores()
-        _select_active_topk(k=MAX_ACTIVE)
-
-    # --- 변경: ToT 반영은 base_score 갱신 + 재점수 + active/selected 동기화 ---
-    def update_state_from_tot(self, tot_results_dict: dict, topk: int = 3):
+    def build_tot_input_from_state(self):
         st = load_state()
-        results = tot_results_dict.get("results", [])
+        if not os.path.exists(COT_FILE):
+            return {"candidates": []}
 
-        st["candidates_topk"] = results[:topk]
+        with open(COT_FILE, "r", encoding="utf-8") as f:
+            cot = json.load(f)
+        raw = cot.get("candidates", []) or []
 
-        pool = st.setdefault("candidates_pool", {})
-        for item in results:
-            thought = item.get("thought", "")
-            if not thought:
-                continue
-            k = _thought_key(thought)
-            if k in pool:
-                base = item.get("calculated_score", item.get("score", 0.0))
-                pool[k]["base_score"] = float(base)
-                pool[k]["metadata"] = {
-                    **pool[k].get("metadata", {}),
-                    **{fld: item.get(fld) for fld in ("requires", "risk", "estimated_cost") if item.get(fld) is not None}
+        pick = raw[:MAX_ACTIVE]
+
+        iter_no = st.get("iter", 0)
+        signals_tail = (st.get("signals", []) or [])[-5:]
+        constraints_tail = (st.get("constraints_dynamic", []) or [])[-5:]
+
+        tot_in = []
+        for idx, c in enumerate(pick, start=1):
+            cid = f"COT-{iter_no}-{idx}"
+            tot_in.append({
+                "id": cid,
+                "thought": c.get("thought",""),
+                "refined_from": c.get("refined_from"),  
+                "hints": {
+                    "signals": signals_tail,
+                    "constraints": constraints_tail
                 }
-                pool[k]["updated_ts"] = _now_ts()
-
-        st["candidates_pool"] = pool
-        save_state(st)
-
-        _recompute_scores()
-        active = _select_active_topk(k=MAX_ACTIVE)
-
-        # selected를 동적 점수 최상위로 동기화
-        st = load_state()
-        if active:
-            top1 = active[0]
-            st["selected"] = {
-                "id": top1["id"],
-                "thought": top1["thought"],
-                "score": pool[_thought_key(top1["thought"])]["dynamic_score"],
-                "notes": ""
-            }
-            st["next_action_hint"] = top1["thought"]
-        save_state(st)
+            })
+        return {"candidates": tot_in}
 
     def cal_ToT(self, tot_json_str: str = None, infile: str = "ToT.json", outfile: str = "ToT_scored.json"):
         if tot_json_str is None:
@@ -453,6 +408,63 @@ class PlanningClient:
 
         console.print(f"Save: {outfile}", style='green')
         return data
+    
+    def update_state_from_tot(self, tot_results: dict):
+        st = load_state()
+
+        # 최신 iteration의 후보(생성된 CoT) 가져오기
+        last_cands = []
+        for entry in reversed(st.get("cot_history", [])):
+            if entry.get("candidates"):
+                last_cands = entry["candidates"]
+                break
+
+        # thought→id, idx(0-based)→id 매핑 준비
+        def _norm(s: str) -> str:
+            return " ".join((s or "").split()).lower()
+
+        thought_to_id = { _norm(c.get("thought","")): c.get("id")
+                        for c in last_cands if c.get("id") }
+        idx_to_id = { i: c.get("id") for i, c in enumerate(last_cands) if c.get("id") }
+
+        items = tot_results.get("results") or tot_results.get("candidates") or []
+        if not items:
+            # 입력이 비었으면 selected는 비우고, results는 변화 없이 두는 게 안전합니다.
+            st["selected"] = {}
+            save_state(st)
+            return st["selected"]
+
+        # 최고 점수 1개 선택 (calculated_score 우선 → score 보조)
+        def _score(x):
+            v = x.get("calculated_score", x.get("score"))
+            return float(v) if v is not None else float("-inf")
+
+        top = max(items, key=_score)
+
+        # id 매핑: thought 우선 → idx 보조(0/1-based 모두 시도)
+        cid = top.get("id")
+        if not cid:
+            cid = thought_to_id.get(_norm(top.get("thought","")))
+        if not cid:
+            idx = top.get("idx")
+            if isinstance(idx, int):
+                cid = idx_to_id.get(idx) or idx_to_id.get(idx - 1)
+
+        record = {
+            "id": cid,  # 매핑 실패 시 None일 수 있음
+            "score": float(top.get("calculated_score", top.get("score", 0.0))),
+            "thought": top.get("thought", ""),
+            "notes": top.get("notes", "")
+        }
+
+        # results: 누적(append) 저장
+        st.setdefault("results", []).append(record)
+        # selected: 현재 선택으로 덮어쓰기
+        st["selected"] = record
+
+        save_state(st)
+        return record
+
 
     def save_prompt(self, filename: str, content: str):
         with open(filename, "w", encoding="utf-8") as f:
@@ -492,7 +504,7 @@ class PlanningClient:
             self.update_state_from_cot(response_CoT)
 
             console.print("=== run_prompt_ToT ===", style='bold green')
-            tot_input = build_tot_input_from_state()
+            tot_input = self.build_tot_input_from_state()
             response_ToT = self.run_prompt_ToT(json.dumps(tot_input, ensure_ascii=False))
             self.save_prompt(TOT_FILE, response_ToT)
 
@@ -515,7 +527,7 @@ class PlanningClient:
             self.update_state_from_cot(response_CoT)
 
             console.print("=== run_prompt_ToT ===", style='bold green')
-            tot_input = build_tot_input_from_state()
+            tot_input = self.build_tot_input_from_state()
             response_ToT = self.run_prompt_ToT(json.dumps(tot_input, ensure_ascii=False))
             self.save_prompt(TOT_FILE, response_ToT)
 
@@ -523,7 +535,7 @@ class PlanningClient:
             self.update_state_from_tot(tot_cal)
 
             parsing_response = ctx.parsing.human_translation(json.dumps(tot_cal, ensure_ascii=False, indent=2))
-            console.print(parsing_response, style='bold green')
+            console.print(parsing_response, style='yellow')
 
         elif option == "--exploit":
             console.print("Please wait. I will prepare an exploit script or a step-by-step procedure.", style="blue")
@@ -600,7 +612,7 @@ class PlanningClient:
             self.update_state_from_cot(response_CoT)
 
             console.print("=== run_prompt_ToT ===", style='bold green')
-            tot_input = build_tot_input_from_state()
+            tot_input = self.build_tot_input_from_state()
             response_ToT = self.run_prompt_ToT(json.dumps(tot_input, ensure_ascii=False))
             self.save_prompt(TOT_FILE, response_ToT)
 
