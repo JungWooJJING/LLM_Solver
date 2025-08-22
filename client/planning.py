@@ -116,28 +116,6 @@ def _prune_state_windows():
         st["summaries"] = st["summaries"][-MAX_SUMMARIES:]
     save_state(st)
 
-def record_execution_result(candidate_id: str, verdict: str, summary: str,
-                            signals=None, artifacts=None, cmd=None, raw_output=None):
-    st = load_state()
-    st.setdefault("results", []).append({
-        "id": candidate_id,
-        "iter_executed": st.get("iter", 0),
-        "verdict": verdict,
-        "summary": summary,
-        "signals": signals or [],
-        "artifacts": artifacts or []
-    })
-    if cmd or raw_output:
-        st.setdefault("runs", []).append({
-            "id": candidate_id,
-            "cmd": cmd or "",
-            "output": (raw_output or "")[:10000]
-        })
-    if signals:
-        st.setdefault("signals", []).extend(signals)
-    save_state(st)
-    _prune_state_windows()
-
 def append_summary(title: str, text: str, tags=None):
     st = load_state()
     st.setdefault("summaries", []).append({"title": title, "text": text, "tags": tags or []})
@@ -257,44 +235,63 @@ def _select_active_topk(k: int = MAX_ACTIVE) -> List[Dict[str, Any]]:
     save_state(st)
     return st["active_candidates"]
 
-def _mark_candidate_after_run(candidate_id: str, verdict: str):
-    """
-    실행 결과에 따라 후보 상태/통계를 갱신하고, 페널티를 부과합니다.
-    """
+def update_state_json(feedback_json : str):
     st = load_state()
-    pool: Dict[str, Dict[str, Any]] = st.get("candidates_pool", {})
-    id2key = {c["id"]: k for k, c in pool.items()}
-    k = id2key.get(candidate_id)
-    if not k:
-        return
-
-    c = pool[k]
-    c["stats"]["executed"] += 1
-    if verdict == "failed":
-        c["stats"]["failed"] += 1
-        c["status"] = "executed_failed"
-        c["penalties"] = float(c.get("penalties", 0.0)) + 0.1
-    elif verdict in ("success", "partial"):
-        c["stats"]["success"] += 1
-        c["status"] = "executed_success"
+    feedback = safe_json_loads(feedback_json)
+    
+    summary = feedback.get("summary", "")
+    verdict = feedback.get("verdict", "unknown")
+    signals = feedback.get("signals") or []
+    
+    sig = feedback.get("signals") or []
+    if isinstance(sig, dict):
+        signals = [sig]
+    elif isinstance(sig, list):
+        signals = [x for x in sig if isinstance(x, dict)]
     else:
-        # unknown이면 상태 유지(pending)
-        pass
+        signals = []
+        
+    patch = {"summary": summary, "verdict": verdict}
 
-    c["updated_ts"] = _now_ts()
-    pool[k] = c
-    st["candidates_pool"] = pool
+    selected = st.get("selected") or {}
+    cand_id = selected.get("id")
+    if not cand_id:
+        raise SystemExit("[!] selected.id가 없습니다.")
+
+    # 3) results 확인
+    results = st.setdefault("results", [])
+    if not isinstance(results, list):
+        raise SystemExit("[!] results는 리스트여야 합니다.")
+
+    # 4) 업서트: 리스트 내부에서 id 매칭 항목 '수정', 없으면 '추가'
+    key = str(cand_id).strip()
+    idx = next(
+        (i for i, it in enumerate(results)
+         if isinstance(it, dict) and str(it.get("id", "")).strip() == key),
+        -1
+    )
+
+    if idx >= 0:
+        item = results[idx]
+        # summary / verdict 갱신
+        item.update(patch)
+
+        # signals 병합
+        cur = item.get("signals")
+        if isinstance(cur, list):
+            cur.extend(signals)
+        else:
+            item["signals"] = list(signals)
+    else:
+        # 없으면 새 항목으로 추가
+        results.append({
+            "id": cand_id,
+            **patch,
+            "signals": list(signals),
+        })
+
+    # 5) 저장
     save_state(st)
-
-    _prune_state_windows()
-    _recompute_scores()
-    _select_active_topk(k=MAX_ACTIVE)
-
-def _norm(s: str) -> str:
-    # thought 매칭 안정화: 공백 압축 + 소문자
-    return " ".join((s or "").split()).lower()
-
-# --------- 메인 클라이언트 ---------
 
 class PlanningClient:
     def __init__(self, api_key: str, model: str = "gpt-5"):
@@ -564,14 +561,12 @@ class PlanningClient:
             parsing_response = ctx.parsing.human_translation(json.dumps(instruction_json, ensure_ascii=False, indent=2))
             console.print(parsing_response, style="yellow")
 
-        elif option == "--result":
+        elif option == "--result":            
+            st = load_state()
+            
             console.print("Paste the result of your command execution. Submit <<<END>>> to finish.", style="blue")
             result_output = multi_line_input()
-
-            st = load_state()
-            cand_id = st.get("selected", {}).get("id", "<unknown-id>")
-            last_cmd = "<unknown-cmd>"
-
+                        
             result_build_prompt = self.build_prompt(option=option, query=result_output, state_json=st)
 
             console.print("wait...", style="bold green")
@@ -580,30 +575,9 @@ class PlanningClient:
             console.print("=== Feedback === ", style="bold green")
             result_feedback = ctx.feedback.run_prompt_feedback(result_LLM_translation)
 
-            try:
-                fb = safe_json_loads(result_feedback)
-            except Exception:
-                fb = {"summary": "(parse-error)", "verdict": "unknown", "signals": []}
+            update_state_json(result_feedback)
+            console.print("Update State.json", style="bold green")
 
-            verdict = fb.get("verdict", "unknown")
-            summary_line = fb.get("summary", "")
-            signals = fb.get("signals", [])
-
-            record_execution_result(candidate_id=cand_id, verdict=verdict, summary=summary_line,
-                                    signals=signals, artifacts=[], cmd=last_cmd, raw_output=result_output)
-            append_summary(title="Execution Result", text=summary_line, tags=["result", verdict])
-
-            # 후보 상태 반영(성공/실패/unknown)
-            _mark_candidate_after_run(cand_id, verdict)
-
-            # 실패 시 비활성 처리(선택사항: 이미 _mark_candidate_after_run에서 상태 반영됨)
-            if verdict == "failed":
-                st = load_state()
-                st.setdefault("disabled_candidates", []).append(cand_id)
-                # active 후보 목록은 _select_active_topk에서 자동 갱신되므로 여기서 삭제 불필요
-                save_state(st)
-
-            # 피드백 기반 델타 계획(COT→ToT 재실행)
             plan_build_prompt = self.build_prompt("--plan", state_json=load_state(), feedback_json=result_feedback)
 
             console.print("=== run_prompt_CoT ===", style='bold green')
