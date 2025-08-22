@@ -305,7 +305,7 @@ class PlanningClient:
         ]
         if include_state:
             state = load_state()
-            msgs.append({"role": "user", "content": json.dumps(state, ensure_ascii=False)})
+            msgs.append({"role": "assistant", "content": json.dumps(state, ensure_ascii=False)})
         msgs.append({"role": "user", "content": user_prompt})
         return msgs
 
