@@ -29,6 +29,14 @@ def test_API_KEY():
         exit(1)
     return api_key
 
+def load_state():
+    if not os.path.exists("state.json"):
+        print("Error")
+        return
+        
+    with open("state.json", "r", encoding="utf-8") as f:
+        return json.load(f)
+
 # === Context Class for All Clients ===
 class AppContext:
     def __init__(self, api_key):
@@ -47,7 +55,8 @@ def setting():
 
 # === Main Program ===
 def main():
-    iteration = 0
+    state_iteration = 0
+    exploit_iteration = 0
 
     ctx = setting()
 
@@ -74,8 +83,7 @@ def main():
         option = input("> ")
         ctx.planning.check_Option(option, ctx)
         
-        
-        # if iteration % 3 == 0:
+        # if state_iteration % 3 == 0:
         #     if not os.path.exists("state.json"):
         #         print("Error")
         #         continue
@@ -97,6 +105,21 @@ def main():
 
         #     with open("state.json", "w", encoding="utf-8") as f:
         #         json.dump(obj, f, ensure_ascii=False, indent=2)
+        
+
+        if exploit_iteration % 3 == 0:
+            if not os.path.exists("state.json"):
+                print("Error")
+                continue
+            
+            st = load_state
+            
+            console.print("=== Exploit ===")
+            exploit_prompt = ctx.planning.build_prompt(option="--exploit", state_json=st)
+            
+            code = ctx.exploit.run_prompt_exploit(prompt=exploit_prompt)
+            
+            console.print(code, style="yellow")
 
 if __name__ == "__main__":
     main()

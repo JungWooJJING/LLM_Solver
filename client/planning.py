@@ -12,17 +12,14 @@ from rich.console import Console
 console = Console()
 expand_k = 3
 
-# 가중치(점수 계산용)
 w = {"feasibility": 0.25, "info_gain": 0.30, "novelty": 0.20, "cost": 0.15, "risk": 0.15}
 
-# 파일들
 STATE_FILE = "state.json"
 COT_FILE = "CoT.json"
 TOT_FILE = "ToT.json"
 TOT_SCORED_FILE = "ToT_scored.json"
 INSTRUCTION_FILE = "instruction.json"
 
-# 보관 한도(슬라이딩 윈도우)
 MAX_SIGNALS = 50
 MAX_RUNS = 50
 MAX_SUMMARIES = 50
@@ -258,12 +255,10 @@ def update_state_json(feedback_json : str):
     if not cand_id:
         raise SystemExit("[!] selected.id가 없습니다.")
 
-    # 3) results 확인
     results = st.setdefault("results", [])
     if not isinstance(results, list):
         raise SystemExit("[!] results는 리스트여야 합니다.")
 
-    # 4) 업서트: 리스트 내부에서 id 매칭 항목 '수정', 없으면 '추가'
     key = str(cand_id).strip()
     idx = next(
         (i for i, it in enumerate(results)
@@ -409,14 +404,12 @@ class PlanningClient:
     def update_state_from_tot(self, tot_results: dict):
         st = load_state()
 
-        # 최신 iteration의 후보(생성된 CoT) 가져오기
         last_cands = []
         for entry in reversed(st.get("cot_history", [])):
             if entry.get("candidates"):
                 last_cands = entry["candidates"]
                 break
 
-        # thought→id, idx(0-based)→id 매핑 준비
         def _norm(s: str) -> str:
             return " ".join((s or "").split()).lower()
 
@@ -426,19 +419,16 @@ class PlanningClient:
 
         items = tot_results.get("results") or tot_results.get("candidates") or []
         if not items:
-            # 입력이 비었으면 selected는 비우고, results는 변화 없이 두는 게 안전합니다.
             st["selected"] = {}
             save_state(st)
             return st["selected"]
 
-        # 최고 점수 1개 선택 (calculated_score 우선 → score 보조)
         def _score(x):
             v = x.get("calculated_score", x.get("score"))
             return float(v) if v is not None else float("-inf")
 
         top = max(items, key=_score)
 
-        # id 매핑: thought 우선 → idx 보조(0/1-based 모두 시도)
         cid = top.get("id")
         if not cid:
             cid = thought_to_id.get(_norm(top.get("thought","")))
@@ -448,15 +438,13 @@ class PlanningClient:
                 cid = idx_to_id.get(idx) or idx_to_id.get(idx - 1)
 
         record = {
-            "id": cid,  # 매핑 실패 시 None일 수 있음
+            "id": cid,  
             "score": float(top.get("calculated_score", top.get("score", 0.0))),
             "thought": top.get("thought", ""),
             "notes": top.get("notes", "")
         }
 
-        # results: 누적(append) 저장
         st.setdefault("results", []).append(record)
-        # selected: 현재 선택으로 덮어쓰기
         st["selected"] = record
 
         save_state(st)
@@ -536,7 +524,17 @@ class PlanningClient:
 
         elif option == "--exploit":
             console.print("Please wait. I will prepare an exploit script or a step-by-step procedure.", style="blue")
-            # state.json -> exploit client -> result print
+            
+            st = load_state()
+            exploit_prompt = self.build_prompt(option=option, state_json=st)
+            
+            console.print("Creating Exploit...", style="bold green")    
+            exploit_code = ctx.exploit.run_prompt_exploit(exploit_prompt)
+            
+            console.print("=== Human Translation ===", style="bold green")
+            parsing_response = ctx.parsing.human_translation(query=exploit_code)
+            
+            console.print(parsing_response, style="yellow")
 
         elif option == "--instruction":
             console.print("I will provide step-by-step instructions based on a Tree-of-Thought plan.", style="blue")
@@ -772,3 +770,61 @@ class PlanningClient:
                 "}}\n"
                 "No prose outside JSON."
             )
+            
+        elif option == "--exploit":
+            return (
+                f"You are an EXPLOIT author for CTF automation.\n\n"
+                f"OBJECTIVE\n"
+                f"- Decide if a runnable exploit can be produced NOW based on the provided context.\n"
+                f"- If YES, output a complete exploit program (prefer Python/pwntools; C is acceptable) with clear build/run instructions.\n"
+                f"- If NO, output a highly detailed, step-by-step PROCEDURE in English to reach exploitation, including exact commands.\n\n"
+                f"INPUT CONTEXT\n"
+                f"[State.json]\n{state_json}\n\n"
+                f"DECISION RULES\n"
+                f"- Choose \"code\" ONLY if you have concrete, non-fabricated values needed to run (e.g., exact offset, leak, function addresses, protocol, IO prompts, remote host/port) from State.json (signals/runs) or the provided notes.\n"
+                f"- NEVER invent addresses/offsets/gadgets. If a required value is missing, you MUST choose \"procedural\" and show how to obtain it.\n"
+                f"- When mitigations (NX/PIE/Canary/RELRO) are present in signals, adapt technique (e.g., ret2win, ROP, SROP, ret2libc, fmtstr write) accordingly.\n"
+                f"- Respect remote vs local setup from env/artifacts (e.g., HOST/PORT, binary path). If remote is present, include a remote path in code.\n\n"
+                f"CODE REQUIREMENTS (when decision == code)\n"
+                f"- Preferred language order: python(pwntools) → C.\n"
+                f"- Provide a SINGLE self-contained file with comments. For Python, include a top-level constants section like BINARY, HOST, PORT, OFFSET, ADDR_WIN, LIBC_PATH, etc.\n"
+                f"- If any constant is unknown, use an ALL_CAPS TODO placeholder (e.g., OFFSET=TODO_OFFSET) and ONLY if the rest is runnable. Do not fake values.\n"
+                f"- Use deterministic IO (e.g., r.recvuntil, r.sendline), a clean local()/remote() switch, timeouts, and simple error handling.\n"
+                f"- For C: include full build and run commands (e.g., gcc flags, -no-pie, -fno-stack-protector if appropriate) and required headers. Keep it non-interactive.\n"
+                f"- Include a short 'Run' section (exact commands) and 'Expected' signals (e.g., 'got shell', 'printed flag pattern').\n"
+                f"- If ROP is used, show how gadgets/addresses are obtained (from leaks or provided symbols). Do NOT fabricate gadgets.\n\n"
+                f"PROCEDURE REQUIREMENTS (when decision == procedural)\n"
+                f"- Provide a numbered, concrete sequence to achieve exploitation from the current state, focusing on evidence gaps (offsets, leaks, base calc, gadgets).\n"
+                f"- For each step, include: name, exact command (shell-ready), expected success signal, and artifact to save.\n"
+                f"- Cover both local repro and (if applicable) remote validation. Include how to extract missing values (e.g., cyclic offset, leak parsing, libc ID, base calc, ROP chain synthesis).\n"
+                f"- End with clear criteria for \"ready to write code\" (i.e., which values must be known).\n\n"
+                f"OUTPUT POLICY\n"
+                f"- Be terse and precise. No fluff. Do NOT include any text outside the JSON.\n"
+                f"- Include ONLY the keys specified below. Omit any unused/unknown keys entirely (do NOT output null or empty strings).\n"
+                f"- All content must be in English.\n\n"
+                f"Respond ONLY in this STRICT JSON format:\n"
+                f"{{\n"
+                f"  \"decision\": \"code\" | \"procedural\",\n"
+                f"  \"rationale\": \"2–4 sentences explaining why this choice is correct based on the inputs\",\n"
+                f"  \"exploit\": {{\n"
+                f"    \"language\": \"python|c\",\n"
+                f"    \"requirements\": [\"pwntools>=4.10\"],\n"
+                f"    \"entrypoint\": \"exploit.py\",\n"
+                f"    \"build\": \"-\" ,\n"
+                f"    \"run\": \"python3 exploit.py\",\n"
+                f"    \"expected\": \"observable success criteria (e.g., got shell, printed flag pattern)\",\n"
+                f"    \"code\": \"\"\"<FULL SOURCE CODE HERE>\"\"\"\n"
+                f"  }},\n"
+                f"  \"procedure\": {{\n"
+                f"    \"steps\": [\n"
+                f"      {{ \"name\": \"short label\", \"cmd\": \"exact terminal command\", \"expected\": \"success signal\", \"artifact\": \"file to save or '-'\" }}\n"
+                f"    ]\n"
+                f"  }}\n"
+                f"}}\n"
+                f"Notes:\n"
+                f"- Include the 'exploit' object ONLY when decision==\"code\"; include the 'procedure' object ONLY when decision==\"procedural\".\n"
+                f"- NEVER fabricate offsets/addresses/gadgets/libc versions. If unknown, choose \"procedural\" and show how to derive them.\n"
+                f"- Keep code/run instructions copy-pasteable and deterministic.\n"
+            )
+            
+            
