@@ -1,16 +1,16 @@
 import os
 import json
 import re
-import hashlib
-import time
 from typing import List, Dict, Any
 
 from openai import OpenAI
 from templates.prompting import CTFSolvePrompt
+from templates.prompting import few_Shot
 from rich.console import Console
 
 console = Console()
-expand_k = 3
+FEWSHOT = few_Shot()
+expand_k = 5
 
 w = {"feasibility": 0.25, "info_gain": 0.30, "novelty": 0.20, "cost": 0.15, "risk": 0.15}
 
@@ -20,36 +20,18 @@ TOT_FILE = "ToT.json"
 TOT_SCORED_FILE = "ToT_scored.json"
 INSTRUCTION_FILE = "instruction.json"
 
-MAX_SIGNALS = 50
-MAX_RUNS = 50
-MAX_SUMMARIES = 50
-MAX_HISTORY_ITERS = 20   # cot_history 보관 이터레이션 수 제한
-MAX_ACTIVE = 5           # 즉시 시도할 후보 수(활성 후보 노출 상한)
+MAX_HISTORY_ITERS = 20   
+MAX_ACTIVE = 5         
 
 DEFAULT_STATE = {
-  "iter": 0,                     # 현재 반복 횟수(Iteration)
-  "goal": "",                    # 전체 목표
-  "constraints": ["no brute-force > 1000"],  # 고정 제약 조건
-  "env": {},                     # 환경 변수/설정 값
-  "cot_history": [],             # 각 Iteration별 후보(CoT) 기록
-  "selected": {},                # 현재 선택된 후보(id 등)
-  "results": []                  # 실행 결과 (id, verdict, signals, artifacts 등)
+  "iter": 0,             
+  "goal": "",                   
+  "constraints": ["no brute-force > 1000"],  
+  "env": {},                 
+  "cot_history": [],           
+  "selected": {},              
+  "results": []                  
 }
-
-def _now_ts() -> float:
-    return time.time()
-
-def _normalize_text(s: str) -> str:
-    s = (s or "").strip().lower()
-    s = re.sub(r"\s+", " ", s)
-    return s
-
-def _sha1(s: str) -> str:
-    return hashlib.sha1(s.encode("utf-8")).hexdigest()
-
-def _thought_key(thought: str) -> str:
-    norm = _normalize_text(thought)
-    return hashlib.sha1(norm.encode("utf-8")).hexdigest()[:16]
 
 def multi_line_input():
     console.print("Enter multiple lines. Type <<<END>>> on a new line to finish input.", style="bold yellow")
@@ -100,138 +82,6 @@ def _next_iter():
     save_state(s)
     return s["iter"]
 
-def _gen_cand_id(iter_no: int, i: int) -> str:
-    return f"COT-{iter_no:04d}-{i+1:02d}"
-
-def _prune_state_windows():
-    st = load_state()
-    if len(st.get("signals", [])) > MAX_SIGNALS:
-        st["signals"] = st["signals"][-MAX_SIGNALS:]
-    if len(st.get("runs", [])) > MAX_RUNS:
-        st["runs"] = st["runs"][-MAX_RUNS:]
-    if len(st.get("summaries", [])) > MAX_SUMMARIES:
-        st["summaries"] = st["summaries"][-MAX_SUMMARIES:]
-    save_state(st)
-
-def append_summary(title: str, text: str, tags=None):
-    st = load_state()
-    st.setdefault("summaries", []).append({"title": title, "text": text, "tags": tags or []})
-    save_state(st)
-    _prune_state_windows()
-
-# --------- 후보 풀 관리 ---------
-
-def _upsert_candidates(new_list: List[Dict[str, Any]], source: str, iter_no: int):
-    """
-    CoT/ToT 로부터 생성된 후보들을 단일 풀(candidates_pool)에 업서트합니다.
-    중복(thought 기반)은 key로 통합하고 cot/메타를 최신으로 유지합니다.
-    """
-    st = load_state()
-    pool: Dict[str, Dict[str, Any]] = st.setdefault("candidates_pool", {})
-
-    for c in new_list:
-        thought = (c.get("thought") or "").strip()
-        cot = (c.get("cot") or "").strip()
-        if not thought:
-            continue
-
-        k = _thought_key(thought)
-        prev = pool.get(k, {})
-        if not prev:
-            pool[k] = {
-                "id": c.get("id") or f"{source}-{iter_no}-{len(pool)+1}",
-                "key": k,
-                "thought": thought,
-                "cot": cot,
-                "refined_from": c.get("refined_from"),
-                "created_iter": iter_no,
-                "updated_ts": _now_ts(),
-                "status": "pending",                # pending / selected / executed_success / executed_failed / disabled
-                "base_score": float(c.get("calculated_score", c.get("score", 0.0))) if isinstance(c, dict) else 0.0,
-                "dynamic_score": 0.0,
-                "penalties": 0.0,
-                "metadata": {},
-                "stats": {"seen": 0, "selected": 0, "executed": 0, "success": 0, "failed": 0}
-            }
-        else:
-            # 기존 항목 업데이트(더 풍부한 cot, refined_from 등 병합)
-            if cot:
-                pool[k]["cot"] = cot
-            if not pool[k].get("refined_from") and c.get("refined_from"):
-                pool[k]["refined_from"] = c.get("refined_from")
-            # ToT에서 base_score가 들어올 수도 있음
-            if "calculated_score" in c or "score" in c:
-                pool[k]["base_score"] = float(c.get("calculated_score", c.get("score", 0.0)))
-            pool[k]["updated_ts"] = _now_ts()
-
-        # 메타데이터 병합
-        md = pool[k].setdefault("metadata", {})
-        for fld in ("expected_artifacts", "requires", "risk", "estimated_cost", "notes"):
-            if c.get(fld):
-                md[fld] = c[fld]
-
-    st["candidates_pool"] = pool
-    save_state(st)
-
-def _recompute_scores():
-
-    st = load_state()
-    pool: Dict[str, Dict[str, Any]] = st.get("candidates_pool", {})
-    sigs = st.get("signals", [])[-5:]
-    constraints = st.get("constraints_dynamic", [])[-5:]
-
-    for k, c in pool.items():
-        status = c.get("status")
-        if status in ("executed_success", "executed_failed", "disabled"):
-            c["dynamic_score"] = -1.0
-            continue
-
-        base = float(c.get("base_score", 0.0))
-        penalties = float(c.get("penalties", 0.0))
-
-        # 최근 신호/제약과의 키워드 매칭(간단 가산)
-        bonus = 0.0
-        joined = f'{c.get("thought","")} {c.get("cot","")}'.lower()
-        for s in sigs:
-            s_name = str(s)[:64].lower()
-            if s_name and s_name in joined:
-                bonus += 0.03
-        for cons in constraints:
-            cons_l = str(cons).lower()
-            if cons_l and cons_l in joined:
-                bonus += 0.02
-
-        # 실패/반복 페널티
-        tried = c.get("stats", {}).get("executed", 0)
-        failed = c.get("stats", {}).get("failed", 0)
-        repeat_pen = min(tried * 0.02, 0.1) + min(failed * 0.05, 0.3)
-
-        # 시간 감쇠(오래된 pending은 소폭 감점)
-        age = max(1.0, (_now_ts() - c.get("updated_ts", _now_ts())) / 3600.0)
-        decay = max(0.9, 1.0 - min(age / 48.0, 0.1))  # 48시간마다 최대 0.1까지 감쇠
-
-        dyn = (base + bonus - penalties - repeat_pen) * decay
-        c["dynamic_score"] = round(dyn, 4)
-
-    st["candidates_pool"] = pool
-    save_state(st)
-
-def _select_active_topk(k: int = MAX_ACTIVE) -> List[Dict[str, Any]]:
-    """
-    pending 후보 중 동적 점수 상위 k개를 active_candidates로 노출합니다.
-    """
-    st = load_state()
-    pool: Dict[str, Dict[str, Any]] = st.get("candidates_pool", {})
-    pending = [c for c in pool.values() if c.get("status") == "pending"]
-    pending.sort(key=lambda x: x.get("dynamic_score", 0.0), reverse=True)
-    chosen = pending[:k]
-    st["active_candidates"] = [
-        {"id": c["id"], "thought": c["thought"], "refined_from": c.get("refined_from")}
-        for c in chosen
-    ]
-    save_state(st)
-    return st["active_candidates"]
-
 def update_state_json(feedback_json : str):
     st = load_state()
     feedback = safe_json_loads(feedback_json)
@@ -268,52 +118,62 @@ def update_state_json(feedback_json : str):
 
     if idx >= 0:
         item = results[idx]
-        # summary / verdict 갱신
         item.update(patch)
 
-        # signals 병합
         cur = item.get("signals")
         if isinstance(cur, list):
             cur.extend(signals)
         else:
             item["signals"] = list(signals)
     else:
-        # 없으면 새 항목으로 추가
         results.append({
             "id": cand_id,
             **patch,
             "signals": list(signals),
         })
 
-    # 5) 저장
     save_state(st)
+    
+def _norm(s: str) -> str:
+    return " ".join((s or "").split()).lower()
+
+def _score(x):
+    v = x.get("calculated_score", x.get("score"))
+    return float(v) if v is not None else float("-inf")
 
 class PlanningClient:
     def __init__(self, api_key: str, model: str = "gpt-5"):
         self.client = OpenAI(api_key=api_key)
         self.model = model
 
-    def _build_messages_stateless(self, phase_system_prompt: str, user_prompt: str, include_state: bool = True):
-        msgs = [
-            {"role": "developer", "content": "You are a CTF planning assistant. Keep answers concise."},
-            {"role": "developer", "content": phase_system_prompt},
+    def run_prompt_CoT(self, prompt_query: str):
+        prompt = [
+            {"role": "developer", "content": CTFSolvePrompt.planning_prompt_CoT},
+            {"role": "user",   "content": FEWSHOT.web_SQLI},         
+            {"role": "user",   "content": FEWSHOT.web_SSTI},
+            {"role": "user",   "content": FEWSHOT.forensics_PCAP},
+            {"role": "user",   "content": FEWSHOT.stack_BOF},   
+            {"role": "user",   "content": FEWSHOT.rev_CheckMapping},
         ]
-        if include_state:
-            state = load_state()
-            msgs.append({"role": "assistant", "content": json.dumps(state, ensure_ascii=False)})
-        msgs.append({"role": "user", "content": user_prompt})
-        return msgs
+        
+        state = load_state()
+        prompt.append({"role": "assistant", "content": json.dumps(state, ensure_ascii=False)})
+        prompt.append({"role": "user", "content": prompt_query})
+        res = self.client.chat.completions.create(model=self.model, messages=prompt)
 
-    def _ask_stateless(self, phase_system_prompt: str, user_prompt: str, include_state: bool = True):
-        messages = self._build_messages_stateless(phase_system_prompt, user_prompt, include_state)
-        res = self.client.chat.completions.create(model=self.model, messages=messages)
         return res.choices[0].message.content
 
-    def run_prompt_CoT(self, prompt: str):
-        return self._ask_stateless(CTFSolvePrompt.planning_prompt_CoT, prompt, include_state=True)
+    def run_prompt_ToT(self, prompt_query: str):
+        prompt = [
+            {"role": "developer", "content": CTFSolvePrompt.planning_prompt_ToT},
+        ]
+        
+        state = load_state()
+        prompt.append({"role": "assistant", "content": json.dumps(state, ensure_ascii=False)})
+        prompt.append({"role": "user", "content": prompt_query})
 
-    def run_prompt_ToT(self, prompt: str):
-        return self._ask_stateless(CTFSolvePrompt.planning_prompt_ToT, prompt, include_state=False)
+        res = self.client.chat.completions.create(model=self.model, messages=prompt)
+        return res.choices[0].message.content
 
     def update_state_from_cot(self, cot_text: str):
         data = safe_json_loads(cot_text)
@@ -328,8 +188,12 @@ class PlanningClient:
                 "id": f"COT-{it}-{idx}",
                 "cot": cand.get("cot"),
                 "thought": cand.get("thought"),
-                "requires": cand.get("requires"),
-                "rf": None 
+                "vuln_hypothesis": cand.get("vuln_hypothesis"),
+                "attack_path": cand.get("attack_path"),
+                "evidence_checks": cand.get("evidence_checks"),
+                "mini_poc": cand.get("mini_poc"),
+                "success_criteria": cand.get("success_criteria"),
+                "rf": None
             })
 
         st.setdefault("cot_history", []).append({"iter": it, "candidates": cands})
@@ -346,8 +210,8 @@ class PlanningClient:
 
         with open(COT_FILE, "r", encoding="utf-8") as f:
             cot = json.load(f)
-        raw = cot.get("candidates", []) or []
 
+        raw = cot.get("candidates", []) or []
         pick = raw[:MAX_ACTIVE]
 
         iter_no = st.get("iter", 0)
@@ -356,16 +220,25 @@ class PlanningClient:
 
         tot_in = []
         for idx, c in enumerate(pick, start=1):
-            cid = f"COT-{iter_no}-{idx}"
+            base_id = c.get("id")
+            cid = base_id if base_id else f"COT-{iter_no}-{idx}"
+
+            thought = (c.get("thought") or "").strip()
+            if not thought:
+                continue  
+
             tot_in.append({
                 "id": cid,
-                "thought": c.get("thought",""),
-                "refined_from": c.get("refined_from"),  
+                "thought": thought,
+                "vuln_hypothesis": c.get("vuln_hypothesis") or "",
+                "attack_path": c.get("attack_path") or "",
+                "rf": c.get("refined_from"),
                 "hints": {
                     "signals": signals_tail,
                     "constraints": constraints_tail
                 }
             })
+
         return {"candidates": tot_in}
 
     def cal_ToT(self, tot_json_str: str = None, infile: str = "ToT.json", outfile: str = "ToT_scored.json"):
@@ -410,9 +283,6 @@ class PlanningClient:
                 last_cands = entry["candidates"]
                 break
 
-        def _norm(s: str) -> str:
-            return " ".join((s or "").split()).lower()
-
         thought_to_id = { _norm(c.get("thought","")): c.get("id")
                         for c in last_cands if c.get("id") }
         idx_to_id = { i: c.get("id") for i, c in enumerate(last_cands) if c.get("id") }
@@ -422,10 +292,6 @@ class PlanningClient:
             st["selected"] = {}
             save_state(st)
             return st["selected"]
-
-        def _score(x):
-            v = x.get("calculated_score", x.get("score"))
-            return float(v) if v is not None else float("-inf")
 
         top = max(items, key=_score)
 
@@ -449,7 +315,6 @@ class PlanningClient:
 
         save_state(st)
         return record
-
 
     def save_prompt(self, filename: str, content: str):
         with open(filename, "w", encoding="utf-8") as f:
@@ -535,6 +400,39 @@ class PlanningClient:
             parsing_response = ctx.parsing.human_translation(query=exploit_code)
             
             console.print(parsing_response, style="yellow")
+            console.print("Input result", style="blue")
+            result_output = multi_line_input()
+            
+            result_build_prompt = self.build_prompt(option="--result", query=result_output, state_json=st)
+            
+            console.print("=== LLM Translation ===", style="bold green")
+            result_LLM_translation = ctx.parsing.LLM_translation(query=result_build_prompt)
+
+            console.print("=== Feedback === ", style="bold green")
+            result_feedback = ctx.feedback.run_prompt_feedback(result_LLM_translation)
+
+            update_state_json(result_feedback)
+            console.print("Update State.json", style="bold green")
+
+            plan_build_prompt = self.build_prompt(option = "--plan", state_json=load_state(), feedback_json=result_feedback)
+
+            console.print("=== run_prompt_CoT ===", style='bold green')
+            response_CoT = self.run_prompt_CoT(plan_build_prompt)
+            self.save_prompt("CoT.json", response_CoT)
+            self.update_state_from_cot(response_CoT)
+
+            console.print("=== run_prompt_ToT ===", style='bold green')
+            tot_input = self.build_tot_input_from_state()
+            response_ToT = self.run_prompt_ToT(json.dumps(tot_input, ensure_ascii=False))
+            self.save_prompt("ToT.json", response_ToT)
+
+            tot_cal = self.cal_ToT()
+            self.update_state_from_tot(tot_cal)
+
+            console.print("=== Human Translation ===", style="bold green")
+            parsing_response = ctx.parsing.human_translation(json.dumps(tot_cal, ensure_ascii=False, indent=2))
+            console.print(parsing_response, style='yellow')            
+
 
         elif option == "--instruction":
             console.print("I will provide step-by-step instructions based on a Tree-of-Thought plan.", style="blue")
@@ -631,9 +529,14 @@ class PlanningClient:
                 '  "candidates": [\n'
                 "    {\n"
                 '      "cot": "3-5 sentences reasoning",\n'
+                '      "vuln_hypothesis": "...",\n'
+                '      "attack_path": "...",\n'
+                '      "evidence_checks": ["...", "..."],\n'
+                '      "mini_poc": "one-line safe probe",\n'
                 '      "thought": "one-line concrete next step",\n'
                 '      "expected_artifacts": ["file1", "file2"],\n'
                 '      "requires": ["tool/permission/dependency"],\n'
+                '      "success_criteria": ["...", "..."],\n'
                 '      "risk": "short note",\n'
                 '      "estimated_cost": "low|medium|high"\n'
                 "    }\n"
@@ -663,9 +566,14 @@ class PlanningClient:
                 '  "candidates": [\n'
                 "    {\n"
                 '      "cot": "3-5 sentences reasoning",\n'
+                '      "vuln_hypothesis": "...",\n'
+                '      "attack_path": "...",\n'
+                '      "evidence_checks": ["...", "..."],\n'
+                '      "mini_poc": "one-line safe probe",\n'
                 '      "thought": "one-line concrete next step",\n'
                 '      "expected_artifacts": ["file1", "file2"],\n'
                 '      "requires": ["tool/permission/dependency"],\n'
+                '      "success_criteria": ["...", "..."],\n'
                 '      "risk": "short note",\n'
                 '      "estimated_cost": "low|medium|high"\n'
                 "    }\n"
@@ -756,15 +664,16 @@ class PlanningClient:
                 '  "candidates": [\n'
                 "    {\n"
                 '      "cot": "3-5 sentences reasoning",\n'
+                '      "vuln_hypothesis": "...",\n'
+                '      "attack_path": "...",\n'
+                '      "evidence_checks": ["...", "..."],\n'
+                '      "mini_poc": "one-line safe probe",\n'
                 '      "thought": "one-line concrete next step",\n'
                 '      "expected_artifacts": ["file1", "file2"],\n'
                 '      "requires": ["tool/permission/dependency"],\n'
+                '      "success_criteria": ["...", "..."],\n'
                 '      "risk": "short note",\n'
-                '      "estimated_cost": "low|medium|high",\n'
-                '      "cmd": "exact terminal command",\n'
-                '      "ok": true,\n'
-                '      "result": "result text (e.g., tail or key line)",\n'
-                '      "summary": "<=120 chars one-line summary"\n'
+                '      "estimated_cost": "low|medium|high"\n'
                 "    }\n"
                 "  ]\n"
                 "}}\n"
@@ -826,5 +735,3 @@ class PlanningClient:
                 f"- NEVER fabricate offsets/addresses/gadgets/libc versions. If unknown, choose \"procedural\" and show how to derive them.\n"
                 f"- Keep code/run instructions copy-pasteable and deterministic.\n"
             )
-            
-            

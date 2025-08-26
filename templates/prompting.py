@@ -18,48 +18,49 @@ class CTFSolvePrompt:
     planning_prompt_CoT = """
     You are a planning assistant for CTF automation.
 
-    You will be given the current known facts, artifacts, and context for a CTF challenge.
+    You will be given current facts, artifacts, and context for a CTF challenge.
 
-    Your job is to propose multiple distinct, strategic next-step approaches — not to solve the challenge itself, but to outline possible investigative or preparatory actions that could be taken in the immediate next step.
+    Your job is to propose multiple distinct, strategic next-step approaches — not to solve the challenge, but to outline investigative or preparatory actions that validate a concrete vulnerability/weakness hypothesis and chart a credible attack path.
 
-    You should:
-    - Provide diverse and non-overlapping alternatives (avoid duplicates or trivial variations).
-    - For each alternative, write a short Chain-of-Thought (3–5 sentences) explaining WHY this step is useful, HOW to attempt it, and WHAT evidence or artifacts it might produce.
-    - From each CoT, extract one concise "thought" (a one-line actionable idea).
-    - Estimate the cost and risk for each alternative.
-    - Keep reasoning focused on preparation and investigation, NOT on producing the final solution, flag, or exploit.
+    HARD REQUIREMENTS:
+    - Each candidate MUST include:
+    - vuln_hypothesis: concrete vulnerability/weakness hypothesis (e.g., stack BOF, SQLi, IDOR, padding oracle, ECB oracle, ELF loader quirk, DLL hijack, log poisoning → RCE, SSTI, APK logic bug, PCAP credential leak, stego LSB, etc.)
+    - attack_path: stepwise path from hypothesis to potential flag/exploit/secret access (do NOT execute it, just outline)
+    - evidence_checks: specific measurements or experiments (commands, tool actions, response/body/trace diffs)
+    - mini_poc: one-line, SAFE, low-cost probe to test the hypothesis
+    - success_criteria: objective signals proving progress (e.g., pointer leak, HTTP status/body delta, keystream reuse detected)
+    - Prefer non-destructive, forensically sound steps. Avoid broad “do more recon” phrasing and duplicates.
+    - Do NOT solve or exploit; only plan with verifiable probes.
 
-    You will NOT attempt to solve or exploit the challenge. Your goal is only to produce structured, well-reasoned options for the next step.
+    SCORING PRIORITIES:
+    - Exploitability clarity (0.35)
+    - Evidence specificity (0.30)
+    - Novelty / non-overlap (0.15)
+    - Cost (0.10)
+    - Risk (-0.10)
 
-    Always include:
-    - [CoT] The 3–5 sentence reasoning
-    - [Thought] One-line actionable step
-    - [Expected Artifacts] List of files, outputs, or data likely to be generated
-    - [Requires] Tools, permissions, or dependencies needed
-    - [Risk] Brief note on potential issues or pitfalls
-    - [Estimated Cost] low / medium / high
-
-    OPTIONAL KEYS POLICY:
-    - If and only if you have REAL values from an actual execution, you MAY include these extra keys inside a candidate object:
-    - cmd (string), ok (boolean), result (string), summary (string).
-    - If not applicable, OMIT these keys entirely (do NOT output null, "-", or empty strings).
-
-    Use the following structure strictly (JSON only):
-
+    OUTPUT FORMAT (JSON only):
     {
     "candidates": [
         {
         "cot": "3–5 sentences reasoning",
+        "vuln_hypothesis": "…",
+        "attack_path": "…",
+        "evidence_checks": ["…","…"],
+        "mini_poc": "one-line safe probe",
         "thought": "one-line concrete next step",
-        "expected_artifacts": ["file1", "file2"],
+        "expected_artifacts": ["file1","file2"],
         "requires": ["tool/permission/dependency"],
+        "success_criteria": ["…","…"],
         "risk": "short note",
         "estimated_cost": "low|medium|high"
         }
     ]
     }
 
-    No prose outside the JSON.
+    OPTIONAL KEYS POLICY:
+    - Only if you have REAL values from actual execution, you MAY include: cmd, ok, result, summary.
+    - Otherwise OMIT these keys entirely.
     """
 
 
@@ -256,4 +257,113 @@ class CTFSolvePrompt:
     """
     
     exploit_prompt = """"
+    """
+    
+class few_Shot:
+    web_SQLI = """
+    {
+    "candidates": [
+        {
+        "cot": "Login behavior changes with crafted inputs, suggesting boolean/time-based SQLi. We first quantify body/status diffs and latency to confirm injection without exfiltration. If confirmed, constrained UNION/COUNT probing can map the schema while staying low impact.",
+        "vuln_hypothesis": "Boolean/time-based SQL injection on /login",
+        "attack_path": "Confirm injection -> enumerate tables/columns -> identify flag/secret location",
+        "evidence_checks": ["Response diff for \"OR 1=1 --\"", "5s delay via SLEEP(5) reproduced consistently"],
+        "mini_poc": "curl -s -X POST -d 'u=admin%27 OR 1=1--&p=x' http://target/login | tee r1.html",
+        "thought": "Probe boolean/time-based SQLi and record response body/time deltas.",
+        "expected_artifacts": ["r1.html","timing.csv"],
+        "requires": ["curl","/usr/bin/time"],
+        "success_criteria": ["Deterministic body/status delta or latency delta"],
+        "risk": "Medium (possible WAF lockout)",
+        "estimated_cost": "low"
+        }
+    ]
+    }
+    """
+    
+    web_SSTI = """
+    {
+    "candidates": [
+        {
+        "cot": "Template evaluation hints appear (double braces, filter echoes). Use safe arithmetic/attribute access to confirm SSTI before escalation. If evaluated, environment/indirect file access becomes plausible later.",
+        "vuln_hypothesis": "Server-Side Template Injection",
+        "attack_path": "Confirm expression evaluation -> check filters/attributes -> enumerate environment safely",
+        "evidence_checks": ["'{{7*6}}' renders 42", "'{{config.items()}}' style output or error"],
+        "mini_poc": "curl -s 'http://target/?q={{7*6}}' | tee ssti_probe.html",
+        "thought": "Send a minimal arithmetic expression to confirm SSTI.",
+        "expected_artifacts": ["ssti_probe.html"],
+        "requires": ["curl"],
+        "success_criteria": ["42 rendered by server"],
+        "risk": "Low",
+        "estimated_cost": "low"
+        }
+    ]
+    }
+    """
+    
+    forensics_PCAP = """
+    {
+    "candidates": [
+        {
+        "cot": "PCAP shows plaintext protocols (HTTP/FTP/Telnet) that may carry credentials/tokens. Filter and reconstruct streams, masking sensitive values while preserving indicators.",
+        "vuln_hypothesis": "Plaintext credential or session token leakage in PCAP",
+        "attack_path": "Protocol-filtered extraction -> stream reassembly -> candidate secrets list",
+        "evidence_checks": ["tshark filters hit auth/token fields", "Stream reassembly reveals tokens"],
+        "mini_poc": "tshark -r capture.pcapng -Y 'http.request || ftp || telnet' -T fields -e frame.time -e tcp.stream | tee hits.txt",
+        "thought": "Use tshark filters to extract candidate credential/session artifacts.",
+        "expected_artifacts": ["hits.txt","streams/stream_*.txt"],
+        "requires": ["tshark"],
+        "success_criteria": ["Candidate credentials/tokens detected"],
+        "risk": "Low",
+        "estimated_cost": "low"
+        }
+    ]
+    }
+    """
+    
+    rev_CheckMapping = """
+    {
+    "candidates": [
+        {
+        "cot": "Binary strings/xrefs suggest a license/serial validation routine. Map entry points and branches via strings/xref to isolate inputs/outputs before any dynamic hooks.",
+        "vuln_hypothesis": "Predictable license/serial validation logic",
+        "attack_path": "String/xref map -> validation function candidates -> input constraints narrowing",
+        "evidence_checks": ["strings for 'lic','serial','key' + xref in disassembler", "hash/compare call patterns"],
+        "mini_poc": "strings -a target | grep -i -E 'lic|serial|key|trial' | tee str_hits.txt",
+        "thought": "Collect strings/xrefs to pin the validation routine entry point.",
+        "expected_artifacts": ["str_hits.txt","xref_map.md"],
+        "requires": ["strings","objdump/disassembler"],
+        "success_criteria": ["Candidate function(s) and branches identified"],
+        "risk": "Low",
+        "estimated_cost": "low"
+        }
+    ]
+    }
+    """
+    
+    stack_BOF = """
+    {
+    "candidates": [
+        {
+        "cot": "Since the input path is copied to the stack without proper length validation, there is a high likelihood of a stack buffer overflow. Modern builds often include stack canaries, so first we should verify mitigations with checksec and dissect the function prologue/epilogue and stack layout in gdb. Instead of generating a core dump with a cyclic pattern, we will use gdb's run/record to observe the stack frame and the region near the return address right before the crash. This will allow us to prove the exact offset and RIP control possibility, and later chart the path (canary leak followed by ret2win/ROP).",
+        "vuln_hypothesis": "Stack buffer overflow with stack canary present",
+        "attack_path": "Identify offset → search for canary leak → pivot to ROP/ret2win",
+        "evidence_checks": [
+            "Check mitigations with checksec for NX/Canary/PIE/RELRO (e.g., pwntools.checksec or checksec.sh)",
+            "gdb: disassemble vuln, confirm canary save/verify sequence in prologue",
+            "gdb: run <(python -c 'print(\"Aa0Aa1...\"[:600])') then use 'x/40gx $rsp-0x100' to check cyclic residue and frame structure",
+            "gdb: use gef/pwndbg cyclic/find to derive exact offset"
+        ],
+        "mini_poc": "gdb -q ./vuln -ex 'set pagination off' -ex 'run < <(python3 -c \"import pwn;print(pwn.cyclic(600).decode())\")' -ex 'quit'",
+        "thought": "Use cyclic input within gdb to demonstrate offset and RIP control without generating a core dump.",
+        "expected_artifacts": ["checksec.txt", "gdb_session.log", "offset.txt"],
+        "requires": ["gdb (gef/pwndbg recommended)", "python3", "pwntools (optional)"],
+        "success_criteria": [
+            "Exact offset value determined",
+            "Cyclic residue observed near return address (proof of RIP control)"
+        ],
+        "risk": "Low (local, non-destructive, no core dump)",
+        "estimated_cost": "low"
+        }
+    ]
+    }
     """
