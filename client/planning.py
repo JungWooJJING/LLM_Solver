@@ -16,8 +16,8 @@ w = {"feasibility": 0.25, "info_gain": 0.30, "novelty": 0.20, "cost": 0.15, "ris
 
 STATE_FILE = "state.json"
 COT_FILE = "CoT.json"
-TOT_FILE = "ToT.json"
-TOT_SCORED_FILE = "ToT_scored.json"
+Cal_FILE = "Cal.json"
+Cal_SCORED_FILE = "Cal_scored.json"
 INSTRUCTION_FILE = "instruction.json"
 
 MAX_HISTORY_ITERS = 20   
@@ -33,6 +33,15 @@ DEFAULT_STATE = {
   "results": []                  
 }
 
+prompt_CoT = [
+    {"role": "developer", "content": CTFSolvePrompt.planning_prompt_CoT},
+    {"role": "user",   "content": FEWSHOT.web_SQLI},         
+    {"role": "user",   "content": FEWSHOT.web_SSTI},
+    {"role": "user",   "content": FEWSHOT.forensics_PCAP},
+    {"role": "user",   "content": FEWSHOT.stack_BOF},   
+    {"role": "user",   "content": FEWSHOT.rev_CheckMapping},
+]
+
 def multi_line_input():
     console.print("Enter multiple lines. Type <<<END>>> on a new line to finish input.", style="bold yellow")
     lines = []
@@ -44,7 +53,7 @@ def multi_line_input():
     return "\n".join(lines)
 
 def cleanUp(all=True):
-    targets = [COT_FILE, TOT_FILE, TOT_SCORED_FILE, INSTRUCTION_FILE]
+    targets = [COT_FILE, Cal_FILE, Cal_SCORED_FILE, INSTRUCTION_FILE]
     if all:
         targets.append(STATE_FILE)
     for f in targets:
@@ -147,25 +156,17 @@ class PlanningClient:
         self.model = model
 
     def run_prompt_CoT(self, prompt_query: str):
-        prompt = [
-            {"role": "developer", "content": CTFSolvePrompt.planning_prompt_CoT},
-            {"role": "user",   "content": FEWSHOT.web_SQLI},         
-            {"role": "user",   "content": FEWSHOT.web_SSTI},
-            {"role": "user",   "content": FEWSHOT.forensics_PCAP},
-            {"role": "user",   "content": FEWSHOT.stack_BOF},   
-            {"role": "user",   "content": FEWSHOT.rev_CheckMapping},
-        ]
-        
         state = load_state()
-        prompt.append({"role": "assistant", "content": json.dumps(state, ensure_ascii=False)})
-        prompt.append({"role": "user", "content": prompt_query})
-        res = self.client.chat.completions.create(model=self.model, messages=prompt)
+        prompt_CoT.append({"role": "assistant", "content": json.dumps(state, ensure_ascii=False)})
+        prompt_CoT.append({"role": "user", "content": prompt_query})
+        res = self.client.chat.completions.create(model=self.model, messages=prompt_CoT)
 
+        prompt_CoT.append({"role": "assistant", "content": res.choices[0].message.content})
         return res.choices[0].message.content
 
-    def run_prompt_ToT(self, prompt_query: str):
+    def run_prompt_Cal(self, prompt_query: str):
         prompt = [
-            {"role": "developer", "content": CTFSolvePrompt.planning_prompt_ToT},
+            {"role": "developer", "content": CTFSolvePrompt.planning_prompt_Cal},
         ]
         
         state = load_state()
@@ -203,7 +204,7 @@ class PlanningClient:
 
         save_state(st)
 
-    def build_tot_input_from_state(self):
+    def build_Cal_from_State(self):
         st = load_state()
         if not os.path.exists(COT_FILE):
             return {"candidates": []}
@@ -218,7 +219,7 @@ class PlanningClient:
         signals_tail = (st.get("signals", []) or [])[-5:]
         constraints_tail = (st.get("constraints_dynamic", []) or [])[-5:]
 
-        tot_in = []
+        cal_in = []
         for idx, c in enumerate(pick, start=1):
             base_id = c.get("id")
             cid = base_id if base_id else f"COT-{iter_no}-{idx}"
@@ -227,7 +228,7 @@ class PlanningClient:
             if not thought:
                 continue  
 
-            tot_in.append({
+            cal_in.append({
                 "id": cid,
                 "thought": thought,
                 "vuln_hypothesis": c.get("vuln_hypothesis") or "",
@@ -239,14 +240,14 @@ class PlanningClient:
                 }
             })
 
-        return {"candidates": tot_in}
+        return {"candidates": cal_in}
 
-    def cal_ToT(self, tot_json_str: str = None, infile: str = "ToT.json", outfile: str = "ToT_scored.json"):
-        if tot_json_str is None:
+    def cal_CoT(self, cal_json_str: str = None, infile: str = "Cal.json", outfile: str = "Cal_scored.json"):
+        if cal_json_str is None:
             with open(infile, "r", encoding="utf-8") as f:
                 data = safe_json_loads(f.read())
         else:
-            data = safe_json_loads(tot_json_str)
+            data = safe_json_loads(cal_json_str)
 
         cal = ["feasibility", "novelty", "info_gain", "cost", "risk"]
 
@@ -273,8 +274,8 @@ class PlanningClient:
 
         console.print(f"Save: {outfile}", style='green')
         return data
-    
-    def update_state_from_tot(self, tot_results: dict):
+
+    def update_state_from_cal(self, cal_result: dict):
         st = load_state()
 
         last_cands = []
@@ -287,7 +288,7 @@ class PlanningClient:
                         for c in last_cands if c.get("id") }
         idx_to_id = { i: c.get("id") for i, c in enumerate(last_cands) if c.get("id") }
 
-        items = tot_results.get("results") or tot_results.get("candidates") or []
+        items = cal_result.get("results") or cal_result.get("candidates") or []
         if not items:
             st["selected"] = {}
             save_state(st)
@@ -334,11 +335,11 @@ class PlanningClient:
             console.print("--quit : Exit the program.", style="bold yellow")
 
         elif option == "--showplan":
-            if not os.path.exists(TOT_SCORED_FILE):
-                console.print("ToT_scored.json not found. Run --file or --discuss first.", style="bold red")
+            if not os.path.exists(Cal_SCORED_FILE):
+                console.print("Cal_scored.json not found. Run --file or --discuss first.", style="bold red")
                 return
-            with open(TOT_SCORED_FILE, "r", encoding="utf-8") as f:
-                console.print("[bold cyan]Current ToT Plan (scored):[/bold cyan]\n")
+            with open(Cal_SCORED_FILE, "r", encoding="utf-8") as f:
+                console.print("[bold cyan]Current Cal Plan (scored):[/bold cyan]\n")
                 console.print(f.read(), style="white")
 
         elif option == "--file":
@@ -353,15 +354,15 @@ class PlanningClient:
             self.save_prompt(COT_FILE, response_CoT)
             self.update_state_from_cot(response_CoT)
 
-            console.print("=== run_prompt_ToT ===", style='bold green')
-            tot_input = self.build_tot_input_from_state()
-            response_ToT = self.run_prompt_ToT(json.dumps(tot_input, ensure_ascii=False))
-            self.save_prompt(TOT_FILE, response_ToT)
+            console.print("=== run_prompt_Cal ===", style='bold green')
+            cal_input = self.build_Cal_from_State()
+            response_Cal = self.run_prompt_Cal(json.dumps(cal_input, ensure_ascii=False))
+            self.save_prompt(Cal_FILE, response_Cal)
 
-            tot_cal = self.cal_ToT()
-            self.update_state_from_tot(tot_cal)
+            cal_result = self.cal_CoT()
+            self.update_state_from_cal(cal_result)
 
-            parsing_response = ctx.parsing.human_translation(json.dumps(tot_cal, ensure_ascii=False, indent=2))
+            parsing_response = ctx.parsing.human_translation(json.dumps(cal_result, ensure_ascii=False, indent=2))
             console.print(parsing_response, style='yellow')
 
         elif option == "--discuss":
@@ -376,15 +377,15 @@ class PlanningClient:
             self.save_prompt(COT_FILE, response_CoT)
             self.update_state_from_cot(response_CoT)
 
-            console.print("=== run_prompt_ToT ===", style='bold green')
-            tot_input = self.build_tot_input_from_state()
-            response_ToT = self.run_prompt_ToT(json.dumps(tot_input, ensure_ascii=False))
-            self.save_prompt(TOT_FILE, response_ToT)
+            console.print("=== run_prompt_Cal ===", style='bold green')
+            cal_input = self.build_Cal_from_State()
+            response_Cal = self.run_prompt_Cal(json.dumps(cal_input, ensure_ascii=False))
+            self.save_prompt(Cal_FILE, response_Cal)
 
-            tot_cal = self.cal_ToT()
-            self.update_state_from_tot(tot_cal)
+            cal_result = self.cal_CoT()
+            self.update_state_from_cal(cal_result)
 
-            parsing_response = ctx.parsing.human_translation(json.dumps(tot_cal, ensure_ascii=False, indent=2))
+            parsing_response = ctx.parsing.human_translation(json.dumps(cal_result, ensure_ascii=False, indent=2))
             console.print(parsing_response, style='yellow')
 
         elif option == "--exploit":
@@ -421,34 +422,34 @@ class PlanningClient:
             self.save_prompt("CoT.json", response_CoT)
             self.update_state_from_cot(response_CoT)
 
-            console.print("=== run_prompt_ToT ===", style='bold green')
-            tot_input = self.build_tot_input_from_state()
-            response_ToT = self.run_prompt_ToT(json.dumps(tot_input, ensure_ascii=False))
-            self.save_prompt("ToT.json", response_ToT)
+            console.print("=== run_prompt_Cal ===", style='bold green')
+            cal_input = self.build_Cal_from_State()
+            response_Cal = self.run_prompt_Cal(json.dumps(cal_input, ensure_ascii=False))
+            self.save_prompt("Cal.json", response_Cal)
 
-            tot_cal = self.cal_ToT()
-            self.update_state_from_tot(tot_cal)
+            cal_result = self.cal_CoT()
+            self.update_state_from_cal(cal_result)
 
             console.print("=== Human Translation ===", style="bold green")
-            parsing_response = ctx.parsing.human_translation(json.dumps(tot_cal, ensure_ascii=False, indent=2))
+            parsing_response = ctx.parsing.human_translation(json.dumps(cal_result, ensure_ascii=False, indent=2))
             console.print(parsing_response, style='yellow')            
 
 
         elif option == "--instruction":
             console.print("I will provide step-by-step instructions based on a Tree-of-Thought plan.", style="blue")
 
-            if not os.path.exists(TOT_SCORED_FILE):
-                console.print("ToT_scored.json not found. Run --file or --discuss first.", style="bold red")
+            if not os.path.exists(Cal_SCORED_FILE):
+                console.print("Cal_scored.json not found. Run --file or --discuss first.", style="bold red")
                 return
 
             state = load_state()
-            with open(TOT_SCORED_FILE, "r", encoding="utf-8") as f:
-                tot_scored = json.load(f)
+            with open(Cal_SCORED_FILE, "r", encoding="utf-8") as f:
+                Cal_scored = json.load(f)
 
             state_json = json.dumps(state, ensure_ascii=False)
-            tot_json = json.dumps(tot_scored, ensure_ascii=False)
+            cal_json = json.dumps(Cal_scored, ensure_ascii=False)
 
-            planning_instruction = self.build_prompt("--instruction", state_json=state_json, tot_json=tot_json)
+            planning_instruction = self.build_prompt("--instruction", state_json=state_json, cal_json=cal_json)
 
             console.print("wait...", style='bold green')
             instruction_json = ctx.instruction.run_prompt_instruction(prompt=planning_instruction)
@@ -481,15 +482,15 @@ class PlanningClient:
             self.save_prompt(COT_FILE, response_CoT)
             self.update_state_from_cot(response_CoT)
 
-            console.print("=== run_prompt_ToT ===", style='bold green')
-            tot_input = self.build_tot_input_from_state()
-            response_ToT = self.run_prompt_ToT(json.dumps(tot_input, ensure_ascii=False))
-            self.save_prompt(TOT_FILE, response_ToT)
+            console.print("=== run_prompt_Cal ===", style='bold green')
+            cal_input = self.build_Cal_from_State()
+            response_Cal = self.run_prompt_Cal(json.dumps(cal_input, ensure_ascii=False))
+            self.save_prompt(Cal_FILE, response_Cal)
 
-            tot_cal = self.cal_ToT()
-            self.update_state_from_tot(tot_cal)
+            cal_result = self.cal_CoT()
+            self.update_state_from_cal(cal_result)
 
-            parsing_response = ctx.parsing.human_translation(json.dumps(tot_cal, ensure_ascii=False, indent=2))
+            parsing_response = ctx.parsing.human_translation(json.dumps(cal_result, ensure_ascii=False, indent=2))
             console.print(parsing_response, style='yellow')
 
         elif option == "--quit":
@@ -502,7 +503,7 @@ class PlanningClient:
             console.print("If you are unsure about the commands, run '--help'.", style="bold yellow")
 
     def build_prompt(self, option: str, query: str = "", plan_json: str = "",
-                     state_json: str = "", tot_json: str = "", feedback_json: str = ""):
+                     state_json: str = "", cal_json: str = "", feedback_json: str = ""):
 
         if option == "--file":
             return (
@@ -588,7 +589,7 @@ class PlanningClient:
                 f"INPUT\n"
                 f"- You will receive a JSON payload that contains:\n"
                 f"  - state: current progress (goal, constraints, env, artifacts.binary, candidates_topk, selected, evidence, optional runs/seen_cmd_hashes)\n"
-                f"  - tot_scored_topk: top-k ToT results for the immediate next step\n\n"
+                f"  - Cal_scored_topk: top-k Cal results for the immediate next step\n\n"
                 f"TASK\n"
                 f"- Using BOTH inputs, produce a minimal, concrete sequence of terminal actions to execute NEXT.\n"
                 f"- BEFORE listing actions, write a brief 2–3 sentence rationale about execution order and expected outcomes.\n"
@@ -599,7 +600,7 @@ class PlanningClient:
                 f"- Prefer DELTA steps that produce NEW evidence/artifacts only.\n"
                 f"- If state.selected.thought seems already executed, output ONLY the missing sub-steps.\n"
                 f"- Keep commands shell-ready and deterministic.\n\n"
-                f"[Payload]\nState.json : {state_json}\nToT_Scored.json : {tot_json}\n\n"
+                f"[Payload]\nState.json : {state_json}\nCal_Scored.json : {cal_json}\n\n"
                 f"Respond ONLY in this STRICT JSON format:\n"
                 "{{\n"
                 '  "intra_cot": "2-3 sentences about order and expectations",\n'

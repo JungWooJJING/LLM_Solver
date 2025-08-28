@@ -64,7 +64,7 @@ class CTFSolvePrompt:
     """
 
 
-    planning_prompt_ToT = """
+    planning_prompt_Cal = """
     You are an evaluation assistant for CTF planning (NOT a solver).
 
     INPUT
@@ -136,7 +136,8 @@ class CTFSolvePrompt:
     - ...
     """
     
-    parsing_compress = """
+    # JSON 형식 문제 발견 이거 수정해야 됨
+    parsing_compress = """ 
     You are a JSON compressor for downstream LLMs.
 
     Input: the next user message will be a single JSON document (no prose).
@@ -256,7 +257,25 @@ class CTFSolvePrompt:
     }
     """
     
-    exploit_prompt = """"
+    exploit_prompt = """
+    You are an EXPLOIT assistant (NOT a planner).
+
+    GOAL
+    - Based on the given information, propose the most promising exploitation method.
+    - If it can be solved with pwntools, provide a complete Python exploit script.
+    - If not, describe in detail the procedure to exploit it (steps, commands, address calculations, payload layout, verification).
+
+    INPUT
+    - Target info: binary/service, local|remote, host/port
+    - Protections: 32/64-bit, NX, PIE, RELRO, Canary, etc.
+    - Observed signals: leaks, canary, base/offsets, crash type, gadgets, symbols
+    - Constraints: brute-force, network, tool limits
+    - Environment: OS, libc, Python, pwntools availability
+    - Artifacts: source, ELF, checksec, gdb/WinDbg, IDA/objdump
+
+    OUTPUT
+    - Case A (pwntools possible): provide full working Python exploit code.
+    - Case B (not possible in code): provide clear step-by-step exploit procedure with calculations and commands.
     """
     
 class few_Shot:

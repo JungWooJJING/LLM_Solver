@@ -132,21 +132,21 @@ def main():
 
     ctx = setting()
 
-    # console.print("Enter the challenge title:", style="blue")
-    # title = input("> ")
+    console.print("Enter the challenge title:", style="blue")
+    title = input("> ")
 
-    # console.print("Enter the challenge description (Press <<<END>>> to finish):", style="blue")
-    # description = multi_line_input()
+    console.print("Enter the challenge description (Press <<<END>>> to finish):", style="blue")
+    description = multi_line_input()
 
-    # console.print("Enter the challenge category:", style="blue")
-    # category = input("> ")
+    console.print("Enter the challenge category:", style="blue")
+    category = input("> ")
 
-    # console.print("wait...", style='bold green')
-    # result = ctx.preinfo.ask_PreInformation(title, description, category)
+    console.print("wait...", style='bold green')
+    result = ctx.preinfo.ask_PreInformation(title, description, category)
 
-    # console.print("\n=== LLM Analysis ===\n", style='bold yellow')
-    # console.print(result, style='bold yellow')
-    # console.print("====================\n", style='bold yellow')
+    console.print("\n=== LLM Analysis ===\n", style='bold yellow')
+    console.print(result, style='bold yellow')
+    console.print("====================\n", style='bold yellow')
 
     while True:
         state_iteration += 1
@@ -218,16 +218,16 @@ def main():
             ctx.planning.save_prompt("CoT.json", response_CoT)
             ctx.planning.update_state_from_cot(response_CoT)
 
-            console.print("=== run_prompt_ToT ===", style='bold green')
-            tot_input = ctx.planning.build_tot_input_from_state()
-            response_ToT = ctx.planning.run_prompt_ToT(json.dumps(tot_input, ensure_ascii=False))
-            ctx.planning.save_prompt("ToT.json", response_ToT)
+            console.print("=== run_prompt_Cal ===", style='bold green')
+            cal_input = ctx.planning.build_Cal_from_State()
+            response_Cal = ctx.planning.run_prompt_Cal(json.dumps(cal_input, ensure_ascii=False))
+            ctx.planning.save_prompt("Cal.json", response_Cal)
 
-            tot_cal = ctx.planning.cal_ToT()
-            ctx.planning.update_state_from_tot(tot_cal)
+            Cal_result = ctx.planning.cal_CoT()
+            ctx.planning.update_state_from_cal(Cal_result)
 
             console.print("=== Human Translation ===", style="bold green")
-            parsing_response = ctx.parsing.human_translation(json.dumps(tot_cal, ensure_ascii=False, indent=2))
+            parsing_response = ctx.parsing.human_translation(json.dumps(Cal_result, ensure_ascii=False, indent=2))
             console.print(parsing_response, style='yellow')            
 
 
