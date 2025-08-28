@@ -10,6 +10,17 @@ from client.exploit import ExploitClient
 
 console = Console()
 
+DEFAULT_STATE = {
+  "challenge" : [],
+  "iter": 0,             
+  "goal": "",                   
+  "constraints": ["no brute-force > 1000"],  
+  "env": {},                 
+  "cot_history": [],           
+  "selected": {},              
+  "results": []                  
+}
+
 # === Common Input Handler ===
 def multi_line_input():
     console.print("Enter multiple lines. Type <<<END>>> on a new line to finish input.", style="bold yellow")
@@ -32,8 +43,7 @@ def test_API_KEY():
 
 def load_state():
     if not os.path.exists("state.json"):
-        print("Error")
-        return
+        save_state(DEFAULT_STATE.copy())
         
     with open("state.json", "r", encoding="utf-8") as f:
         return json.load(f)
@@ -41,6 +51,22 @@ def load_state():
 def save_state(state: dict):
     with open("state.json", "w", encoding="utf-8") as f:
         json.dump(state, f, ensure_ascii=False, indent=2)
+        
+def parsing_preInformation(category: str, checksec: str):
+    st = load_state()
+
+    if(category == "pwnable"):
+        st["challenge"].append({
+        "category": category,
+        "checksec": checksec
+        })
+    
+    else:    
+        st["challenge"].append({
+            "category": category,
+        })
+
+    save_state(st)  
 
 def safe_json_loads(s):
     if isinstance(s, (dict, list)):
@@ -126,27 +152,38 @@ def setting():
     return AppContext(api_key)
 
 # === Main Program ===
-def main():
+def main():    
     state_iteration = 0
     exploit_iteration = 0
 
     ctx = setting()
 
-    console.print("Enter the challenge title:", style="blue")
-    title = input("> ")
+    # console.print("Enter the challenge title:", style="blue")
+    # title = input("> ")
 
-    console.print("Enter the challenge description (Press <<<END>>> to finish):", style="blue")
-    description = multi_line_input()
+    # console.print("Enter the challenge description (Press <<<END>>> to finish):", style="blue")
+    # description = multi_line_input()
 
-    console.print("Enter the challenge category:", style="blue")
-    category = input("> ")
+    # console.print("Enter the challenge category:", style="blue")
+    # category = input("> ")
+    
+    # category = category.lower()
+    
+    # if(category == "pwnable"):
+    #     console.print("Enter the binary checksec:", style="blue")
+    #     checksec = multi_line_input("> ")
 
-    console.print("wait...", style='bold green')
-    result = ctx.preinfo.ask_PreInformation(title, description, category)
+    #     parsing_preInformation(category=category, checksec=checksec)
 
-    console.print("\n=== LLM Analysis ===\n", style='bold yellow')
-    console.print(result, style='bold yellow')
-    console.print("====================\n", style='bold yellow')
+    # else: 
+    #     parsing_preInformation(category=category, checksec=None)
+
+    # console.print("wait...", style='bold green')
+    # result = ctx.preinfo.ask_PreInformation(title, description, category)
+
+    # console.print("\n=== LLM Analysis ===\n", style='bold yellow')
+    # console.print(result, style='bold yellow')
+    # console.print("====================\n", style='bold yellow')
 
     while True:
         state_iteration += 1

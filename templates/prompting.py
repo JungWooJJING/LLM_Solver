@@ -136,8 +136,7 @@ class CTFSolvePrompt:
     - ...
     """
     
-    # JSON 형식 문제 발견 이거 수정해야 됨
-    parsing_compress = """ 
+    parsing_compress = """
     You are a JSON compressor for downstream LLMs.
 
     Input: the next user message will be a single JSON document (no prose).
@@ -150,38 +149,31 @@ class CTFSolvePrompt:
 
     REQUIRED TOP-LEVEL SCHEMA (exact keys, no extras):
     {
+    "challenge": [ { "category": string, "checksec": string } ],
     "iter": int,
     "goal": string,
-    "constraints": [string],
-    "constraints_dynamic": [string],
+    "constraints": [ string ],
     "env": object,
-    "artifacts": {"binary": string, "logs": [string], "hashes": object},
-    "cot_history": [ {"iter": int, "candidates": [{"id": string, "thought": string}]} ],
-    "active_candidates": [ {"id": string, "thought": string} ],
-    "disabled_candidates": [ {"id": string, "reason": string} ],
-    "results": [ {"id": string, "verdict": "success"|"partial"|"failed", "summary": string,
-                    "signals": [ {"type": string, "name": string, "value": string} ]} ]
+    "cot_history": [ { "iter": int, "candidates": [ { "id": string, "thought": string } ] } ],
+    "selected": [ { "id": string, "score": number, "thought": string, "notes": string } ],
+    "results": [ { "id": string, "score": number, "thought": string, "notes": string, "verdict": string,
+                    "signals": [ { "type": string, "name": string, "value": string } ] } ]
     }
 
     COMPRESSION RULES (apply all):
     - Keep ONLY the fields shown in the schema above. Drop every other key.
-    - String caps: thought/summary ≤ 120 chars; any other free text ≤ 80 chars. Truncate with "…".
+    - String caps: thought ≤ 120 chars; any other free text ≤ 80 chars. Truncate with "…".
     - Array caps:
     constraints ≤ 3 (first 3),
-    constraints_dynamic ≤ 3 (last 3),
-    artifacts.logs ≤ 5 (last 5),
-    cot_history ≤ 2 (last 2 iters),
+    cot_history ≤ 2 (last 2),
     each cot_history.candidates ≤ 3 (first 3),
-    active_candidates ≤ 3,
-    disabled_candidates ≤ 3,
+    selected ≤ 3 (most recent 3),
     results ≤ 3 (most recent 3),
     each results.signals ≤ 3 (unique by (type,name,value)).
     - Deduplicate:
-    signals by (type,name,value);
-    candidates by (id,thought).
+    candidates by (id,thought);
+    signals by (type,name,value).
     - Normalize types: numbers as numbers; booleans as true/false; hex like "0x..." stays string.
-    - artifacts.binary: keep only basename (strip directories).
-    - artifacts.hashes: keep at most 3 entries; if a value > 64 chars, truncate and append "…".
     - Stable ordering: keep recency order within capped windows.
     - If a required field would be empty, keep it as empty list/object instead of removing it.
 
