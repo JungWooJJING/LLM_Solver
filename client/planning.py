@@ -1,12 +1,18 @@
 import os
 import json
 import re
+import pyghidra
+
+os.environ["GHIDRA_INSTALL_DIR"] = "/home/wjddn0623/Ghidra/ghidra/build/dist/ghidra_12.0_DEV"
+pyghidra.start()
+
 from typing import List, Dict, Any
 
 from openai import OpenAI
 from templates.prompting import CTFSolvePrompt
 from templates.prompting import few_Shot
 from rich.console import Console
+from ghidra.app.decompiler.flatapi import FlatDecompilerAPI
 
 console = Console()
 FEWSHOT = few_Shot()
@@ -149,6 +155,41 @@ def _norm(s: str) -> str:
 def _score(x):
     v = x.get("calculated_score", x.get("score"))
     return float(v) if v is not None else float("-inf")
+
+def ghdira_API(target : str):
+    result = ""
+    
+    with pyghidra.open_program(target) as flat:
+        program = flat.getCurrentProgram()
+        fm = program.getFunctionManager()
+        listing = program.getListing()
+        decomp = FlatDecompilerAPI(flat)
+        
+        for f in fm.getFunctions(True):
+            name = f.getName()
+            
+            try : 
+                c_code = decomp.decompile(f, 30)
+                
+                asm_line = []
+                instr_iter = listing.getInstructions(f.getBody(), True)
+                while instr_iter.hasNext():
+                    instr = instr_iter.next()
+                    asm_line.append(f"{instr.getAddress()}:\t{instr}")
+
+                asm_code = "\n".join(asm_line)
+                
+                result += f"=== MATCH: {name} 0x{f.getEntryPoint()} ===\n"
+                result += f"--- Decompiled Code ---\n"
+                result += f"{c_code} \n"
+                result += f"--- Assembly ---\n"
+                result += f"{asm_code} + \n"
+            except Exception as e:
+                print(f"[!] Failed {name} : {e}")
+            
+    decomp.dispose()
+    
+    return result
 
 class PlanningClient:
     def __init__(self, api_key: str, model: str = "gpt-5"):
@@ -348,6 +389,31 @@ class PlanningClient:
 
             console.print("wait...", style='bold green')
             planning_Prompt = self.build_prompt(option, query=planning_Code)
+
+            console.print("=== run_prompt_CoT ===", style='bold green')
+            response_CoT = self.run_prompt_CoT(planning_Prompt)
+            self.save_prompt(COT_FILE, response_CoT)
+            self.update_state_from_cot(response_CoT)
+
+            console.print("=== run_prompt_Cal ===", style='bold green')
+            cal_input = self.build_Cal_from_State()
+            response_Cal = self.run_prompt_Cal(json.dumps(cal_input, ensure_ascii=False))
+            self.save_prompt(Cal_FILE, response_Cal)
+
+            cal_result = self.cal_CoT()
+            self.update_state_from_cal(cal_result)
+
+            parsing_response = ctx.parsing.human_translation(json.dumps(cal_result, ensure_ascii=False, indent=2))
+            console.print(parsing_response, style='yellow')
+            
+        elif option == "--ghidra":
+            console.print("Enter the binary path: ", style="blue", end="")
+            binary_path = input()
+
+            file_infor = ghdira_API(binary_path)
+            
+            console.print("wait...", style='bold green')
+            planning_Prompt = self.build_prompt(option="--file", query=file_infor)
 
             console.print("=== run_prompt_CoT ===", style='bold green')
             response_CoT = self.run_prompt_CoT(planning_Prompt)

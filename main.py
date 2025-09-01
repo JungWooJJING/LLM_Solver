@@ -158,25 +158,25 @@ def main():
 
     ctx = setting()
 
-    # console.print("Enter the challenge title:", style="blue")
-    # title = input("> ")
+    console.print("Enter the challenge title:", style="blue")
+    title = input("> ")
 
-    # console.print("Enter the challenge description (Press <<<END>>> to finish):", style="blue")
-    # description = multi_line_input()
+    console.print("Enter the challenge description (Press <<<END>>> to finish):", style="blue")
+    description = multi_line_input()
 
-    # console.print("Enter the challenge category:", style="blue")
-    # category = input("> ")
+    console.print("Enter the challenge category:", style="blue")
+    category = input("> ")
     
-    # category = category.lower()
+    category = category.lower()
     
-    # if(category == "pwnable"):
-    #     console.print("Enter the binary checksec:", style="blue")
-    #     checksec = multi_line_input("> ")
+    if(category == "pwnable"):
+        console.print("Enter the binary checksec:", style="blue")
+        checksec = multi_line_input("> ")
 
-    #     parsing_preInformation(category=category, checksec=checksec)
+        parsing_preInformation(category=category, checksec=checksec)
 
-    # else: 
-    #     parsing_preInformation(category=category, checksec=None)
+    else: 
+        parsing_preInformation(category=category, checksec=None)
 
     # console.print("wait...", style='bold green')
     # result = ctx.preinfo.ask_PreInformation(title, description, category)
