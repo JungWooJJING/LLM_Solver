@@ -1,0 +1,33 @@
+{
+  "intra_cot": "We will verify the selected hypothesis by setting a breakpoint at main+0x13f (pre-printf) and running the binary with 11, 12, and 13 character inputs. We expect only the 12-character input to hit the breakpoint, confirming the length gate before the success print. We first create deterministic input files, then run gdb inline per input to generate clear hit/miss evidence logs.",
+  "actions": [
+    {
+      "name": "make 11/12/13-char inputs",
+      "cmd": "sh -c 'python3 - <<\"PY\"\nopen(\"in_11.txt\",\"wb\").write(b\"A\"*11+b\"\\n\")\nopen(\"in_12.txt\",\"wb\").write(b\"A\"*12+b\"\\n\")\nopen(\"in_13.txt\",\"wb\").write(b\"A\"*13+b\"\\n\")\nPY\n; wc -c in_11.txt in_12.txt in_13.txt > input_lengths.txt\n; if grep -qE \"^12 in_11.txt$\" input_lengths.txt && grep -qE \"^13 in_12.txt$\" input_lengths.txt && grep -qE \"^14 in_13.txt$\" input_lengths.txt; then echo lens-ok; else echo lens-bad; fi'",
+      "success": "lens-ok",
+      "artifact": "input_lengths.txt",
+      "fallback": "-"
+    },
+    {
+      "name": "gdb pre-printf bp with 11-char",
+      "cmd": "sh -c 'bin=$(cat target_bin.txt); timeout 25s gdb -q \\\n -ex \"set pagination off\" -ex \"set confirm off\" -ex \"set breakpoint pending on\" \\\n -ex \"tbreak *main+0x13f\" -ex \"commands\" -ex \"silent\" -ex \"printf \\\"bp-preprintf-hit\\\\n\\\"\" -ex \"continue\" -ex \"end\" \\\n -ex \"run < in_11.txt\" -ex \"quit\" --args \"$bin\" > gdb_bp_11.log 2>&1 || true; \\\n if grep -q \"bp-preprintf-hit\" gdb_bp_11.log; then echo bp-hit; else echo no-bp-hit; fi'",
+      "success": "no-bp-hit",
+      "artifact": "gdb_bp_11.log",
+      "fallback": "sh -c 'bin=$(cat target_bin.txt); timeout 25s gdb -q -ex \"set pagination off\" -ex \"set confirm off\" -ex \"set breakpoint pending on\" -ex \"tbreak *main+0x140\" -ex \"commands\" -ex \"silent\" -ex \"printf \\\"bp-preprintf-hit\\\\n\\\"\" -ex \"continue\" -ex \"end\" -ex \"run < in_11.txt\" -ex \"quit\" --args \"$bin\" > gdb_bp_11.log 2>&1 || true; if grep -q \"bp-preprintf-hit\" gdb_bp_11.log; then echo bp-hit; else echo no-bp-hit; fi'"
+    },
+    {
+      "name": "gdb pre-printf bp with 12-char",
+      "cmd": "sh -c 'bin=$(cat target_bin.txt); timeout 25s gdb -q \\\n -ex \"set pagination off\" -ex \"set confirm off\" -ex \"set breakpoint pending on\" \\\n -ex \"tbreak *main+0x13f\" -ex \"commands\" -ex \"silent\" -ex \"printf \\\"bp-preprintf-hit\\\\n\\\"\" -ex \"continue\" -ex \"end\" \\\n -ex \"run < in_12.txt\" -ex \"quit\" --args \"$bin\" > gdb_bp_12.log 2>&1 || true; \\\n if grep -q \"bp-preprintf-hit\" gdb_bp_12.log; then echo bp-hit; else echo no-bp-hit; fi'",
+      "success": "bp-hit",
+      "artifact": "gdb_bp_12.log",
+      "fallback": "sh -c 'bin=$(cat target_bin.txt); timeout 25s gdb -q -ex \"set pagination off\" -ex \"set confirm off\" -ex \"set breakpoint pending on\" -ex \"tbreak *main+0x140\" -ex \"commands\" -ex \"silent\" -ex \"printf \\\"bp-preprintf-hit\\\\n\\\"\" -ex \"continue\" -ex \"end\" -ex \"run < in_12.txt\" -ex \"quit\" --args \"$bin\" > gdb_bp_12.log 2>&1 || true; if grep -q \"bp-preprintf-hit\" gdb_bp_12.log; then echo bp-hit; else echo no-bp-hit; fi'"
+    },
+    {
+      "name": "gdb pre-printf bp with 13-char",
+      "cmd": "sh -c 'bin=$(cat target_bin.txt); timeout 25s gdb -q \\\n -ex \"set pagination off\" -ex \"set confirm off\" -ex \"set breakpoint pending on\" \\\n -ex \"tbreak *main+0x13f\" -ex \"commands\" -ex \"silent\" -ex \"printf \\\"bp-preprintf-hit\\\\n\\\"\" -ex \"continue\" -ex \"end\" \\\n -ex \"run < in_13.txt\" -ex \"quit\" --args \"$bin\" > gdb_bp_13.log 2>&1 || true; \\\n if grep -q \"bp-preprintf-hit\" gdb_bp_13.log; then echo bp-hit; else echo no-bp-hit; fi'",
+      "success": "no-bp-hit",
+      "artifact": "gdb_bp_13.log",
+      "fallback": "sh -c 'bin=$(cat target_bin.txt); timeout 25s gdb -q -ex \"set pagination off\" -ex \"set confirm off\" -ex \"set breakpoint pending on\" -ex \"tbreak *main+0x140\" -ex \"commands\" -ex \"silent\" -ex \"printf \\\"bp-preprintf-hit\\\\n\\\"\" -ex \"continue\" -ex \"end\" -ex \"run < in_13.txt\" -ex \"quit\" --args \"$bin\" > gdb_bp_13.log 2>&1 || true; if grep -q \"bp-preprintf-hit\" gdb_bp_13.log; then echo bp-hit; else echo no-bp-hit; fi'"
+    }
+  ]
+}

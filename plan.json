@@ -1,0 +1,611 @@
+{
+  "todos": [
+    {
+      "id": "T-0001",
+      "cmd": "printf 'ok\\n'",
+      "success": "ok",
+      "artifact": "out.txt",
+      "status": "skipped",
+      "retries": 0,
+      "max_retries": 1,
+      "deps": [],
+      "when": [],
+      "created_at": "2025-09-08T15:05:11Z",
+      "last_error": "blocked_by_allowlist"
+    },
+    {
+      "id": "T-0002",
+      "cmd": "sh -c 'bn=$(for f in ./*; do [ -f \"$f\" ] && [ -x \"$f\" ] && file -b \"$f\" | grep -q ELF && echo \"$f\"; done | head -n1); test -n \"$bn\" && echo \"${bn#./}\" | tee target_bin.txt && file \"$bn\"'",
+      "success": "ELF",
+      "artifact": "target_bin.txt",
+      "status": "skipped",
+      "retries": 0,
+      "max_retries": 1,
+      "deps": [],
+      "when": [],
+      "created_at": "2025-09-08T15:11:20Z",
+      "last_error": "blocked_by_allowlist"
+    },
+    {
+      "id": "T-0003",
+      "cmd": "sh -c 'bin=$(cat target_bin.txt); (nm -D --defined-only \"$bin\" 2>/dev/null | grep -i -E \"\\\\bscanf\\\\b\" || strings -a \"$bin\" | grep -i -E \"\\\\bscanf\\\\b\" || true) > scanf_refs.txt; if grep -qi \"\\\\bscanf\\\\b\" scanf_refs.txt; then echo \"scanf\"; else echo \"no-scanf\"; fi'",
+      "success": "scanf",
+      "artifact": "scanf_refs.txt",
+      "status": "skipped",
+      "retries": 0,
+      "max_retries": 1,
+      "deps": [],
+      "when": [],
+      "created_at": "2025-09-08T15:11:20Z",
+      "last_error": "blocked_by_allowlist"
+    },
+    {
+      "id": "T-0004",
+      "cmd": "sh -c 'bin=$(cat target_bin.txt); python3 -c \"print(\\'A\\'*4096)\" | timeout 8s ltrace -e scanf -o ltrace_scanf.log \"$bin\" >/dev/null 2>&1 || true; if grep -q \"scanf(\" ltrace_scanf.log; then echo \"scanf(\"; else echo \"no-scanf\"; fi'",
+      "success": "scanf(",
+      "artifact": "ltrace_scanf.log",
+      "status": "skipped",
+      "retries": 0,
+      "max_retries": 1,
+      "deps": [],
+      "when": [],
+      "created_at": "2025-09-08T15:11:20Z",
+      "last_error": "blocked_by_allowlist"
+    },
+    {
+      "id": "T-0005",
+      "cmd": "sh -c 'bin=$(cat target_bin.txt); python3 -c \"print(\\'A\\'*8192)\" | timeout 12s valgrind --error-exitcode=99 --track-origins=yes --log-file=valgrind_oversize.log \"$bin\" >/dev/null 2>&1 || true; if grep -q \"ERROR SUMMARY\" valgrind_oversize.log; then echo \"ERROR SUMMARY\"; else echo \"no-valgrind-log\"; fi'",
+      "success": "ERROR SUMMARY",
+      "artifact": "valgrind_oversize.log",
+      "status": "skipped",
+      "retries": 0,
+      "max_retries": 1,
+      "deps": [],
+      "when": [],
+      "created_at": "2025-09-08T15:11:20Z",
+      "last_error": "blocked_by_allowlist"
+    },
+    {
+      "id": "T-0006",
+      "cmd": "sh -c 'python3 - <<\"PY\"\nopen(\"oversize_1200.txt\",\"wb\").write(b\"A\"*1200+b\"\\n\")\nPY\n; wc -c oversize_1200.txt'",
+      "success": "1201 oversize_1200.txt",
+      "artifact": "oversize_1200.txt",
+      "status": "skipped",
+      "retries": 0,
+      "max_retries": 1,
+      "deps": [],
+      "when": [],
+      "created_at": "2025-09-08T15:38:20Z",
+      "last_error": "blocked_by_allowlist"
+    },
+    {
+      "id": "T-0007",
+      "cmd": "sh -c 'cat > gdb_watch_scanf.gdb <<\"EOF\"\nset pagination off\nset confirm off\nbreak __isoc99_scanf\nrun < oversize_1200.txt\nset $buf=(char*)$rsi\nprintf \"buf=%p\\n\", $buf\nwatch *($buf+1008)\ncontinue\nquit\nEOF\n; echo gdb-script-ok'",
+      "success": "gdb-script-ok",
+      "artifact": "gdb_watch_scanf.gdb",
+      "status": "pending",
+      "retries": 0,
+      "max_retries": 1,
+      "deps": [],
+      "when": [],
+      "created_at": "2025-09-08T15:38:20Z",
+      "last_error": ""
+    },
+    {
+      "id": "T-0008",
+      "cmd": "sh -c 'bin=$(cat target_bin.txt); timeout 20s gdb -q -x gdb_watch_scanf.gdb --args \"$bin\" > gdb_watch_scanf.log 2>&1 || true; if grep -q \"Hardware watchpoint\" gdb_watch_scanf.log; then echo \"Hardware watchpoint\"; else echo \"gdb-finished\"; fi'",
+      "success": "Hardware watchpoint",
+      "artifact": "gdb_watch_scanf.log",
+      "status": "pending",
+      "retries": 0,
+      "max_retries": 1,
+      "deps": [],
+      "when": [],
+      "created_at": "2025-09-08T15:38:20Z",
+      "last_error": ""
+    },
+    {
+      "id": "T-0009",
+      "cmd": "sh -c 'python3 - <<\"PY\"\nopen(\"stdin_probe.txt\",\"wb\").write(b\"A\"*32+b\"\\n\")\nPY\n; wc -c stdin_probe.txt'",
+      "success": "33 stdin_probe.txt",
+      "artifact": "stdin_probe.txt",
+      "status": "pending",
+      "retries": 0,
+      "max_retries": 1,
+      "deps": [],
+      "when": [],
+      "created_at": "2025-09-08T15:51:38Z",
+      "last_error": ""
+    },
+    {
+      "id": "T-0010",
+      "cmd": "sh -c 'cat > gdb_evp_dump.gdb <<\"EOF\"\nset pagination off\nset confirm off\nset breakpoint pending on\ntbreak EVP_DigestUpdate\ntbreak EVP_DigestUpdate@plt\nrun < stdin_probe.txt\nprintf \"EVP_DigestUpdate hit\\n\"\nprintf \"RSI=%p RDX=%lu\\n\", $rsi, (unsigned long)$rdx\nset $cnt = $rdx\nset $n = ($cnt < 128) ? $cnt : 128\nset logging file evp_update_hex.txt\nset logging on\nx/$n bx $rsi\nset logging off\ndump memory evp_update_mem.bin $rsi $rsi+$n\nquit\nEOF\n; echo gdb-script-ok'",
+      "success": "gdb-script-ok",
+      "artifact": "gdb_evp_dump.gdb",
+      "status": "pending",
+      "retries": 0,
+      "max_retries": 1,
+      "deps": [],
+      "when": [],
+      "created_at": "2025-09-08T15:51:38Z",
+      "last_error": ""
+    },
+    {
+      "id": "T-0011",
+      "cmd": "sh -c 'bin=$(cat target_bin.txt); timeout 25s gdb -q -x gdb_evp_dump.gdb --args \"$bin\" > gdb_evp_dump.log 2>&1 || true; if grep -q \"EVP_DigestUpdate hit\" gdb_evp_dump.log; then echo \"EVP_DigestUpdate hit\"; else echo \"no-evp-hit\"; fi'",
+      "success": "EVP_DigestUpdate hit",
+      "artifact": "gdb_evp_dump.log",
+      "status": "pending",
+      "retries": 0,
+      "max_retries": 1,
+      "deps": [],
+      "when": [],
+      "created_at": "2025-09-08T15:51:38Z",
+      "last_error": ""
+    },
+    {
+      "id": "T-0012",
+      "cmd": "sh -c 'bin=$(cat target_bin.txt); r2 -q -c \"aaa; s sym.main; pdf\" \"$bin\" > r2_main_disasm.txt 2>&1; if ! grep -Eq \"sym\\\\.main|\\\\bmain\\\\(\" r2_main_disasm.txt; then r2 -q -c \"aaa; s main; pdf\" \"$bin\" > r2_main_disasm.txt 2>&1; fi; if grep -Eq \"sym\\\\.main|\\\\bmain\\\\(\" r2_main_disasm.txt; then echo \"r2-main-ok\"; else echo \"r2-main-miss\"; fi'",
+      "success": "r2-main-ok",
+      "artifact": "r2_main_disasm.txt",
+      "status": "pending",
+      "retries": 0,
+      "max_retries": 1,
+      "deps": [],
+      "when": [],
+      "created_at": "2025-09-08T15:59:58Z",
+      "last_error": ""
+    },
+    {
+      "id": "T-0013",
+      "cmd": "sh -c 'bin=$(cat target_bin.txt); r2 -q -c \"aaa; s sym.main; agfd\" \"$bin\" > r2_main_cfg.dot 2>&1; if ! grep -q \"digraph\" r2_main_cfg.dot; then r2 -q -c \"aaa; s main; agfd\" \"$bin\" > r2_main_cfg.dot 2>&1; fi; if grep -q \"digraph\" r2_main_cfg.dot; then echo \"r2-cfg-ok\"; else echo \"r2-cfg-miss\"; fi'",
+      "success": "r2-cfg-ok",
+      "artifact": "r2_main_cfg.dot",
+      "status": "pending",
+      "retries": 0,
+      "max_retries": 1,
+      "deps": [],
+      "when": [],
+      "created_at": "2025-09-08T15:59:58Z",
+      "last_error": ""
+    },
+    {
+      "id": "T-0014",
+      "cmd": "sh -c 'bin=$(cat target_bin.txt); r2 -q -c \"aaa; axt sym.imp.__isoc99_scanf; axt sym.imp.strlen; axt sym.imp.strnlen; axt sym.imp.memcmp; afl~main\" \"$bin\" > r2_len_xrefs.txt 2>&1; if grep -Eqi \"__isoc99_scanf|strlen|strnlen|memcmp\" r2_len_xrefs.txt; then echo \"xrefs-ok\"; else echo \"xrefs-miss\"; fi'",
+      "success": "xrefs-ok",
+      "artifact": "r2_len_xrefs.txt",
+      "status": "pending",
+      "retries": 0,
+      "max_retries": 1,
+      "deps": [],
+      "when": [],
+      "created_at": "2025-09-08T15:59:58Z",
+      "last_error": ""
+    },
+    {
+      "id": "T-0015",
+      "cmd": "sh -c 'python3 - <<\"PY\"\nopen(\"in_11.txt\",\"wb\").write(b\"A\"*11+b\"\\n\")\nopen(\"in_12.txt\",\"wb\").write(b\"A\"*12+b\"\\n\")\nopen(\"in_13.txt\",\"wb\").write(b\"A\"*13+b\"\\n\")\nPY\n; wc -c in_11.txt in_12.txt in_13.txt > input_lengths.txt\n; if grep -qE \"^12 in_11.txt$\" input_lengths.txt && grep -qE \"^13 in_12.txt$\" input_lengths.txt && grep -qE \"^14 in_13.txt$\" input_lengths.txt; then echo lens-ok; else echo lens-bad; fi'",
+      "success": "lens-ok",
+      "artifact": "input_lengths.txt",
+      "status": "pending",
+      "retries": 0,
+      "max_retries": 1,
+      "deps": [],
+      "when": [],
+      "created_at": "2025-09-08T16:18:42Z",
+      "last_error": ""
+    },
+    {
+      "id": "T-0016",
+      "cmd": "sh -c 'bin=$(cat target_bin.txt); timeout 25s gdb -q \\\n -ex \"set pagination off\" -ex \"set confirm off\" -ex \"set breakpoint pending on\" \\\n -ex \"tbreak *main+0x13f\" -ex \"commands\" -ex \"silent\" -ex \"printf \\\"bp-preprintf-hit\\\\n\\\"\" -ex \"continue\" -ex \"end\" \\\n -ex \"run < in_11.txt\" -ex \"quit\" --args \"$bin\" > gdb_bp_11.log 2>&1 || true; \\\n if grep -q \"bp-preprintf-hit\" gdb_bp_11.log; then echo bp-hit; else echo no-bp-hit; fi'",
+      "success": "no-bp-hit",
+      "artifact": "gdb_bp_11.log",
+      "status": "pending",
+      "retries": 0,
+      "max_retries": 1,
+      "deps": [],
+      "when": [],
+      "created_at": "2025-09-08T16:18:42Z",
+      "last_error": ""
+    },
+    {
+      "id": "T-0017",
+      "cmd": "sh -c 'bin=$(cat target_bin.txt); timeout 25s gdb -q \\\n -ex \"set pagination off\" -ex \"set confirm off\" -ex \"set breakpoint pending on\" \\\n -ex \"tbreak *main+0x13f\" -ex \"commands\" -ex \"silent\" -ex \"printf \\\"bp-preprintf-hit\\\\n\\\"\" -ex \"continue\" -ex \"end\" \\\n -ex \"run < in_12.txt\" -ex \"quit\" --args \"$bin\" > gdb_bp_12.log 2>&1 || true; \\\n if grep -q \"bp-preprintf-hit\" gdb_bp_12.log; then echo bp-hit; else echo no-bp-hit; fi'",
+      "success": "bp-hit",
+      "artifact": "gdb_bp_12.log",
+      "status": "pending",
+      "retries": 0,
+      "max_retries": 1,
+      "deps": [],
+      "when": [],
+      "created_at": "2025-09-08T16:18:42Z",
+      "last_error": ""
+    },
+    {
+      "id": "T-0018",
+      "cmd": "sh -c 'bin=$(cat target_bin.txt); timeout 25s gdb -q \\\n -ex \"set pagination off\" -ex \"set confirm off\" -ex \"set breakpoint pending on\" \\\n -ex \"tbreak *main+0x13f\" -ex \"commands\" -ex \"silent\" -ex \"printf \\\"bp-preprintf-hit\\\\n\\\"\" -ex \"continue\" -ex \"end\" \\\n -ex \"run < in_13.txt\" -ex \"quit\" --args \"$bin\" > gdb_bp_13.log 2>&1 || true; \\\n if grep -q \"bp-preprintf-hit\" gdb_bp_13.log; then echo bp-hit; else echo no-bp-hit; fi'",
+      "success": "no-bp-hit",
+      "artifact": "gdb_bp_13.log",
+      "status": "pending",
+      "retries": 0,
+      "max_retries": 1,
+      "deps": [],
+      "when": [],
+      "created_at": "2025-09-08T16:18:42Z",
+      "last_error": ""
+    }
+  ],
+  "runs": [],
+  "seen_cmd_hashes": [],
+  "artifacts": {},
+  "backlog": [
+    {
+      "src_id": "COT-1-1",
+      "thought": "Dump .rodata and carve the 2 bytes at 0x0010202a to validate the constant-hash hypothesis.",
+      "vuln_hypothesis": "Logic bug: flag path only checks input length (== 12) and hashes a hardcoded 2-byte constant from .rodata, ignoring user input contents",
+      "attack_path": "Map .rodata base VMA -> locate offset 0x2a -> extract those 2 bytes -> verify nearby strings to confirm address alignment -> prepare offline hashing later",
+      "mini_poc": "objdump -s -j .rodata ./target | tee rodata.hex",
+      "expected_artifacts": [
+        "rodata.hex",
+        "rodata_map.md"
+      ],
+      "requires": [
+        "objdump",
+        "readelf"
+      ],
+      "success_criteria": [
+        ".rodata VMA matches ~0x00102000 and offsets align with decompiler addresses",
+        "Exactly two nonzero bytes identifiable at .rodata+0x2a (0x0010202a) with nearby known strings at 0x0010201a and 0x00102032"
+      ]
+    },
+    {
+      "src_id": "COT-1-2",
+      "thought": "Trace EVP_Digest* calls with ltrace and confirm EVP_DigestUpdate takes a .rodata pointer and length 2.",
+      "vuln_hypothesis": "Constant-hash behavior observable via OpenSSL EVP call arguments (cnt=2, ptr in .rodata) independent of user input",
+      "attack_path": "Run under ltrace -> hit the success branch with a 12-byte input -> capture EVP_DigestUpdate arguments -> verify pointer near 0x0010202a and cnt=2",
+      "mini_poc": "printf AAAAAAAAAAAA | ltrace -o evp_trace.txt -e 'EVP_DigestInit_ex+EVP_DigestUpdate+EVP_DigestFinal_ex' ./target >/dev/null 2>&1",
+      "expected_artifacts": [
+        "evp_trace.txt"
+      ],
+      "requires": [
+        "ltrace",
+        "dynamic linking allowed"
+      ],
+      "success_criteria": [
+        "Observed EVP_DigestUpdate third argument equals 2",
+        "Observed data pointer is stable across runs and resolves into .rodata region (~0x001020xx)"
+      ]
+    },
+    {
+      "src_id": "COT-1-3",
+      "thought": "Verify scanf format is unbounded and probe with an oversized input under Valgrind to detect overflow.",
+      "vuln_hypothesis": "Unbounded scanf into stack buffer (potential stack buffer overflow) due to missing width in \"%s\"",
+      "attack_path": "Confirm scanf format string is \"%s\" via rodata dump -> run under Valgrind with >1008-byte input -> capture invalid write reports/crash",
+      "mini_poc": "python3 - <<<'print(\"A\"*2000)' | valgrind --quiet --error-exitcode=42 ./target 2>valgrind.log",
+      "expected_artifacts": [
+        "valgrind.log",
+        "rodata.hex"
+      ],
+      "requires": [
+        "objdump",
+        "valgrind",
+        "python3"
+      ],
+      "success_criteria": [
+        "Format string identified as \"%s\" (no width)",
+        "Valgrind reports invalid write(s) or stack overflow symptoms when fed >1008 bytes"
+      ]
+    },
+    {
+      "src_id": "COT-1-4",
+      "thought": "Disassemble around the length check to record the exact conditional jump and bytes to plan a minimal patch.",
+      "vuln_hypothesis": "Patchable branch condition (JNZ) guarding success path can be flipped to bypass the length check",
+      "attack_path": "Disassemble around 0x00101224..0x0010122e -> identify conditional jump opcodes -> create a copy of the binary -> patch JNZ->JZ -> run to confirm forced success path (later)",
+      "mini_poc": "r2 -q -c 's 0x00101218; pd 12' ./target | tee jcc_window.txt",
+      "expected_artifacts": [
+        "jcc_window.txt",
+        "patch_plan.md"
+      ],
+      "requires": [
+        "radare2 (or objdump)"
+      ],
+      "success_criteria": [
+        "Exact address and opcode of the JNZ guarding the failure branch identified",
+        "Calculated replacement encoding for JZ or NOP sequence validated by assembler"
+      ]
+    },
+    {
+      "src_id": "COT-1-5",
+      "thought": "Breakpoint EVP_DigestUpdate and inspect its arguments to confirm a .rodata pointer and length 2 are used.",
+      "vuln_hypothesis": "EVP_DigestUpdate receives a pointer into .rodata at 0x0010202a with length 2, not the stack buffer address",
+      "attack_path": "Launch gdb -> break EVP_DigestUpdate -> run with 12-byte input -> on hit, inspect argument registers and x/2bx at the data pointer -> compare to static .rodata address",
+      "mini_poc": "printf AAAAAAAAAAAA | gdb -q -ex 'break EVP_DigestUpdate' -ex run -ex 'info registers rsi rdx' -ex 'x/2bx $rsi' -ex quit --args ./target 2>gdb_inspect.txt >/dev/null",
+      "expected_artifacts": [
+        "gdb_inspect.txt"
+      ],
+      "requires": [
+        "gdb",
+        "symbols resolvable for EVP_*",
+        "stdin to program"
+      ],
+      "success_criteria": [
+        "Observed RDX (cnt) equals 2 at the breakpoint",
+        "Observed RSI (data ptr) points into .rodata region (~0x0010202a) and bytes match static dump"
+      ]
+    },
+    {
+      "src_id": "COT-2-1",
+      "thought": "Statically dump .rodata and decode the format string at 0x00102017 to confirm it is \"%s\".",
+      "vuln_hypothesis": "Unbounded scanf into stack buffer (potential stack buffer overflow) due to missing width in \"%s\"",
+      "attack_path": "Map .rodata -> carve bytes at 0x00102017 -> decode to ASCII -> verify it is \"%s\" (no width) -> document as overflow precondition",
+      "mini_poc": "bin=$(cat target_bin.txt); objdump -s -j .rodata \"$bin\" | tee rodata_scanf.hex",
+      "expected_artifacts": [
+        "rodata_scanf.hex"
+      ],
+      "requires": [
+        "objdump"
+      ],
+      "success_criteria": [
+        "Presence of a null-terminated \"%s\" at 0x00102017",
+        "No digits or width modifiers preceding 's' in the format string"
+      ]
+    },
+    {
+      "src_id": "COT-2-2",
+      "thought": "Breakpoint __isoc99_scanf and print the first argument to confirm the format string is \"%s\".",
+      "vuln_hypothesis": "Unbounded scanf into stack buffer (potential stack buffer overflow) due to missing width in \"%s\"",
+      "attack_path": "Set a breakpoint on __isoc99_scanf -> run until hit -> x/s $rdi to print the format -> record address and string",
+      "mini_poc": "bin=$(cat target_bin.txt); gdb -q -ex 'set pagination off' -ex 'break __isoc99_scanf' -ex run -ex 'printf \"fmt: \"; x/s $rdi' -ex quit --args \"$bin\" > gdb_scanf_fmt.txt 2>&1",
+      "expected_artifacts": [
+        "gdb_scanf_fmt.txt"
+      ],
+      "requires": [
+        "gdb"
+      ],
+      "success_criteria": [
+        "Log shows fmt: \"%s\"",
+        "Logged address for fmt lies in .rodata near 0x00102017"
+      ]
+    },
+    {
+      "src_id": "COT-2-3",
+      "thought": "Use a gdb hardware watchpoint at buffer+1008 to detect out-of-bounds writes during scanf with oversized input.",
+      "vuln_hypothesis": "Unbounded scanf into stack buffer (potential stack buffer overflow) due to missing width in \"%s\"",
+      "attack_path": "Break just before scanf -> set $buf=RBP-0x400 -> watch *(char*)($buf+1008) -> run with large input via stdin redirection -> observe watchpoint trigger and addresses",
+      "mini_poc": "sh -c 'bin=$(cat target_bin.txt); python3 -c \"print(\\\"A\\\"*4096)\" > in_oversize.txt; gdb -q -ex \"set pagination off\" -ex \"break *0x001011fc\" -ex \"commands\\nsilent\\nset $buf=$rbp-0x400\\nwatch *(char*)($buf+1008)\\ncontinue\\nend\" -ex \"run < in_oversize.txt\" -ex quit --args \"$bin\" > gdb_watch_overflow.log 2>&1'",
+      "expected_artifacts": [
+        "gdb_watch_overflow.log",
+        "in_oversize.txt"
+      ],
+      "requires": [
+        "gdb",
+        "python3",
+        "shell redirection"
+      ],
+      "success_criteria": [
+        "Hardware watchpoint triggers during scanf",
+        "Triggered address is >= buffer+1008 (beyond buffer end)"
+      ]
+    },
+    {
+      "src_id": "COT-2-4",
+      "thought": "Use radare2 to print the format string at 0x00102017 and the nearby scanf callsite.",
+      "vuln_hypothesis": "Unbounded scanf into stack buffer (potential stack buffer overflow) due to missing width in \"%s\"",
+      "attack_path": "Use r2 to print the string at 0x00102017 -> disassemble around 0x001011f9/0x00101201 -> confirm the LEA of the format pointer and call to __isoc99_scanf",
+      "mini_poc": "bin=$(cat target_bin.txt); r2 -q -c 'ps @ 0x00102017; s 0x001011f9; pd 8' \"$bin\" > r2_scanf_fmt.txt 2>&1",
+      "expected_artifacts": [
+        "r2_scanf_fmt.txt"
+      ],
+      "requires": [
+        "radare2"
+      ],
+      "success_criteria": [
+        "Exact \"%s\" printed from rodata address",
+        "Callsite disassembly shows that address used as the first argument to __isoc99_scanf"
+      ]
+    },
+    {
+      "src_id": "COT-2-5",
+      "thought": "Check ELF relocations for __isoc99_scanf to confirm the import used at runtime.",
+      "vuln_hypothesis": "Unbounded scanf into stack buffer (potential stack buffer overflow) due to missing width in \"%s\"",
+      "attack_path": "List PLT/GOT relocs -> grep for __isoc99_scanf or scanf -> record the relocation entry and address for cross-reference with disassembly",
+      "mini_poc": "bin=$(cat target_bin.txt); objdump -R \"$bin\" | grep -E '__isoc99_scanf|\\bscanf\\b' | tee relocs_scanf.txt",
+      "expected_artifacts": [
+        "relocs_scanf.txt"
+      ],
+      "requires": [
+        "objdump"
+      ],
+      "success_criteria": [
+        "Relocation entry for __isoc99_scanf present",
+        "Relocation/PLT address matches the callsite used by main"
+      ]
+    },
+    {
+      "src_id": "COT-3-1",
+      "thought": "Statically dump .rodata and carve bytes at 0x0010202a to validate hardcoded hash input.",
+      "vuln_hypothesis": "Logic bug: flag path hashes a hardcoded 2-byte constant from .rodata, ignoring user input contents",
+      "attack_path": "Dump .rodata -> locate address 0x0010202a -> record the two bytes -> correlate with nearby strings at 0x0010201a and 0x00102032",
+      "mini_poc": "sh -c 'bin=$(cat target_bin.txt); { readelf -S \"$bin\" | grep -n \"\\\\.rodata\"; objdump -s -j .rodata \"$bin\"; } > rodata_full.hex'",
+      "expected_artifacts": [
+        "rodata_full.hex"
+      ],
+      "requires": [
+        "readelf",
+        "objdump"
+      ],
+      "success_criteria": [
+        ".rodata dump includes 0x0010202a region",
+        "Two specific bytes identified at +0x2a with nearby known strings confirming alignment"
+      ]
+    },
+    {
+      "src_id": "COT-3-2",
+      "thought": "Breakpoint EVP_DigestUpdate and capture RSI/RDX plus a small hexdump to confirm constant hash input.",
+      "vuln_hypothesis": "Logic bug: flag path hashes a hardcoded 2-byte constant from .rodata, ignoring user input contents",
+      "attack_path": "Prepare a 12-byte input -> break on EVP_DigestUpdate -> capture RSI (data ptr) and RDX (length) -> hexdump memory at RSI",
+      "mini_poc": "sh -c 'bin=$(cat target_bin.txt); printf AAAAAAAAAAAA > in12.txt; gdb -q --args \"$bin\" -ex \"set pagination off\" -ex \"break EVP_DigestUpdate\" -ex \"run < in12.txt\" -ex \"info reg rsi rdx\" -ex \"x/16bx $rsi\" -ex quit > gdb_evp_args.txt 2>&1'",
+      "expected_artifacts": [
+        "gdb_evp_args.txt",
+        "in12.txt"
+      ],
+      "requires": [
+        "gdb"
+      ],
+      "success_criteria": [
+        "RDX reports 2 at the breakpoint",
+        "RSI points into .rodata near 0x0010202a and bytes are stable across runs"
+      ]
+    },
+    {
+      "src_id": "COT-3-3",
+      "thought": "Enumerate PIE/NX/canary via readelf to assess overflow exploitability prerequisites.",
+      "vuln_hypothesis": "Unbounded scanf into stack buffer (potential stack buffer overflow) due to missing width in \"%s\"",
+      "attack_path": "Read ELF headers and segments -> infer PIE (ET_DYN), NX (GNU_STACK flags), and canary (symbol __stack_chk_fail presence) -> document mitigation posture",
+      "mini_poc": "sh -c 'bin=$(cat target_bin.txt); { echo \"[ELF HEAD]\"; readelf -W -h \"$bin\"; echo \"[PROGRAM HDRS]\"; readelf -W -l \"$bin\"; echo -n \"canary: \"; readelf -W -s \"$bin\" | grep -q \"__stack_chk_fail\" && echo yes || echo no; } > mitigations_readelf.txt'",
+      "expected_artifacts": [
+        "mitigations_readelf.txt"
+      ],
+      "requires": [
+        "readelf"
+      ],
+      "success_criteria": [
+        "Mitigation indicators extracted (ET_* type, GNU_STACK flags, canary yes/no)",
+        "Documented posture usable for later exploit path planning"
+      ]
+    },
+    {
+      "src_id": "COT-3-4",
+      "thought": "Use r2 to disassemble main and capture the length-compare and conditional branch for precise patch-point mapping.",
+      "vuln_hypothesis": "Logic bug: success path is gated only by input length (12) via a single conditional branch",
+      "attack_path": "Disassemble sym.main -> locate the CMP length and JNZ/JZ -> record addresses/opcodes -> annotate potential patch points",
+      "mini_poc": "sh -c 'bin=$(cat target_bin.txt); r2 -q -c \"aaa; s sym.main; pd 60\" \"$bin\" > r2_main_lencheck.txt 2>&1'",
+      "expected_artifacts": [
+        "r2_main_lencheck.txt"
+      ],
+      "requires": [
+        "radare2"
+      ],
+      "success_criteria": [
+        "CMP against 0xc and adjacent conditional branch identified with addresses/opcodes",
+        "Failure and success targets of the branch recognizable in listing"
+      ]
+    },
+    {
+      "src_id": "COT-3-5",
+      "thought": "Trace puts/printf for 11/12/13-length inputs to confirm success-path manifests only at length 12.",
+      "vuln_hypothesis": "Logic bug: success path is gated only by input length (12) via a single conditional branch",
+      "attack_path": "Run three traces with lengths 11, 12, 13 -> collect ltrace logs -> summarize counts of puts/printf -> confirm unique pattern at 12",
+      "mini_poc": "sh -c 'bin=$(cat target_bin.txt); for n in 11 12 13; do head -c \"$n\" </dev/zero | tr \"\\0\" \"A\" | timeout 5s ltrace -e \"puts+printf\" -o ltrace_len_${n}.log \"$bin\" >/dev/null 2>&1 || true; done; for f in ltrace_len_*.log; do echo \"=== $f ===\"; grep -E \"puts\\(|printf\\(\" \"$f\" || true; done > lencheck_summary.txt'",
+      "expected_artifacts": [
+        "ltrace_len_11.log",
+        "ltrace_len_12.log",
+        "ltrace_len_13.log",
+        "lencheck_summary.txt"
+      ],
+      "requires": [
+        "ltrace",
+        "coreutils (head,tr,timeout)"
+      ],
+      "success_criteria": [
+        "Length 12 trace shows distinct extra printf pattern vs 11 and 13",
+        "puts appears in 12-length trace and not in others"
+      ]
+    },
+    {
+      "src_id": "COT-5-1",
+      "thought": "Dump and inspect GOT/PLT relocations to correlate unresolved symbols and callsites.",
+      "vuln_hypothesis": "Logic bug: flag path hashes a hardcoded 2-byte constant from .rodata, ignoring user input contents",
+      "attack_path": "List dynamic relocations -> grep EVP_* and scanf -> record GOT/PLT entries and relocation types -> use addresses for future breakpoints or tracing",
+      "mini_poc": "sh -c 'bin=$(cat target_bin.txt); objdump -R \"$bin\" > relocs.txt; grep -E \"(__isoc99_scanf|EVP_Digest(Update|Init|Final)_ex|EVP_md5)\" relocs.txt || true'",
+      "expected_artifacts": [
+        "relocs.txt"
+      ],
+      "requires": [
+        "objdump"
+      ],
+      "success_criteria": [
+        "Relocation entries for __isoc99_scanf and EVP_DigestUpdate present",
+        "Reloc addresses align with PLT stubs referenced by main"
+      ]
+    },
+    {
+      "src_id": "COT-5-2",
+      "thought": "Resolve libcrypto path and exports to understand symbol-versioned names for EVP_*.",
+      "vuln_hypothesis": "Logic bug: flag path hashes a hardcoded 2-byte constant from .rodata, ignoring user input contents",
+      "attack_path": "Find libcrypto via ldd -> list dynamic entries and symbol versions -> grep EVP_* exports -> record exact versioned names for correct debugger hooks",
+      "mini_poc": "sh -c 'bin=$(cat target_bin.txt); ldd \"$bin\" > ldd.txt; so=$(awk \"/libcrypto/ {print \\$3}\" ldd.txt | head -n1); echo \"libcrypto: $so\" > libcrypto_info.txt; [ -n \"$so\" ] && objdump -T \"$so\" | grep -E \"EVP_Digest(Update|Init|Final)_ex|EVP_md5\" > libcrypto_exports.txt || true'",
+      "expected_artifacts": [
+        "ldd.txt",
+        "libcrypto_info.txt",
+        "libcrypto_exports.txt"
+      ],
+      "requires": [
+        "ldd",
+        "objdump"
+      ],
+      "success_criteria": [
+        "libcrypto path captured",
+        "EVP_DigestUpdate appears in exports with version or is absent (explaining unresolved)"
+      ]
+    },
+    {
+      "src_id": "COT-5-3",
+      "thought": "Dump .rodata and pinpoint the constant at offset +0x2a with surrounding strings for validation.",
+      "vuln_hypothesis": "Logic bug: flag path hashes a hardcoded 2-byte constant from .rodata, ignoring user input contents",
+      "attack_path": "Dump .rodata hex -> locate offsets +0x1a, +0x2a, +0x32 -> annotate bytes and ASCII strings to confirm alignment",
+      "mini_poc": "sh -c 'bin=$(cat target_bin.txt); readelf -W -x .rodata \"$bin\" > rodata_dump.txt; grep -n \".rodata\" -n rodata_dump.txt || true'",
+      "expected_artifacts": [
+        "rodata_dump.txt"
+      ],
+      "requires": [
+        "readelf"
+      ],
+      "success_criteria": [
+        "Presence of the 0x2a offset region with clear two-byte constant",
+        "Nearby strings confirm correct section alignment"
+      ]
+    },
+    {
+      "src_id": "COT-5-4",
+      "thought": "Use a pre-printf breakpoint (main+0x13f) to verify only 12-length input reaches the success print.",
+      "vuln_hypothesis": "Logic bug: success path is gated only by input length (12) via a single conditional branch",
+      "attack_path": "Set gdb breakpoint at *(main+0x13f) before printf -> run with 11/12/13-length inputs -> log if breakpoint hit -> compare results",
+      "mini_poc": "sh -c 'bin=$(cat target_bin.txt); for n in 11 12 13; do head -c \"$n\" </dev/zero | tr \"\\0\" \"A\" > in_$n.txt; gdb -q --args \"$bin\" -ex \"set pagination off\" -ex \"set confirm off\" -ex \"break * (main+0x13f)\" -ex \"run < in_$n.txt\" -ex quit > gdb_len_${n}.log 2>&1 || true; done; echo done > gdb_len_done.tag'",
+      "expected_artifacts": [
+        "gdb_len_11.log",
+        "gdb_len_12.log",
+        "gdb_len_13.log",
+        "gdb_len_done.tag",
+        "in_11.txt",
+        "in_12.txt",
+        "in_13.txt"
+      ],
+      "requires": [
+        "gdb",
+        "coreutils"
+      ],
+      "success_criteria": [
+        "Breakpoint hit present in gdb_len_12.log",
+        "No breakpoint hit in gdb_len_11.log and gdb_len_13.log"
+      ]
+    },
+    {
+      "src_id": "COT-5-5",
+      "thought": "Profile ELF mitigations (PIE/NX/canary) to quantify overflow exploitability preconditions.",
+      "vuln_hypothesis": "Unbounded scanf into stack buffer (potential stack buffer overflow) due to missing width in \"%s\"",
+      "attack_path": "Read ELF type and GNU_STACK flags -> detect PIE (ET_DYN), NX (no E on GNU_STACK), and canary via __stack_chk_fail symbol -> record findings",
+      "mini_poc": "sh -c 'bin=$(cat target_bin.txt); { readelf -W -h \"$bin\"; readelf -W -l \"$bin\"; readelf -W -s \"$bin\" | grep -E \"__stack_chk_fail|__libc_start_main\"; } > mitigations_profile.txt'",
+      "expected_artifacts": [
+        "mitigations_profile.txt"
+      ],
+      "requires": [
+        "readelf"
+      ],
+      "success_criteria": [
+        "Mitigation indicators clearly recorded (ET_*, GNU_STACK flags, canary symbol yes/no)",
+        "Profile usable for later exploit planning"
+      ]
+    }
+  ]
+}

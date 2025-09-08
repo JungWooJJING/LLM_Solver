@@ -1,53 +1,27 @@
-import os
-import pyghidra
+from templates.prompting import CTFSolvePrompt
+from templates.prompting import few_Shot
 
-os.environ["GHIDRA_INSTALL_DIR"] = "/home/wjddn0623/Ghidra/ghidra/build/dist/ghidra_12.0_DEV"
-TARGET = "/home/wjddn0623/wargame/REVERSING/rev-basic-3/chall3.exe"
+import json
 
-pyghidra.start()
+FEWSHOT = few_Shot()
 
-from ghidra.app.decompiler.flatapi import FlatDecompilerAPI
+prompt_CoT = [
+    {"role": "developer", "content": CTFSolvePrompt.planning_prompt_CoT},
+    {"role": "user",   "content": FEWSHOT.web_SQLI},
+    {"role": "user",   "content": FEWSHOT.web_SSTI},
+    {"role": "user",   "content": FEWSHOT.forensics_PCAP},
+    {"role": "user",   "content": FEWSHOT.stack_BOF},
+    {"role": "user",   "content": FEWSHOT.rev_CheckMapping},
+]
 
-with pyghidra.open_program(TARGET, analyze=False) as flat:
-    program = flat.getCurrentProgram()
-    fm = program.getFunctionManager()
-    listing = program.getListing()
-    decomp = FlatDecompilerAPI(flat)
+prompt_query = "Hello"
 
-    print(f"[+] Opened: {program.getName()}")
+state_msg = {"role": "user", "assistant": json.dumps('state.json', ensure_ascii=False)}
+user_msg  = {"role": "user", "content": prompt_query}
 
-    keywords = ["main", "flag"]  # 부분 일치 키워드
-    result = ""
+prompt_CoT.append(state_msg)
+prompt_CoT.append(user_msg) 
 
-    for f in fm.getFunctions(True):
-        name = f.getName()
+prompt_CoT.remove(state_msg)
 
-        try:
-            # C 디컴파일
-            c_code = decomp.decompile(f, 30)
-
-            # 어셈블리 추출
-            asm_lines = []
-            instr_iter = listing.getInstructions(f.getBody(), True)
-            while instr_iter.hasNext():
-                instr = instr_iter.next()
-                asm_lines.append(f"{instr.getAddress()}:\t{instr}")
-
-            asm_code = "\n".join(asm_lines)
-
-            # result에 누적
-            result += f"===== MATCH: {name} @ {f.getEntryPoint()} =====\n"
-            result += "----- Decompiled C Code -----\n"
-            result += c_code + "\n"
-            result += "----- Assembly -----\n"
-            result += asm_code + "\n\n"
-
-        except Exception as e:
-            print(f"[!] Decompile failed for {name}: {e}")
-
-    if result:
-        print(result)
-    else:
-        print("[-] 'main' 또는 'flag'를 포함한 함수 없음.")
-
-    decomp.dispose()
+print((prompt_CoT))

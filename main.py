@@ -16,7 +16,6 @@ DEFAULT_STATE = {
   "goal": "",                   
   "constraints": ["no brute-force > 1000"],  
   "env": {},                 
-  "cot_history": [],           
   "selected": {},              
   "results": []                  
 }
@@ -52,18 +51,20 @@ def save_state(state: dict):
     with open("state.json", "w", encoding="utf-8") as f:
         json.dump(state, f, ensure_ascii=False, indent=2)
         
-def parsing_preInformation(category: str, checksec: str):
+def parsing_preInformation(category: str, flag : str, checksec: str):
     st = load_state()
 
     if(category == "pwnable"):
         st["challenge"].append({
         "category": category,
+        "flag format" : flag,
         "checksec": checksec
         })
     
     else:    
         st["challenge"].append({
             "category": category,
+            "flag format" : flag
         })
 
     save_state(st)  
@@ -171,12 +172,18 @@ def main():
     
     if(category == "pwnable"):
         console.print("Enter the binary checksec:", style="blue")
-        checksec = multi_line_input("> ")
+        checksec = multi_line_input()
+                
+        console.print("Enter the challenge flag format:", style="blue")
+        format = input("> ")
 
-        parsing_preInformation(category=category, checksec=checksec)
+        parsing_preInformation(category=category, flag = format, checksec=checksec)
 
     else: 
-        parsing_preInformation(category=category, checksec=None)
+        console.print("Enter the challenge flag format:", style="blue")
+        format = input("> ")
+        
+        parsing_preInformation(category=category, flag = format, checksec=None)
 
     # console.print("wait...", style='bold green')
     # result = ctx.preinfo.ask_PreInformation(title, description, category)
@@ -193,28 +200,28 @@ def main():
         option = input("> ")
         ctx.planning.check_Option(option, ctx)
         
-        if state_iteration % 5 == 0:
-            if not os.path.exists("state.json"):
-                print("Error")
-                continue
+        # if state_iteration % 5 == 0:
+        #     if not os.path.exists("state.json"):
+        #         print("Error")
+        #         continue
 
-            console.print("Compress state.json", style="bold green")
-            with open("state.json", "r", encoding="utf-8") as f:
-                state = json.load(f)
+        #     console.print("Compress state.json", style="bold green")
+        #     with open("state.json", "r", encoding="utf-8") as f:
+        #         state = json.load(f)
 
-            result_pompress = ctx.parsing.run_prompt_state_compress(json.dumps(state))
+        #     result_pompress = ctx.parsing.run_prompt_state_compress(json.dumps(state))
 
-            if isinstance(result_pompress, str):
-                obj = json.loads(result_pompress)
-            else:
-                obj = result_pompress
+        #     if isinstance(result_pompress, str):
+        #         obj = json.loads(result_pompress)
+        #     else:
+        #         obj = result_pompress
                 
-            if not isinstance(obj, dict):
-                print("Error: compressor returned non-JSON-object")
-                continue
+        #     if not isinstance(obj, dict):
+        #         print("Error: compressor returned non-JSON-object")
+        #         continue
 
-            with open("state.json", "w", encoding="utf-8") as f:
-                json.dump(obj, f, ensure_ascii=False, indent=2)
+        #     with open("state.json", "w", encoding="utf-8") as f:
+        #         json.dump(obj, f, ensure_ascii=False, indent=2)
         
 
         if exploit_iteration % 10 == 0:

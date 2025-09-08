@@ -63,13 +63,13 @@ class CTFSolvePrompt:
     - Otherwise OMIT these keys entirely.
     """
 
-
     planning_prompt_Cal = """
     You are an evaluation assistant for CTF planning (NOT a solver).
 
     INPUT
     - You will receive a JSON object with an array "candidates".
-    - Each item has: cot, thought, expected_artifacts, requires, risk, estimated_cost.
+    - Each item WILL include at least: thought.
+    - It MAY also include: cot, vuln_hypothesis, attack_path, expected_artifacts, requires, risk, estimated_cost, and/or hints.
     - There may be NO extra context. Do not ask questions.
 
     TASK
@@ -87,7 +87,7 @@ class CTFSolvePrompt:
     - duplicate/near-duplicate with another candidate
     - obviously infeasible / meaningless for CTF investigation
     - policy/ethical issues (e.g., heavy brute-force)
-`       
+
     OUTPUT — JSON ONLY, keep same order as input and include an index:
     {
     "results": [
@@ -102,7 +102,7 @@ class CTFSolvePrompt:
         "penalties": [{"reason":"...", "value":0.xx}],
         "notes": "≤120 chars justification"
         }
-    ],
+    ]
     }
     No prose outside JSON.
     """
@@ -149,13 +149,12 @@ class CTFSolvePrompt:
 
     REQUIRED TOP-LEVEL SCHEMA (exact keys, no extras):
     {
-    "challenge": [ { "category": string, "checksec": string } ],
     "iter": int,
     "goal": string,
     "constraints": [ string ],
     "env": object,
     "cot_history": [ { "iter": int, "candidates": [ { "id": string, "thought": string } ] } ],
-    "selected": [ { "id": string, "score": number, "thought": string, "notes": string } ],
+    "selected": { "id": string, "score": number, "thought": string, "notes": string },
     "results": [ { "id": string, "score": number, "thought": string, "notes": string, "verdict": string,
                     "signals": [ { "type": string, "name": string, "value": string } ] } ]
     }
@@ -167,7 +166,6 @@ class CTFSolvePrompt:
     constraints ≤ 3 (first 3),
     cot_history ≤ 2 (last 2),
     each cot_history.candidates ≤ 3 (first 3),
-    selected ≤ 3 (most recent 3),
     results ≤ 3 (most recent 3),
     each results.signals ≤ 3 (unique by (type,name,value)).
     - Deduplicate:
@@ -179,28 +177,27 @@ class CTFSolvePrompt:
 
     Output: ONLY the compressed JSON matching the schema. No explanations.
     """
-    
+
     instruction_prompt = """
     You are a CTF instruction assistant.
 
     INPUT
-    - You will receive two JSON blobs in the user message labeled exactly:
+    - You will receive three JSON blobs in the user message labeled exactly:
     - "State.json : <JSON>"
-    - "ToT_Scored.json : <JSON>"
+    - "Cal_Scored.json : <JSON>"
+    - "Plan.view : <JSON>"  // todos_pending, runs_recent, already_success_cmds, artifacts
 
     TASK
-    - Using BOTH inputs, produce a minimal, concrete sequence of terminal actions to execute NEXT.
+    - Using ALL inputs, produce a minimal, concrete sequence of terminal actions to execute NEXT.
     - BEFORE listing actions, write a brief 2–3 sentence rationale about execution order and expected outcomes.
     - Do NOT attempt to solve the challenge or print flags; focus on preparation/evidence aligned with state.selected.thought.
 
     POLICY
-    - Do NOT repeat any action whose exact cmd already appears in state.runs with ok==True.
-    - Do NOT propose actions whose expected artifact already exists (same filename or clearly same purpose).
+    - Do NOT repeat any action whose exact cmd appears in Plan.view.already_success_cmds or Plan.view.todos_pending.
+    - Do NOT propose actions whose expected artifact already exists (same filename or clearly same purpose) in Plan.view.artifacts.
     - Prefer DELTA steps that produce NEW evidence/artifacts only.
-    - If state.selected.thought seems already executed, output ONLY the missing sub-steps.
-    - Keep commands shell-ready and deterministic (no interactive prompts; add flags like -y or non-interactive equivalents).
-    - Avoid destructive operations; do not modify binaries unless explicitly required. Use copy to a work dir if needed.
-    - Ensure each action is independently runnable in a clean shell with explicit cwd/paths.
+    - Keep commands shell-ready and deterministic (no interactive prompts).
+    - Each action MUST define "success" as either a plain substring or "re:<regex>".
     - Cap actions to 3–6 steps unless absolutely necessary.
 
     OUTPUT — JSON ONLY (no extra prose):
@@ -210,7 +207,7 @@ class CTFSolvePrompt:
         {
         "name": "short label",
         "cmd": "exact terminal command",
-        "success": "observable success signal (greppable string or file condition)",
+        "success": "observable success signal (substring or re:<regex>)",
         "artifact": "output file/log to save (or '-')",
         "fallback": "alternative command if primary fails (or '-')"
         }
@@ -269,6 +266,36 @@ class CTFSolvePrompt:
     - Case A (pwntools possible): provide full working Python exploit code.
     - Case B (not possible in code): provide clear step-by-step exploit procedure with calculations and commands.
     """
+    
+    compress_history = """
+    You are a CTF context compressor.
+
+    GOAL
+    - From the given chat history (messages[] JSON string), return ONE compressed chat history to be sent back to the model.
+
+    OUTPUT
+    - STRICT JSON ONLY:
+    {
+        "messages": [
+        {"role":"system"|"developer"|"user"|"assistant","content":"..."},
+        ...
+        ]
+    }
+    - No extra text, no backticks.
+
+    CONSTRAINTS
+    - Keep size ≤ 3500 chars (len(json.dumps(output))).
+    - Keep at most 1 short policy line (system/developer).
+    - For candidate JSON blobs: keep ONLY keys vuln_hypothesis, thought, mini_poc, success_criteria.
+    - Deduplicate by (vuln_hypothesis, thought).
+    - Keep the most recent plain user message (≤160 chars).
+    - Drop greetings/boilerplate/markdown code fences/huge dumps. Do not invent info.
+
+    INPUT
+    - You will receive the current messages[] as a JSON string in user.content.
+
+    RESPOND
+    - STRICT JSON as above. No prose."""
     
 class few_Shot:
     web_SQLI = """
