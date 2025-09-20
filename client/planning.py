@@ -545,6 +545,7 @@ class PlanningClient:
         if option == "--help":
             console.print("--help : Display the available commands.", style="bold yellow")
             console.print("--file : Paste the challenge source code to locate potential vulnerabilities.", style="bold yellow")
+            console.print("--ghidra : Generate a plan based on decompiled and disassembled results.", style="bold yellow"   )
             console.print("--discuss : Discuss the approach with the LLM to set a clear direction.", style="bold yellow")
             console.print("--instruction : Get step-by-step guidance based on a plan.", style="bold yellow")
             console.print("--exploit : Receive an exploit script or detailed exploitation steps.", style="bold yellow")

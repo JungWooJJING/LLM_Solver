@@ -199,37 +199,13 @@ def main():
         console.print("Please choose which option you want to choose.", style="blue")
         option = input("> ")
         ctx.planning.check_Option(option, ctx)
-        
-        # if state_iteration % 5 == 0:
-        #     if not os.path.exists("state.json"):
-        #         print("Error")
-        #         continue
-
-        #     console.print("Compress state.json", style="bold green")
-        #     with open("state.json", "r", encoding="utf-8") as f:
-        #         state = json.load(f)
-
-        #     result_pompress = ctx.parsing.run_prompt_state_compress(json.dumps(state))
-
-        #     if isinstance(result_pompress, str):
-        #         obj = json.loads(result_pompress)
-        #     else:
-        #         obj = result_pompress
-                
-        #     if not isinstance(obj, dict):
-        #         print("Error: compressor returned non-JSON-object")
-        #         continue
-
-        #     with open("state.json", "w", encoding="utf-8") as f:
-        #         json.dump(obj, f, ensure_ascii=False, indent=2)
-        
 
         if exploit_iteration % 10 == 0:
             if not os.path.exists("state.json"):
                 print("Error")
                 continue
             
-            st = load_state
+            st = load_state()
             
             exploit_prompt = ctx.planning.build_prompt(option="--exploit", state_json=st)
             
@@ -244,7 +220,7 @@ def main():
             console.print("Input result", style="blue")
             result_output = multi_line_input()
             
-            result_build_prompt = ctx.planning.build_prompt(option="--result", query=result_output, state=st)
+            result_build_prompt = ctx.planning.build_prompt(option="--result", query=result_output, state_json=st)
             
             console.print("=== LLM Translation ===", style="bold green")
             result_LLM_translation = ctx.parsing.LLM_translation(query=result_build_prompt)

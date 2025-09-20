@@ -12,6 +12,7 @@ The functions are as follows.
 
 ```
 --help : Display the available commands.
+--ghidra : Generate a plan based on decompiled and disassembled results.
 --file : Paste the challenge source code to locate potential vulnerabilities.
 --discuss : Discuss the approach with the LLM to set a clear direction.
 --instruction : Get step-by-step guidance based on a Tree-of-Thought plan.
