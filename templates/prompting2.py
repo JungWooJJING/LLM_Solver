@@ -124,35 +124,167 @@ class CTFSolvePrompt:
     }
     No prose outside JSON.
     """
+    
+    instruction_prompt = """
+    You are an instruction generator for ONE cycle in a CTF workflow.
 
-    parsing_prompt = """
-    You are a parsing assistant for CTF automation.
+    INPUT
+    - STATE: JSON with challenge, constraints/env, artifacts, facts, selected, results.
+    - CAL (optional): {"results":[{"idx":...,"final":...,"scores":{"exploitability":...,"cost":...,"risk":...}, ...}]}
 
-    You will be given the raw output from a tool, debugger, exploit attempt, or user-provided analysis result.
+    TASK
+    Select ONLY the single best candidate:
+    - If CAL present: pick max(final); tie-break by higher exploitability, then lower cost, then lower risk.
+    - If CAL absent: use STATE.selected.cot_ref; if missing, infer the most direct next probe from STATE.facts/results.
 
-    Your job is to extract the meaningful information and summarize it in a structured format that is easy for both humans and language models to understand.
+    Produce a deterministic plan to learn the NEXT required fact.
 
-    You should:
-    - Identify key signals such as errors, memory addresses, register states, crash traces, leaked values, or abnormal outputs.
-    - Remove unnecessary noise or unrelated information.
-    - Clarify ambiguous or truncated messages if possible.
-    - Reformat the result to be readable and structured (e.g., bullet points, key-value pairs, or labeled sections).
+    OUTPUT — JSON ONLY (no markdown, no prose). If invalid, return {"error":"BAD_OUTPUT"}.
+    {
+    "what_to_find": "one-line fact to learn",
+    "steps": [
+        {
+        "name": "short label",
+        "cmd": "exact single-line shell command",
+        "success": "substring or re:<regex>",
+        "artifact": "- or filename",
+        "code": "- or full helper script"
+        }
+    ]
+    }
 
-    You will NOT solve or analyze the challenge. Just reformat and highlight important parts of the result for further steps.
+    RULES
+    - Use ONLY tools allowed by STATE.constraints/env; obey timeouts and network policy.
+    - Exactly ONE primary step; add ONE auxiliary step only if strictly required to make the primary succeed.
+    - Commands must be non-interactive, reproducible, and single-line (use flags/redirects).
+    - Prefer read-only, low-cost probes; paths relative to STATE.env.cwd.
+    - If a helper is needed, include the full script in 'code'; otherwise set 'code' to "-".
+    - Make 'success' verifiable via substring or "re:<regex>" against stdout/stderr/artifacts.
+    - Do NOT solve the challenge; focus on evidence gathering for the next decision.
 
-    Always include:
-    - [Summary] A one-paragraph summary of what happened
-    - [Key Info] Bullet points with specific details (crash location, error type, leaked value, etc.)
-
-    Use the following structure strictly:
-
-    ### Summary
-    [Your brief summary here]
-
-    ### Key Info
-    - ...
-    - ...
+    VALIDATION
+    - Ensure 'cmd' looks executable; reject vague placeholders.
+    - Ensure 'success' is a concrete substring or regex.
+    - Ensure artifacts are named predictably or "-".
+    - If requirements cannot be met due to missing artifacts or tools, output:
+    {"what_to_find":"precheck: <missing item>", "steps":[{"name":"precheck","cmd":"echo <diagnostic>","success":"substring:<diagnostic>","artifact":"-","code":"-"}]}
     """
+
+    parsing_LLM_translation = """
+    You are a parser. Convert the USER INPUT into a clean, minimal, LLM-friendly JSON.
+
+    GOAL
+    - Normalize noisy text/logs into a structured schema.
+    - Keep only signal. Remove banners, prompts, ANSI, timestamps, duplicates.
+
+    NORMALIZATION RULES
+    - Language: keep original; translate only labels you add.
+    - Whitespace: collapse multiple spaces, strip lines.
+    - Code blocks: detect and extract with language tags when possible.
+    - Numbers: unify units (bytes, ms, sec), hex as 0x..., lowercase hex.
+    - Booleans: true/false only. Null as null.
+    - Paths: keep relative if possible.
+    - Security signals: map to {leak, crash, offset, mitigation, other}.
+    - Deduplicate identical lines; keep first occurrence.
+
+    SCHEMA (JSON ONLY)
+    {
+    "summary": "≤120 chars single-sentence gist",
+    "artifacts": [{"name":"...", "path":"..."}],
+    "signals": [
+        {"type":"leak|crash|offset|mitigation|other", "name":"...", "value":"...", "hint":"..."}
+    ],
+    "code": [
+        {"lang":"python|bash|c|asm|unknown", "content":"<verbatim code>"}
+    ],
+    "constraints": [],
+    "errors": []   // parsing issues; empty if none
+    }
+
+    MAPPING HEURISTICS
+    - Lines like 'canary: enabled' → signals[{type:"mitigation", name:"canary", value:"enabled"}]
+    - 'PIE enabled/disabled' → mitigation: PIE true/false
+    - 'Segmentation fault' / 'SIGSEGV' → crash
+    - 'printf %p leak' or hex pointer → leak
+    - 'offset N bytes' / 'RIP offset' → offset
+
+    OUTPUT
+    - Return VALID JSON ONLY. No markdown, no fences, no extra text.
+    - If input is empty or unusable, return {"summary":"", "artifacts":[], "signals":[], "code":[], "env":{}, "constraints":[], "errors":["EMPTY_OR_INVALID_INPUT"]}.
+    """
+
+    parsing_Human_translation = """
+    Your role: Explain the INSTRUCTION output step-by-step so a human can run it immediately.
+    Write all explanations and headers in ENGLISH. Commands/scripts must also be in ENGLISH.
+    Do NOT attempt to solve the challenge. Cover only the next single cycle.
+
+    INPUT
+    - STATE (optional): env/constraints/artifacts summary
+    - INSTRUCTION: {"what_to_find":"...","steps":[{"name":"...","cmd":"...","success":"...","artifact":"...","code":"..."}]}
+
+    OUTPUT FORMAT (Markdown only, concise)
+
+    # Objective (What to find)
+    - One-line target: <verbatim from what_to_find>
+
+    # Prechecks
+    - List tools/paths/permissions to verify before running.
+    - If STATE is provided, reflect STATE.constraints/env.
+
+    # Steps
+    Repeat the following for each step.
+
+    ## 1) <steps[i].name>
+    Explanation: 1–2 sentences on why this step matters.
+
+    **Command** (one command per fence, no prose inside):
+    ```bash
+    <steps[i].cmd>
+    """
+    
+    feedback_prompt = """
+    You are a feedback and state-update assistant for ONE cycle in a CTF workflow.
+
+    INPUT
+    - STATE: current JSON (challenge/constraints/env/artifacts/facts/selected/results).
+    - PARSED: normalized JSON from the parser (summary, artifacts[], signals[], code[], constraints[], errors[]).
+    - EXPECTED (optional): what the Instruction aimed to find (what_to_find and success pattern).
+
+    TASK
+    1) Judge outcome using PARSED.signals/artifacts vs EXPECTED (if given).
+    2) Promote solid evidence from PARSED.signals into concise facts.
+    3) Propose a minimal STATE delta (no full rewrite).
+    4) List concrete issues and missing preconditions that blocked progress.
+    5) Suggest the single next fact to pursue.
+
+    RUBRIC
+    - status: success if EXPECTED matched or signals clearly prove the target; partial if useful signals but not the target; fail otherwise.
+    - Only promote facts that are unambiguous and reproducible.
+    - Keep deltas small: add/patch, never drop unrelated fields.
+
+    OUTPUT — JSON ONLY
+    {
+    "status": "success | partial | fail",
+    "promote_facts": { "key":"value", ... },                 // stable facts to add/update
+    "new_artifacts": [{"name":"...", "path":"..."}],         // from PARSED.artifacts
+    "result_quality": { "signals": "<low|med|high>", "notes":"<=120 chars" },
+    "issues": [ "missing tool: gdb", "timeout", "no match for success regex" ],
+    "prechecks_needed": [ "file_exists: ./dist/chall", "tool_in_path: python3" ],
+    "state_delta": {
+        "facts": { "merge": { ... } },                         // keys to merge into STATE.facts
+        "artifacts": { "merge": { ... } },                     // keys to merge into STATE.artifacts
+        "results": { "append": [ { "ts":"<iso8601>", "ok": true|false, "signals": [...], "note":"<=80 chars" } ] }
+    },
+    "next_hint": "one-line suggestion for the next cycle",
+    "next_what_to_find": "the single fact to learn next (one line)"
+    }
+
+    RULES
+    - Do not solve the challenge.
+    - If PARSED.errors is non-empty or input unusable, set status="fail" and fill issues; still return a best-effort next_what_to_find.
+    - Use short, deterministic strings; no markdown; no prose outside JSON.
+    """
+
     
     parsing_compress = """
     You are a JSON compressor for downstream LLMs.
@@ -194,74 +326,6 @@ class CTFSolvePrompt:
     - If a required field would be empty, keep it as empty list/object instead of removing it.
 
     Output: ONLY the compressed JSON matching the schema. No explanations.
-    """
-
-    instruction_prompt = """
-    You are a CTF instruction assistant.
-
-    INPUT
-    - You will receive three JSON blobs in the user message labeled exactly:
-    - "State.json : <JSON>"
-    - "Cal_Scored.json : <JSON>"
-    - "Plan.view : <JSON>"  // todos_pending, runs_recent, already_success_cmds, artifacts
-
-    TASK
-    - Using ALL inputs, produce a minimal, concrete sequence of terminal actions to execute NEXT.
-    - BEFORE listing actions, write a brief 2–3 sentence rationale about execution order and expected outcomes.
-    - Do NOT attempt to solve the challenge or print flags; focus on preparation/evidence aligned with state.selected.thought.
-
-    POLICY
-    - Do NOT repeat any action whose exact cmd appears in Plan.view.already_success_cmds or Plan.view.todos_pending.
-    - Do NOT propose actions whose expected artifact already exists (same filename or clearly same purpose) in Plan.view.artifacts.
-    - Prefer DELTA steps that produce NEW evidence/artifacts only.
-    - Keep commands shell-ready and deterministic (no interactive prompts).
-    - Each action MUST define "success" as either a plain substring or "re:<regex>".
-    - Cap actions to 3–6 steps unless absolutely necessary.
-
-    OUTPUT — JSON ONLY (no extra prose):
-    {
-    "intra_cot": "2-3 sentences about order and expectations",
-    "actions": [
-        {
-        "name": "short label",
-        "cmd": "exact terminal command",
-        "success": "observable success signal (substring or re:<regex>)",
-        "artifact": "output file/log to save (or '-')",
-        "fallback": "alternative command if primary fails (or '-')"
-        }
-    ]
-    }
-    """
-
-    feedback_prompt="""
-    You are a post-execution FEEDBACK assistant for CTF workflows (NOT a solver).
-
-    GOAL
-    - Read one Executed.json describing: the exact command executed and its output/result.
-    - Produce feedback ONLY about what happened: concise summary, extracted signals, and issue categorization.
-    - Do NOT suggest next actions. Do NOT update planning state. Do NOT attempt to solve or print flags.
-
-    INPUT (provided in the user message)
-    - Executed.json : <JSON>  // { "executed", "summary", "signals", "issues", "verdict", "notes"}
-
-    POLICY
-    - Be terse and objective. Quote exact substrings from outputs when useful.
-    - Normalize technical signals (addresses, offsets, canary present/absent, leaks, crash types).
-    - Classify issues into: env | tool | logical | permission | timeout | network | data-format | other.
-    - No speculation beyond what the output supports.
-
-    OUTPUT — STRICT JSON ONLY (no extra prose):
-    {
-    "executed": { "cmd": "exact command" },
-    "summary": "≤2 sentences describing what happened",
-    "observations": ["concise fact 1", "concise fact 2"],
-    "signals": [
-        { "type": "leak|crash|mitigation|offset|symbol|other", "name": "e.g., __libc_start_main+243", "value": "0x7f..", "evidence": "short quoted line" }
-    ],
-    "issues": ["env|tool|logical|permission|timeout|network|data-format|other"],
-    "verdict": "success|partial|failed",
-    "notes": "≤200 chars optional"
-    }
     """
     
     exploit_prompt = """

@@ -10,10 +10,14 @@ from typing import List, Dict, Any
 
 from openai import OpenAI
 from .todo import add_todos_from_actions, run_ready, load_plan
+
 from templates.prompting2 import CTFSolvePrompt
 from templates.prompting import few_Shot
+
 from rich.console import Console
+
 from ghidra.app.decompiler.flatapi import FlatDecompilerAPI
+
 from utility.build_query import build_query
 from utility.core_utility import Core
 from utility.ghidra import ghdira_API
@@ -54,11 +58,11 @@ class PlanningAgent:
         call_msgs = prompt_CoT + [state_msg, user_msg]
 
         try:
-            res = self.client.chat.completions.create(model=self.model, messages=call_msgs)
+            res = self.client.chat.completions.create(model=self.model, messages=call_msgs, temperature=0.5)
         except Exception:
             prompt_CoT[:] = compress.compress_history(prompt_CoT, ctx=ctx)
             call_msgs = prompt_CoT + [state_msg, user_msg]
-            res = self.client.chat.completions.create(model=self.model, messages=call_msgs)
+            res = self.client.chat.completions.create(model=self.model, messages=call_msgs, temperature=0.5)
 
         content = res.choices[0].message.content
 
@@ -72,22 +76,63 @@ class PlanningAgent:
         
         prompt_Cal.append({"role": "user", "content": prompt_query})
         
-        res = self.client.chat.completions.create(model=self.model, messages=prompt_Cal)
+        res = self.client.chat.completions.create(model=self.model, messages=prompt_Cal, temperature=0.5)
         return res.choices[0].message.content
+    
+    def ghidra_option(self, ctx):
+        console.print("Enter the binary path: ", style="blue", end="")
+        binary_path = input()
+
+        console.print("=== Ghdira Run ===", style='bold green')
+        binary_code = ghdira_API(binary_path)
+        
+        state = core.load_state()
+                    
+        # Query make
+        Cot_query = build_query(option = "--ghidra", code = binary_code, state = state)
+        
+        # CoT 
+        console.print("=== CoT Run ===", style='bold green')
+        CoT_return = self.run_CoT(prompt_query = Cot_query)
+
+        # Cal 
+        Cal_query = build_query(option = "--Cal", state = state, CoT = CoT_return)
+        console.print("=== Cal Run ===", style='bold green')
+        Cal_return = self.run_Cal(prompt_query = Cal_query)
+        
+        # instruction
+        instruction_query = build_query(option = "--instruction", state = state, Cal=Cal_return)
+        console.print("=== instruction Agent Run ===", style='bold green')
+        instruction_return = ctx.instruction.run_instruction(instruction_query)
+        
+        #instruction print
+        cmd_human = ctx.parsing.Human__translation_run(prompt_query=instruction_return)
+        console.print(f"{cmd_human}", style='bold green')
+        
+        return instruction_return
+        
+    
+    def ok(self):
+        console.print("Should we proceed like this? ", style="blue")
+        console.print("ex) yes, y || no, n", style="blue", end="")
+        select = input()
+        
+        select.lower()
+        
+        if(select == "y" or select == "yes"):
+            return 1
+        
+        elif(select == "n" or select == "no"):
+            return 0
         
         
     def init_Option(self, option: str, ctx):
         if option == "--help":
             console.print("--help : Display the available commands.", style="bold yellow")
-            # console.print("--file : Paste the challenge source code to locate potential vulnerabilities.", style="bold yellow")
-            # console.print("--ghidra : Generate a plan based on decompiled and disassembled results.", style="bold yellow"   )
-            # console.print("--discuss : Discuss the approach with the LLM to set a clear direction.", style="bold yellow")
-            # console.print("--instruction : Get step-by-step guidance based on a plan.", style="bold yellow")
-            # console.print("--exploit : Receive an exploit script or detailed exploitation steps.", style="bold yellow")
-            # console.print("--result : Update plan based on execution result.", style="bold yellow")
-            # console.print("--showplan : Show current plan.", style="bold yellow")
-            # console.print("--add-summary : Append a manual human summary into state.json.", style="bold yellow")
-            # console.print("--quit : Exit the program.", style="bold yellow")
+            console.print("--file : Paste the challenge source code to locate potential vulnerabilities.", style="bold yellow")
+            console.print("--ghidra : Generate a plan based on decompiled and disassembled results.", style="bold yellow"   )
+            console.print("--discuss : Discuss the approach with the LLM to set a clear direction.", style="bold yellow")
+            console.print("--quit : Exit the program.", style="bold yellow")
             # -> 추후 옵션 넣고 수정 예정
         
         elif option == "--discuss":
@@ -99,35 +144,29 @@ class PlanningAgent:
             console.print("Paste the challenge’s source code. Type <<<END>>> on a new line to finish.", style="blue")
             planning_Code = core.multi_line_input()
             
-            
         elif option == "--ghidra":
-            console.print("Enter the binary path: ", style="blue", end="")
-            binary_path = input()
-
-            console.print("=== Ghdira Run ===", style='bold green')
-            binary_code = ghdira_API(binary_path)
+            result = self.ghidra_option(ctx)
             
+            if(self.ok()):
+                pass
+            
+            else:
+                return 0
+                
+            #state.json, plan.json parsing_save & load
+        
+            plan = core.load_plan()    
             state = core.load_state()
-                        
-            # Query 생성
-            Cot_query = build_query(option = "--ghidra", code = binary_code, state = state)
-            
-            # CoT 
-            console.print("=== CoT Run ===", style='bold green')
-            CoT_Return = self.run_CoT(prompt_query = Cot_query)
-
-            # Cal 
-            Cal_query = build_query(option = "--Cal", state = state, CoT = CoT_Return)
-            console.print("=== Cal Run ===", style='bold green')
-            Cal_Return = self.run_Cal(prompt_query = Cal_query)
-            
-            # instruction
             
             # result
-            
-            # discuss / continue
+            console.print("Paste the result of your command execution. Submit <<<END>>> to finish.", style="blue")
+            instruction_result = core.multi_line_input()
+            LLM_translation = ctx.parsing.LLM_translation_run(prompt_query=instruction_result, state=state)
             
             # feedback
+            feedback_result = ctx.feedback.feedback_run(prompt_query=LLM_translation, state=state)            
+            
+            # state & plan update
 
             
         elif option == "--quit":
