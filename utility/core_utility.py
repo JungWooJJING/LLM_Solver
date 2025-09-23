@@ -15,8 +15,6 @@ INSTRUCTION_FILE = "instruction.json"
 PLAN_FILE = "plan.json"
 
 DEFAULT_STATE = {
-  "iter": 0,
-  "goal": "",
   "constraints": ["no brute-force > 1000"],
   "env": {},
   "selected": {},
@@ -49,6 +47,18 @@ class Core:
         for f in targets:
             if os.path.exists(f):
                 os.remove(f)
+    
+    def init_state(self):
+        with open(STATE_FILE, "w", encoding="utf-8") as f:
+            json.dump(DEFAULT_STATE, f, ensure_ascii=False, indent=2)    
+    
+    def init_plan(self):
+        with open(PLAN_FILE, "w", encoding="utf-8") as f:
+            json.dump(DEFAULT_PLAN, f, ensure_ascii=False, indent=2)    
+                
+    def save_plan(self, plan: dict) -> None:
+        with open(PLAN_FILE, "w", encoding="utf-8") as f:
+            json.dump(plan, f, ensure_ascii=False, indent=2)
                 
     def load_plan(self) -> Dict[str, Any]:
         if not os.path.exists(PLAN_FILE):
@@ -56,9 +66,9 @@ class Core:
         with open(PLAN_FILE, "r", encoding="utf-8") as f:
             return json.load(f)
 
-    def save_plan(self, plan: dict) -> None:
-        with open(PLAN_FILE, "w", encoding="utf-8") as f:
-            json.dump(plan, f, ensure_ascii=False, indent=2)
+    def save_state(self, state: dict):
+        with open(STATE_FILE, "w", encoding="utf-8") as f:
+            json.dump(state, f, ensure_ascii=False, indent=2)
 
     def load_state(self):
         if not os.path.exists(STATE_FILE):
@@ -66,7 +76,4 @@ class Core:
             
         with open(STATE_FILE, "r", encoding="utf-8") as f:
             return json.load(f)
-
-    def save_state(self, state: dict):
-        with open(STATE_FILE, "w", encoding="utf-8") as f:
-            json.dump(state, f, ensure_ascii=False, indent=2)
+    

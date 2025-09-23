@@ -12,10 +12,9 @@ STATE_SPEC = (
     "Policies: obey constraints; build on artifacts/results.\n"
 )
 
-def build_query(option: str, code: str = "", state: str = "", CoT: str = ""):
+def build_query(option: str, code: str = "", state: str = "", CoT: str = "", Cal: str = ""):
     if option == "--file":
         prompt = (
-            "### STATE SPEC:\n{state_spec}\n\n### STATE:\n{state}\n\n"
             "You are a planning assistant for CTF automation.\n\n"
             "You will be given the content of a file related to a CTF challenge "
             "(e.g., source code, binary disassembly, script, or captured data).\n"
@@ -40,12 +39,11 @@ def build_query(option: str, code: str = "", state: str = "", CoT: str = ""):
             "    }}\n"
             "  ]\n"
             "}}\n"
-        ).format(state_spec=STATE_SPEC, state=state, code=code, expand_k=expand_k)
+        ).format(code=code, expand_k=expand_k)
         return prompt
 
     elif option == "--ghidra":
         prompt = (
-            "### STATE SPEC:\n{state_spec}\n\n### STATE:\n{state}\n\n"
             "You are a planning assistant for CTF automation using Ghidra outputs.\n\n"
             "You will be given per-function artifacts from Ghidra (function name, decompiled C, disassembly, xrefs, strings).\n"
             "Do NOT solve or exploit. Propose several DISTINCT next-step investigative/preparatory actions for the very next cycle.\n\n"
@@ -70,22 +68,51 @@ def build_query(option: str, code: str = "", state: str = "", CoT: str = ""):
             "    }}\n"
             "  ]\n"
             "}}\n"
-        ).format(state_spec=STATE_SPEC, state=state, code=code, expand_k=expand_k)
+        ).format(code=code, expand_k=expand_k)
         return prompt
 
     elif option == "--Cal":
         prompt = (
+            "{STATE_SPEC}"
             "### STATE SPEC:\n{state_spec}\n\n"
             "### STATE:\n{state}\n\n"
             "### CoT:\n{CoT}"
-        ).format(state_spec=STATE_SPEC, state=state, CoT=CoT)
+        ).format(STATE_SPEC=STATE_SPEC, state_spec=STATE_SPEC, state=state, CoT=CoT)
         return prompt
     
+    elif option == "--instruction":
+        prompt = (
+            "### STATE:\n{state}\n\n"
+            "### CAL:\n{cal}\n\n"
+            "You are an instruction generator for ONE cycle in a CTF workflow.\n"
+            "Select ONLY the single candidate with the highest CAL.results[*].final score "
+            "(tie-break by higher exploitability, then lower cost, then lower risk). "
+            "Use that candidate to produce a deterministic plan to learn the NEXT required fact.\n\n"
+            "OUTPUT — JSON ONLY (no prose, no fences). If invalid, return {\"error\":\"BAD_OUTPUT\"}.\n"
+            "{\n"
+            '  "what_to_find": "one-line fact to learn",\n'
+            '  "steps": [\n'
+            '    {\n'
+            '      "name": "short label",\n'
+            '      "cmd": "exact shell command to run",\n'
+            '      "success": "substring or re:<regex> to confirm",\n'
+            '      "artifact": "- or filename",\n'
+            '      "code": "full runnable helper script if needed, else -"\n'
+            '    }\n'
+            '  ]\n'
+            "}\n\n"
+            "RULES:\n"
+            "- Use only tools in STATE.env and obey STATE.constraints.\n"
+            "- Always include exactly one primary step first; add more only if strictly required.\n"
+            "- Every step MUST include cmd; if a helper is needed, put full script in steps[i].code.\n"
+            "- Prefer read-only, low-cost probes; keep commands reproducible.\n"
+        ).format(state=state, cal=Cal)  
+    
+        return prompt
+
     # elif option == "--plan":
         
     # elif option == "--discuss":
-        
-    # elif option == "--instruction":
     
     # elif option == "--exploit":
         
