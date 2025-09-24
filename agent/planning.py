@@ -1,6 +1,4 @@
-import os
-import json
-import re
+import os, re, json
 import pyghidra
 
 os.environ["GHIDRA_INSTALL_DIR"] = "/home/wjddn0623/Ghidra/ghidra/build/dist/ghidra_12.0_DEV"
@@ -9,7 +7,7 @@ pyghidra.start()
 from typing import List, Dict, Any
 
 from openai import OpenAI
-from .todo import add_todos_from_actions, run_ready, load_plan
+# from .todo import add_todos_from_actions, run_ready, load_plan
 
 from templates.prompting2 import CTFSolvePrompt
 from templates.prompting import few_Shot
@@ -26,9 +24,23 @@ from utility.compress import Compress
 
 console = Console()
 core = Core()
-compress = Compress()
 FEWSHOT = few_Shot()
-expand_k = 5
+
+DEFAULT_STATE = {
+  "challenge" : [],
+  "constraints": ["no brute-force > 1000"],
+  "env": {},
+  "selected": {},
+  "results": []
+}
+
+DEFAULT_PLAN = {
+  "todos": [],
+  "runs": [],
+  "seen_cmd_hashes": [],
+  "artifacts": {},
+  "backlog" : []
+}
 
 w = {"feasibility": 0.25, "info_gain": 0.30, "novelty": 0.20, "cost": 0.15, "risk": 0.15}
 
@@ -45,8 +57,9 @@ class PlanningAgent:
     def __init__(self, api_key: str, model: str = "gpt-5"):
         self.client = OpenAI(api_key=api_key)
         self.model = model
+        self.compress = Compress(api_key=api_key)
         
-    def run_CoT(self, prompt_query: str, ctx):
+    def run_CoT(self, prompt_query: str):
         global prompt_CoT
         if not isinstance(globals().get("prompt_CoT"), list):
             prompt_CoT = []
@@ -58,25 +71,25 @@ class PlanningAgent:
         call_msgs = prompt_CoT + [state_msg, user_msg]
 
         try:
-            res = self.client.chat.completions.create(model=self.model, messages=call_msgs, temperature=0.5)
+            res = self.client.chat.completions.create(model=self.model, messages=call_msgs)
         except Exception:
-            prompt_CoT[:] = compress.compress_history(prompt_CoT, ctx=ctx)
+            prompt_CoT[:] = self.compress.compress_history(prompt_CoT)
             call_msgs = prompt_CoT + [state_msg, user_msg]
-            res = self.client.chat.completions.create(model=self.model, messages=call_msgs, temperature=0.5)
+            res = self.client.chat.completions.create(model=self.model, messages=call_msgs)
 
         content = res.choices[0].message.content
 
         prompt_CoT.extend([user_msg, {"role": "assistant", "content": content}])
         return content
 
-    def run_Cal(self, prompt_query : str, ctx):
+    def run_Cal(self, prompt_query : str):
         prompt_Cal = [
             {"role": "developer", "content": CTFSolvePrompt.planning_prompt_Cal},
         ]
         
         prompt_Cal.append({"role": "user", "content": prompt_query})
         
-        res = self.client.chat.completions.create(model=self.model, messages=prompt_Cal, temperature=0.5)
+        res = self.client.chat.completions.create(model=self.model, messages=prompt_Cal)
         return res.choices[0].message.content
     
     def ghidra_option(self, ctx):
@@ -94,20 +107,23 @@ class PlanningAgent:
         # CoT 
         console.print("=== CoT Run ===", style='bold green')
         CoT_return = self.run_CoT(prompt_query = Cot_query)
+        core.save_json(fileName="CoT.json", json=CoT_return)
 
         # Cal 
         Cal_query = build_query(option = "--Cal", state = state, CoT = CoT_return)
         console.print("=== Cal Run ===", style='bold green')
         Cal_return = self.run_Cal(prompt_query = Cal_query)
+        core.save_json(fileName="Cal.json", json=Cal_return)
         
         # instruction
-        instruction_query = build_query(option = "--instruction", state = state, Cal=Cal_return)
+        instruction_query = build_query(option = "--instruction", Cal=Cal_return)
         console.print("=== instruction Agent Run ===", style='bold green')
-        instruction_return = ctx.instruction.run_instruction(instruction_query)
+        instruction_return = ctx.instruction.run_instruction(instruction_query, state=state)
+        core.save_json(fileName="instruction.json", json=instruction_return)
         
         #instruction print
         cmd_human = ctx.parsing.Human__translation_run(prompt_query=instruction_return)
-        console.print(f"{cmd_human}", style='bold green')
+        console.print(f"{cmd_human}", style='bold yellow')
         
         return instruction_return
         
@@ -133,7 +149,6 @@ class PlanningAgent:
             console.print("--ghidra : Generate a plan based on decompiled and disassembled results.", style="bold yellow"   )
             console.print("--discuss : Discuss the approach with the LLM to set a clear direction.", style="bold yellow")
             console.print("--quit : Exit the program.", style="bold yellow")
-            # -> 추후 옵션 넣고 수정 예정
         
         elif option == "--discuss":
             console.print("Ask questions or describe your intended approach.", style="blue")
@@ -154,9 +169,11 @@ class PlanningAgent:
                 return 0
                 
             #state.json, plan.json parsing_save & load
-        
-            plan = core.load_plan()    
-            state = core.load_state()
+            core.state_update()
+            core.plan_update()
+            
+            plan = core.load_json(fileName="plan.json", default=DEFAULT_STATE)    
+            state = core.load_json(fileName="state.json", default=DEFAULT_STATE)
             
             # result
             console.print("Paste the result of your command execution. Submit <<<END>>> to finish.", style="blue")
@@ -164,7 +181,7 @@ class PlanningAgent:
             LLM_translation = ctx.parsing.LLM_translation_run(prompt_query=instruction_result, state=state)
             
             # feedback
-            feedback_result = ctx.feedback.feedback_run(prompt_query=LLM_translation, state=state)            
+            feedback_result = ctx.feedback.feedback_run(prompt_query=LLM_translation, state=state)       
             
             # state & plan update
 

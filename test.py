@@ -173,9 +173,7 @@ def main():
             
             if(ctx.planning.init_Option(option=option, ctx=ctx)):
                 break
-            
-            core.cleanUp()
-        
+                    
         console.print("Please choose which option you want to choose.", style="blue")
         option = input("> ")
         

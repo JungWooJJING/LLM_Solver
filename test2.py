@@ -332,3 +332,10 @@ class Core:
         plan_json["backlog"].extend(backlog_list)
 
         self.save_json("plan.json", plan_json)
+
+        
+core = Core()
+
+# print(core.parsing_artifacts())
+
+core.state_update()

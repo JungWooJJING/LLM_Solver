@@ -1,0 +1,44 @@
+{
+  "results": [
+    {
+      "idx": 0,
+      "vuln": "Stack BOF",
+      "scores": { "exploitability": 0.90, "evidence": 0.85, "novelty": 0.90, "cost": 0.35, "risk": 0.10 },
+      "weighted_total": 0.86,
+      "now_multiplier": 1.0,
+      "penalties": [],
+      "final": 0.86,
+      "notes": "Confirms EIP control/offset via gdb cyclic; matches No canary; standard tooling; low risk."
+    },
+    {
+      "idx": 1,
+      "vuln": "ret2win",
+      "scores": { "exploitability": 0.75, "evidence": 0.80, "novelty": 0.75, "cost": 0.20, "risk": 0.15 },
+      "weighted_total": 0.78,
+      "now_multiplier": 1.0,
+      "penalties": [{ "reason": "infeasible_or_meaningless_given_STATE", "value": 0.08 }],
+      "final": 0.70,
+      "notes": "read_flag addr + ret gadget for ret2win; low cost; hard-coded grep risk; signals type mismatch."
+    },
+    {
+      "idx": 2,
+      "vuln": "ret2plt",
+      "scores": { "exploitability": 0.78, "evidence": 0.82, "novelty": 0.80, "cost": 0.15, "risk": 0.15 },
+      "weighted_total": 0.809,
+      "now_multiplier": 1.0,
+      "penalties": [{ "reason": "infeasible_or_meaningless_given_STATE", "value": 0.08 }],
+      "final": 0.729,
+      "notes": "Maps system@plt + 'cat flag' str; aligns with NX/No PIE; grep addr brittle; signals type mismatch."
+    },
+    {
+      "idx": 3,
+      "vuln": "GOT overwrite (via ROP)",
+      "scores": { "exploitability": 0.70, "evidence": 0.80, "novelty": 0.85, "cost": 0.15, "risk": 0.15 },
+      "weighted_total": 0.7825,
+      "now_multiplier": 1.0,
+      "penalties": [{ "reason": "infeasible_or_meaningless_given_STATE", "value": 0.08 }],
+      "final": 0.7025,
+      "notes": "Enumerates GOT/PLT (exit, gets); fits No RELRO plan; low cost; signals type mismatch."
+    }
+  ]
+}

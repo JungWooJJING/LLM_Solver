@@ -11,7 +11,7 @@ class Compress:
         self.client = OpenAI(api_key=api_key)
         self.model = model
 
-    def compress_state(self, ctx) -> dict:
+    def compress_state(self) -> dict:
         if not os.path.exists("state.json"):
             raise FileNotFoundError("state.json not found")
         
@@ -46,9 +46,9 @@ class Compress:
             raise ValueError("invalid messages[] from compressor")
         return msgs
 
-    def compress_history(self, history: list, ctx):
+    def compress_history(self, history: list):
         console.print("Compress state.json", style="bold green")
-        self.compress_state(ctx)
+        self.compress_state()
         console.print("Compress history query", style="bold green")
         try:
             return self.compress_messages(history, self.client, self.model)

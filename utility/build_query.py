@@ -1,5 +1,4 @@
-expand_k = 5
-expand_k = 5
+expand_k = 4
 
 STATE_SPEC = (
     "STATE is the single source of truth.\n"
@@ -12,7 +11,7 @@ STATE_SPEC = (
     "Policies: obey constraints; build on artifacts/results.\n"
 )
 
-def build_query(option: str, code: str = "", state: str = "", CoT: str = "", Cal: str = ""):
+def build_query(option: str, code: str = "", state = None, CoT = None, Cal = None):
     if option == "--file":
         prompt = (
             "You are a planning assistant for CTF automation.\n\n"
@@ -61,7 +60,7 @@ def build_query(option: str, code: str = "", state: str = "", CoT: str = "", Cal
             "    {{\n"
             '      "function": "primary function name",\n'
             '      "vuln": "Stack BOF | FmtStr | UAF | OOB | …",\n'
-            '      "why": "e.g., \\"strcpy@plt 0x40123a\\", \\"[rbp-0x40] buf\\", \\"no length check before read()\\"",\n"'
+            '      "why": "e.g., \\"strcpy@plt 0x40123a\\", \\"[rbp-0x40] buf\\", \\"no length check before read()\\"",\n'
             '      "cot_now": "2–4 sentences on immediate plan & rationale",\n'
             '      "tasks": [{{"name":"short label","cmd":"exact terminal command","success":"substring or re:<regex>","artifact":"- or filename"}}],\n'
             '      "expected_signals": [{{"type":"leak|crash|offset|mitigation|symbol|other","name":"e.g., canary|rip_offset|libc_base","hint":"existence/value/format"}}]\n'
@@ -73,40 +72,38 @@ def build_query(option: str, code: str = "", state: str = "", CoT: str = "", Cal
 
     elif option == "--Cal":
         prompt = (
-            "{STATE_SPEC}"
             "### STATE SPEC:\n{state_spec}\n\n"
             "### STATE:\n{state}\n\n"
             "### CoT:\n{CoT}"
-        ).format(STATE_SPEC=STATE_SPEC, state_spec=STATE_SPEC, state=state, CoT=CoT)
+        ).format(state_spec=STATE_SPEC, state=state, CoT=CoT)
         return prompt
     
     elif option == "--instruction":
         prompt = (
-            "### STATE:\n{state}\n\n"
             "### CAL:\n{cal}\n\n"
             "You are an instruction generator for ONE cycle in a CTF workflow.\n"
             "Select ONLY the single candidate with the highest CAL.results[*].final score "
             "(tie-break by higher exploitability, then lower cost, then lower risk). "
             "Use that candidate to produce a deterministic plan to learn the NEXT required fact.\n\n"
-            "OUTPUT — JSON ONLY (no prose, no fences). If invalid, return {\"error\":\"BAD_OUTPUT\"}.\n"
-            "{\n"
+            "OUTPUT — JSON ONLY (no prose, no fences). If invalid, return {{\"error\":\"BAD_OUTPUT\"}}.\n"
+            "{{\n"
             '  "what_to_find": "one-line fact to learn",\n'
             '  "steps": [\n'
-            '    {\n'
+            '    {{\n'
             '      "name": "short label",\n'
             '      "cmd": "exact shell command to run",\n'
             '      "success": "substring or re:<regex> to confirm",\n'
             '      "artifact": "- or filename",\n'
             '      "code": "full runnable helper script if needed, else -"\n'
-            '    }\n'
+            '    }}\n'
             '  ]\n'
-            "}\n\n"
+            "}}\n\n"
             "RULES:\n"
             "- Use only tools in STATE.env and obey STATE.constraints.\n"
             "- Always include exactly one primary step first; add more only if strictly required.\n"
             "- Every step MUST include cmd; if a helper is needed, put full script in steps[i].code.\n"
             "- Prefer read-only, low-cost probes; keep commands reproducible.\n"
-        ).format(state=state, cal=Cal)  
+        ).format(cal=Cal)  
     
         return prompt
 

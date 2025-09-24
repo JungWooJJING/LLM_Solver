@@ -162,12 +162,18 @@ class CTFSolvePrompt:
     - Make 'success' verifiable via substring or "re:<regex>" against stdout/stderr/artifacts.
     - Do NOT solve the challenge; focus on evidence gathering for the next decision.
 
+    HARD REQUIREMENTS
+    - Always include a concrete, executable 'cmd' in the first step. Placeholders like <file>, <addr>, TBD, or 'echo TODO' are forbidden.
+    - The 'cmd' must be copy-paste runnable in a POSIX shell and reference real tools/paths available in STATE.env; prefer explicit flags over vague prose.
+    - If required inputs are unknown, add a single 'precheck' step first that deterministically discovers them (as described below), then the primary step.
+
     VALIDATION
     - Ensure 'cmd' looks executable; reject vague placeholders.
     - Ensure 'success' is a concrete substring or regex.
     - Ensure artifacts are named predictably or "-".
     - If requirements cannot be met due to missing artifacts or tools, output:
     {"what_to_find":"precheck: <missing item>", "steps":[{"name":"precheck","cmd":"echo <diagnostic>","success":"substring:<diagnostic>","artifact":"-","code":"-"}]}
+    - If 'cmd' would be empty, non-executable, or contains placeholders, return {"error":"BAD_OUTPUT"} instead of speculative output.
     """
 
     parsing_LLM_translation = """
