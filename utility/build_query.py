@@ -11,7 +11,7 @@ STATE_SPEC = (
     "Policies: obey constraints; build on artifacts/results.\n"
 )
 
-def build_query(option: str, code: str = "", state = None, CoT = None, Cal = None):
+def build_query(option: str, code: str = "", state = None, CoT = None, Cal = None, plan = None):
     if option == "--file":
         prompt = (
             "You are a planning assistant for CTF automation.\n\n"
@@ -107,10 +107,79 @@ def build_query(option: str, code: str = "", state = None, CoT = None, Cal = Non
     
         return prompt
 
-    # elif option == "--plan":
+    elif option == "--plan":
+        prompt = (
+        "You are a planning assistant for CTF automation using Ghidra outputs and run-state context.\n\n"
+        "Inputs:\n"
+        "[plan.json]\n{plan}\n\n"
+        "[state.json]\n{state}\n\n"
+        "Role:\n"
+        "- Do NOT solve or exploit.\n"
+        "- Propose DISTINCT next-step investigative/preparatory actions for the NEXT cycle only.\n"
+        "- Ground every proposal in BOTH Ghidra artifacts AND the current plan/state history.\n"
+        "- Respect constraints in state.json.constraints and avoid repeating completed steps in plan.json.runs.\n\n"
+        "Requirements:\n"
+        "- Generate {expand_k} distinct candidates.\n"
+        "- For each candidate, read BOTH decompiled C and assembly. Cite concrete terms: exact APIs, addresses, stack var sizes, strcpy/gets/printf, malloc/free, read/write, format usage, bounds, canary save/check.\n"
+        "- Provide a short Chain-of-Thought (3–5 sentences) explaining WHY this step is useful, HOW to attempt it, and WHAT evidence/artifacts it may produce; reference prior signals/results from state.json where relevant.\n"
+        "- Extract a one-line actionable 'thought' (imperative, deterministic) aligned with constraints.\n"
+        "- Prefer safe, low-cost probes. Avoid trivial variations and duplicates. If two ideas overlap, keep the higher information gain.\n\n"
+        "Output:\n"
+        "Return ONLY valid JSON (no markdown, no code fences, no prose). If invalid, return {\"error\":\"BAD_OUTPUT\"}.\n"
+        "JSON schema:\n"
+        "{{\n"
+        '  "candidates": [\n'
+        "    {{\n"
+        '      "function": "primary function name",\n'
+        '      "vuln": "Stack BOF | FmtStr | UAF | OOB | …",\n'
+        '      "why": "e.g., \\"strcpy@plt 0x40123a\\", \\"[rbp-0x40] buf\\", \\"no length check before read()\\"",\n'
+        '      "cot_now": "2–4 sentences on immediate plan & rationale",\n'
+        '      "tasks": [{{"name":"short label","cmd":"exact terminal command","success":"substring or re:<regex>","artifact":"- or filename"}}],\n'
+        '      "expected_signals": [{{"type":"leak|crash|offset|mitigation|symbol|other","name":"e.g., canary|rip_offset|libc_base","hint":"existence/value/format"}}]\n'
+        "    }}\n"
+        "  ]\n"
+        "}}\n"
+        ).format(code=code, plan=plan, state=state, expand_k=expand_k)
+
         
-    # elif option == "--discuss":
-    
+    elif option == "--discuss":
+        prompt = (
+            "You are a planning assistant for CTF automation.\n\n"
+            "You will be given free-form user input about a CTF target (symptoms, logs, code snippets, ideas).\n"
+            "Do NOT solve or exploit. Propose several DISTINCT next-step investigative/preparatory actions for the very next cycle.\n\n"
+            "[User Input]\n{user_input}\n\n"
+            "{plan_block}"
+            "{state_block}"
+            "Rules:\n"
+            "- Ground every proposal in the provided input (and plan/state if present).\n"
+            "- Respect constraints in state.json.constraints and avoid repeating steps in plan.json.runs.\n"
+            "- Prefer safe, low-cost probes; avoid trivial variations and duplicates.\n\n"
+            "Generate {expand_k} distinct candidates.\n"
+            "Return ONLY valid JSON (no markdown, no code fences, no prose). If invalid, return {{\"error\":\"BAD_OUTPUT\"}}.\n"
+            "JSON schema:\n"
+            "{{\n"
+            '  "candidates": [\n'
+            "    {{\n"
+            '      "vuln": "Stack BOF | SQLi | SSTI | UAF | OOB | IDOR | …",\n'
+            '      "why": "concrete evidence ≤120 chars",\n'
+            '      "cot_now": "2–4 sentences on immediate plan & rationale",\n'
+            '      "tasks": [{{"name":"short label","cmd":"exact terminal command","success":"substring or re:<regex>","artifact":"- or filename"}}],\n'
+            '      "expected_signals": [{{"type":"leak|crash|offset|mitigation|symbol|other","name":"e.g., canary|libc_base|rip_offset","hint":"existence/value/format"}}]\n'
+            "    }}\n"
+            "  ]\n"
+            "}}\n"
+        ).format(
+            user_input=code,
+            expand_k=expand_k,
+            plan_block=(
+                "[plan.json]\n{plan}\n\n".format(plan=plan) 
+            ),
+            state_block=(
+                "[state.json]\n{state}\n\n".format(state=state) 
+            ),
+        )
+        return prompt
+
     # elif option == "--exploit":
         
     

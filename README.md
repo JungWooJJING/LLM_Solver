@@ -15,10 +15,8 @@ The functions are as follows.
 --ghidra : Generate a plan based on decompiled and disassembled results.
 --file : Paste the challenge source code to locate potential vulnerabilities.
 --discuss : Discuss the approach with the LLM to set a clear direction.
---instruction : Get step-by-step guidance based on a Tree-of-Thought plan.
+--continue : Continue using LLM with the latest feedback and proceed to the next step.
 --exploit : Receive an exploit script or detailed exploitation steps.
---result : Update plan based on execution result.
---showplan : Show current Tree-of-Thought plan.
 --quit : Exit the program.
 ```
 

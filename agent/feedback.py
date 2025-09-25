@@ -1,6 +1,6 @@
 import json
 
-from templates.prompting2 import CTFSolvePrompt
+from templates.prompting import CTFSolvePrompt
 from openai import OpenAI
 
 class FeedbackAgent:

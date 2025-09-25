@@ -13,6 +13,7 @@ Cal_FILE = "Cal.json"
 Cal_SCORED_FILE = "Cal_scored.json"
 INSTRUCTION_FILE = "instruction.json"
 PLAN_FILE = "plan.json"
+FEEDBACK_FILE = "feedback.json"
 
 DEFAULT_STATE = {
   "challenge" : [],
@@ -42,7 +43,7 @@ class Core:
         return "\n".join(lines)
     
     def cleanUp(self, all=True):
-        targets = [COT_FILE, Cal_FILE, Cal_SCORED_FILE, INSTRUCTION_FILE, PLAN_FILE]
+        targets = [COT_FILE, Cal_FILE, Cal_SCORED_FILE, INSTRUCTION_FILE, PLAN_FILE, FEEDBACK_FILE]
         if all:
             targets.append(STATE_FILE)
         for f in targets:
@@ -332,3 +333,68 @@ class Core:
         plan_json["backlog"].extend(backlog_list)
 
         self.save_json("plan.json", plan_json)
+        
+    def parsing_status(self):
+        feedback_json = self.load_json(fileName="feedback.json", default={})
+        
+        return feedback_json.get("status")
+
+    def parsing_promote_facts(self):
+        feedback_json = self.load_json(fileName="feedback.json", default={})
+
+        return feedback_json.get("promote_facts")
+
+    def parsing_result_quality(self):
+        feedback_json = self.load_json(fileName="feedback.json", default={})
+
+        return feedback_json.get("result_quality")
+    
+    def parsing_next_hint(self):
+        feedback_json = self.load_json(fileName="feedback.json", default={})
+
+        return feedback_json.get("next_hint")   
+    
+    def parsing_next_what_to_find(self):
+        feedback_json = self.load_json(fileName="feedback.json", default={})
+
+        return feedback_json.get("next_what_to_find")       
+        
+    def parsing_feedback(self):
+        parsing_status = self.parsing_status()
+        parsing_promote_facts = self.parsing_promote_facts()
+        parsing_result_quality = self.parsing_result_quality()
+        parsing_next_hint = self.parsing_next_hint()
+        parsing_next_what_to_find = self.parsing_next_what_to_find()
+    
+        state = self.load_json(fileName="state.json", default={})
+        plan = self.load_json(fileName="plan.json", default={})
+        
+        state_results = state.get("results", [])
+        plan_runs = plan.get("runs", [])
+        
+        idx = len(state_results) - 1
+
+        idx = None
+        
+        for i in range(len(state_results) - 1, -1, -1):
+            if not state_results[i].get("success"):
+                idx = i
+                break
+        if idx is None:
+            idx = len(state_results) - 1  
+
+        state_results[idx]["success"] = parsing_status
+        state_results[idx]["results"] = parsing_promote_facts
+
+        state["results"] = state_results
+        
+        self.save_json(fileName="state.json", obj=state)
+        
+        plan_runs[idx]["success"] = parsing_status
+        plan_runs[idx]["next_hint"] = parsing_next_hint
+        plan_runs[idx]["next_what_to_find"] = parsing_next_what_to_find
+        
+        plan["runs"] = plan_runs
+        
+        self.save_json(fileName="plan.json", obj=plan)
+        

@@ -1,7 +1,7 @@
 import os, json, re
 
 from openai import OpenAI
-from templates.prompting2 import CTFSolvePrompt
+from templates.prompting import CTFSolvePrompt
 from rich.console import Console
 
 console = Console()
