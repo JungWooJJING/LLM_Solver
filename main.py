@@ -61,34 +61,34 @@ def main():
 
     ctx = setting()
     
-    core.init_state()
-    core.init_plan()
+    # core.init_state()
+    # core.init_plan()
 
-    console.print("Enter the challenge title:", style="blue")
-    title = input("> ")
+    # console.print("Enter the challenge title:", style="blue")
+    # title = input("> ")
 
-    console.print("Enter the challenge description (Press <<<END>>> to finish):", style="blue")
-    description = core.multi_line_input()
+    # console.print("Enter the challenge description (Press <<<END>>> to finish):", style="blue")
+    # description = core.multi_line_input()
 
-    console.print("Enter the challenge category:", style="blue")
-    category = input("> ")
+    # console.print("Enter the challenge category:", style="blue")
+    # category = input("> ")
     
-    category = category.lower()
+    # category = category.lower()
     
-    if(category == "pwnable"):
-        console.print("Enter the binary checksec:", style="blue")
-        checksec = core.multi_line_input()
+    # if(category == "pwnable"):
+    #     console.print("Enter the binary checksec:", style="blue")
+    #     checksec = core.multi_line_input()
                 
-        console.print("Enter the challenge flag format:", style="blue")
-        format = input("> ")
+    #     console.print("Enter the challenge flag format:", style="blue")
+    #     format = input("> ")
 
-        parsing_preInformation(category=category, flag = format, checksec=checksec)
+    #     parsing_preInformation(category=category, flag = format, checksec=checksec)
 
-    else: 
-        console.print("Enter the challenge flag format:", style="blue")
-        format = input("> ")
+    # else: 
+    #     console.print("Enter the challenge flag format:", style="blue")
+    #     format = input("> ")
         
-        parsing_preInformation(category=category, flag = format, checksec=None)
+    #     parsing_preInformation(category=category, flag = format, checksec=None)
 
     # console.print("wait...", style='bold green')
     # result = ctx.preinfo.ask_PreInformation(title, description, category)
@@ -97,27 +97,24 @@ def main():
     # console.print(result, style='bold yellow')
     # console.print("====================\n", style='bold yellow')
 
-    while True:
+    
         
-        while True:
-            
-            console.print("Please choose which option you want to choose.", style="blue")
-            option = input("> ")
-            
-            if(ctx.planning.init_Option(option=option, ctx=ctx)):
-                break
-                    
+    # while True:
+        
+    #     console.print("Please choose which option you want to choose.", style="blue")
+    #     option = input("> ")
+        
+    #     if(ctx.planning.init_Option(option=option, ctx=ctx)):
+    #         break
+    
+    while True:     
         console.print("Please choose which option you want to choose.", style="blue")
         option = input("> ")
         
         ctx.planning.check_Option(option=option, ctx=ctx)
             
         exploit_iteration += 1
-        
-        console.print("Please choose which option you want to choose.", style="blue")
-        option = input("> ")
-        ctx.planning.init_Option(option, ctx)
-
+    
         # if exploit_iteration % 10 == 0:
         #     if not os.path.exists("state.json"):
         #         print("Error")
@@ -168,7 +165,8 @@ def main():
         #     parsing_response = ctx.parsing.human_translation(json.dumps(Cal_result, ensure_ascii=False, indent=2))
         #     console.print(parsing_response, style='yellow')            
         
-        core.cleanUp()
+        
         
 if __name__ == "__main__":
     main()
+    

@@ -169,7 +169,7 @@ class PlanningAgent:
         core.save_json(fileName="Cal.json", obj=Cal_json)
         
         # instruction
-        instruction_query = build_query(option = "--instruction", Cal=Cal_return)
+        instruction_query = build_query(option = "--instruction", CoT= CoT_json,Cal=Cal_return)
         console.print("=== instruction Agent Run ===", style='bold green')
         instruction_return = ctx.instruction.run_instruction(instruction_query, state=state)
         instruction_json = core.safe_json_loads(instruction_return)
@@ -302,10 +302,40 @@ class PlanningAgent:
             
             self.feedback_rutin(ctx)
             
-        # elif option == "--exploit":
+        elif option == "--exploit":
+            
+            state = core.load_json(fileName="state.json", default="")
+            plan = core.load_json(fileName="plan.json", default="")
+            
+            exploit_prompt = build_query(option=option, state=json.dumps(state, ensure_ascii=False, indent=2), plan=json.dumps(plan, ensure_ascii=False, indent=2))
+            
+            console.print("=== Exploit Agent ===", style='bold green')
+            exploit_return = ctx.exploit.exploit_run(prompt_query=exploit_prompt)
+            
+            cmd_human = ctx.parsing.Human__translation_run(prompt_query=exploit_return)
+            console.print(f"{cmd_human}", style='bold yellow')
+            
+            # result
+            console.print("Paste the result of your command execution. Submit <<<END>>> to finish.", style="blue")
+            instruction_result = core.multi_line_input()
+
+            console.print("=== LLM_translation ===", style='bold green')
+            LLM_translation = ctx.parsing.Exploit_result_run(prompt_query=instruction_result, state=state, scenario=json.dumps(exploit_return, ensure_ascii=False, indent=2)) 
+                            
+            # feedback
+            console.print("=== feedback Agent ===", style='bold green')
+            feedback_result = ctx.feedback.exploit_feedback_run(prompt_query=LLM_translation, state=state, scenario=json.dumps(exploit_return, ensure_ascii=False, indent=2))       
+            feedback_json = core.safe_json_loads(feedback_result)
+            core.save_json(fileName="feedback.json", obj=feedback_json)
+        
+            # state & plan Update
+            core.exploit_feedback()
+            
         
         elif option == "--quit":
             console.print("\nGoodbye!\n", style="bold yellow")
+            
+            core.cleanUp()
             exit(0)
 
         else:

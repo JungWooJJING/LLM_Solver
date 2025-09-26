@@ -20,7 +20,8 @@ DEFAULT_STATE = {
   "constraints": ["no brute-force > 1000"],
   "env": {},
   "selected": {},
-  "results": []
+  "results": [],
+  "exploit" : []
 }
 
 DEFAULT_PLAN = {
@@ -388,6 +389,8 @@ class Core:
 
         state["results"] = state_results
         
+        state["selected"] = ""
+        
         self.save_json(fileName="state.json", obj=state)
         
         plan_runs[idx]["success"] = parsing_status
@@ -396,5 +399,58 @@ class Core:
         
         plan["runs"] = plan_runs
         
+        plan["tasks"] = ""
+        
         self.save_json(fileName="plan.json", obj=plan)
         
+    def parsing_summary(self):
+        feedback_json = self.load_json(fileName="feedback.json", default={})
+
+        return feedback_json.get("attempt_summary")     
+    
+    def parsing_state_delta_results(self):
+        feedback_json = self.load_json(fileName="feedback.json", default={})
+
+        fb = feedback_json.get("state_delta", {})
+        return fb["results"]["append"][0]
+        
+    def parsing_next_step(self):
+        feedback_json = self.load_json(fileName="feedback.json", default={})
+
+        return feedback_json["next_step"]
+
+    def exploit_feedback(self):
+        status = self.parsing_status()
+        attempt_summary = self.parsing_summary()
+        state_delta_results_append = self.parsing_state_delta_results()
+        next_step = self.parsing_next_step()
+        
+        state = self.load_json(fileName="state.json", default={})
+        plan = self.load_json(fileName="plan.json", default={})
+        
+        state_exploit = state.get("exploit", [])
+        
+        if not state_exploit:
+            state_exploit.append([])
+            idx = 0
+        else:
+            idx = len(state_exploit) - 1
+
+        state_exploit[idx].append({
+            "summary" : attempt_summary,
+            "signals" : state_delta_results_append["signals"],
+            "note" : state_delta_results_append["note"]
+        })
+        
+        state["exploit"] = state_exploit
+                
+        CoT_num = self.count_CoT_Num(field="runs")
+        plan["runs"].append({
+            "CoT_num" : CoT_num,
+            "success" : status,
+            "summary" : attempt_summary,
+            "next_hint" : next_step
+        })
+
+        self.save_json(fileName="state.json", obj=state)
+        self.save_json(fileName="plan.json", obj=plan)

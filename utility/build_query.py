@@ -80,6 +80,7 @@ def build_query(option: str, code: str = "", state = None, CoT = None, Cal = Non
     
     elif option == "--instruction":
         prompt = (
+            "### CoT:\n{cot}\n\n"
             "### CAL:\n{cal}\n\n"
             "You are an instruction generator for ONE cycle in a CTF workflow.\n"
             "Select ONLY the single candidate with the highest CAL.results[*].final score "
@@ -103,7 +104,7 @@ def build_query(option: str, code: str = "", state = None, CoT = None, Cal = Non
             "- Always include exactly one primary step first; add more only if strictly required.\n"
             "- Every step MUST include cmd; if a helper is needed, put full script in steps[i].code.\n"
             "- Prefer read-only, low-cost probes; keep commands reproducible.\n"
-        ).format(cal=Cal)  
+        ).format(cot= CoT, cal=Cal)  
     
         return prompt
 
@@ -125,7 +126,7 @@ def build_query(option: str, code: str = "", state = None, CoT = None, Cal = Non
         "- Extract a one-line actionable 'thought' (imperative, deterministic) aligned with constraints.\n"
         "- Prefer safe, low-cost probes. Avoid trivial variations and duplicates. If two ideas overlap, keep the higher information gain.\n\n"
         "Output:\n"
-        "Return ONLY valid JSON (no markdown, no code fences, no prose). If invalid, return {\"error\":\"BAD_OUTPUT\"}.\n"
+        "Return ONLY valid JSON (no markdown, no code fences, no prose). If invalid, return {{\"error\":\"BAD_OUTPUT\"}}.\n"
         "JSON schema:\n"
         "{{\n"
         '  "candidates": [\n'
@@ -140,7 +141,7 @@ def build_query(option: str, code: str = "", state = None, CoT = None, Cal = Non
         "  ]\n"
         "}}\n"
         ).format(code=code, plan=plan, state=state, expand_k=expand_k)
-
+        return prompt
         
     elif option == "--discuss":
         prompt = (
@@ -180,6 +181,56 @@ def build_query(option: str, code: str = "", state = None, CoT = None, Cal = Non
         )
         return prompt
 
-    # elif option == "--exploit":
+    elif option == "--exploit":
+        prompt = (
+            "You are an exploitation/execution assistant across multiple CTF domains "
+            "(pwn, web, crypto, reversing, forensics, mobile, cloud, ML, misc).\n\n"
+            "Inputs:\n"
+            "[plan.json]\n{plan}\n\n"
+            "[state.json]\n{state}\n\n"
+            "ROLE\n"
+            "- Produce ONE concrete, testable attack path or automation script for the CURRENT objective.\n"
+            "- Do NOT guess unknown values. Use only facts in state/plan/artifacts. "
+            "If a value is missing, first output a PREP step that deterministically derives and stores it.\n"
+            "- Local, deterministic, non-destructive. No network or exfiltration unless explicitly allowed in constraints.\n"
+            "- Respect state.json.constraints (e.g., time/cost/risk caps), and avoid repeating completed steps in plan.json.runs.\n\n"
+            "OUTPUT — JSON ONLY (no markdown/fences). If invalid, return {{\"error\":\"BAD_OUTPUT\"}}.\n"
+            "Schema:\n"
+            "{{\n"
+            '  "technique": "e.g., Ret2win | Ret2plt | ROP | SQLi-Boolean | SSTI | XSS-Reflected | LFI | Padding-Oracle | RSA-CRT | ZKP-Forge | ELF-Patch | ORW | PCAP-Secret | APK-Hook | Cloud-Misconfig | Model-Inference | ...",\n'
+            '  "objective": "one-line measurable goal (e.g., prove EIP control, dump table names, extract key, recover flag segment)",\n'
+            '  "hypothesis": "short statement tying inputs to this technique",\n'
+            '  "preconditions": ["explicit known facts needed (with file/field names)"],\n'
+            '  "artifacts_in": ["required existing files/paths from prior steps"],\n'
+            '  "payload_layout": "concise structure if applicable (e.g., [offset] + [addr] + [arg]) or -",\n'
+            '  "tasks": [\n'
+            '    {{"name":"prep/derive-missing","cmd":"exact command or script","success":"substring or re:<regex>","artifact":"- or filename"}},\n'
+            '    {{"name":"build payload or request","cmd":"exact command that writes an artifact","success":"re:created|bytes|OK","artifact":"payload.bin|req.txt|-"}},\n'
+            '    {{"name":"dry run / safe verify","cmd":"deterministic local check (gdb|pytest|simulator|static tool)","success":"substring or re:<regex>","artifact":"verify.log"}},\n'
+            '    {{"name":"execute","cmd":"exact command","success":"substring or re:<regex> indicating objective","artifact":"run_out.txt"}}\n'
+            "  ],\n"
+            '  "expected_signals": [\n'
+            '    {{"type":"symbol|leak|offset|mitigation|oracle|proof|other","name":"concise name","hint":"existence/value/format"}},\n'
+            '    {{"type":"objective","name":"goal_reached","hint":"success token or file presence"}}\n'
+            "  ],\n"
+            '  "rollback": ["commands to revert temp changes or clean artifacts"],\n'
+            '  "risk": "Low|Medium|High with 1-line justification",\n'
+            '  "cost": "low|medium|high"\n'
+            "}}\n\n"
+            "GUIDANCE\n"
+            "- Web: use curl/httpie with exact params; success=HTTP code/body substrings.\n"
+            "- Crypto: show math/solver steps; success=equation residual==0 or verifier OK.\n"
+            "- Reversing: use objdump/ghidra-headless/radare; success=pattern in disasm or patched hash.\n"
+            "- Forensics: tshark/foremost/volatility; success=indicator found in output.\n"
+            "- Mobile: jadx/frida; success=hook hit/log token.\n"
+            "- Cloud: IaC/static checks; success=policy/perm diff, no live prod actions.\n"
+            "- ML: inference or prompt attack must be offline/sandbox; success=metric/trace token.\n"
+        ).format(
+            plan=plan,
+            state=state  ,
+        )
+        return prompt
+
+
+                
         
-    
