@@ -11,26 +11,26 @@ class Compress:
         self.client = OpenAI(api_key=api_key)
         self.model = model
 
-    def compress_state(self) -> dict:
+    def compress_state(self, ctx) -> dict:
         if not os.path.exists("state.json"):
             raise FileNotFoundError("state.json not found")
         
         with open("state.json","r",encoding="utf-8") as f:
             state = json.load(f)
             
-        # out = ctx.parsing.run_prompt_state_compress(json.dumps(state, ensure_ascii=False))
-        # try:
-        #     obj = json.loads(out) if isinstance(out, str) else out
-        # except Exception as e:
-        #     raise ValueError(f"state compressor returned invalid JSON: {e}")
+        out = ctx.parsing.run_prompt_state_compress(json.dumps(state, ensure_ascii=False))
+        try:
+            obj = json.loads(out) if isinstance(out, str) else out
+        except Exception as e:
+            raise ValueError(f"state compressor returned invalid JSON: {e}")
         
-        # if not isinstance(obj, dict):
-        #     raise TypeError("state compressor returned non-dict")
-        # with open("state.json","w",encoding="utf-8") as f:
-        #     json.dump(obj, f, ensure_ascii=False, indent=2)
-        # return obj
+        if not isinstance(obj, dict):
+            raise TypeError("state compressor returned non-dict")
+        with open("state.json","w",encoding="utf-8") as f:
+            json.dump(obj, f, ensure_ascii=False, indent=2)
+        return obj
 
-    def compress_messages(self, history: list, client, model) -> list:
+    def compress_messages(self, history: list, client, model, ctx) -> list:
         prompt = [
             {"role":"developer","content": CTFSolvePrompt.compress_history},
             {"role":"user","content": json.dumps(history, ensure_ascii=False)},
@@ -46,11 +46,11 @@ class Compress:
             raise ValueError("invalid messages[] from compressor")
         return msgs
 
-    def compress_history(self, history: list):
+    def compress_history(self, history: list, ctx):
         console.print("Compress state.json", style="bold green")
         self.compress_state()
         console.print("Compress history query", style="bold green")
         try:
-            return self.compress_messages(history, self.client, self.model)
+            return self.compress_messages(history, self.client, self.model, ctx)
         except Exception:
             return history

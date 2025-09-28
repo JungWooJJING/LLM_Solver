@@ -7,7 +7,6 @@ pyghidra.start()
 from typing import List, Dict, Any
 
 from openai import OpenAI
-# from .todo import add_todos_from_actions, run_ready, load_plan
 
 from templates.prompting import CTFSolvePrompt
 from templates.prompting import few_Shot
@@ -68,7 +67,7 @@ class PlanningAgent:
         self.model = model
         self.compress = Compress(api_key=api_key)
         
-    def run_CoT(self, prompt_query: str):
+    def run_CoT(self, prompt_query: str, ctx):
         global prompt_CoT
         if not isinstance(globals().get("prompt_CoT"), list):
             prompt_CoT = []
@@ -82,7 +81,7 @@ class PlanningAgent:
         try:
             res = self.client.chat.completions.create(model=self.model, messages=call_msgs)
         except Exception:
-            prompt_CoT[:] = self.compress.compress_history(prompt_CoT)
+            prompt_CoT[:] = self.compress.compress_history(prompt_CoT, ctx=ctx)
             call_msgs = prompt_CoT + [state_msg, user_msg]
             res = self.client.chat.completions.create(model=self.model, messages=call_msgs)
 
@@ -91,7 +90,7 @@ class PlanningAgent:
         plan_CoT.extend([user_msg, {"role": "assistant", "content": content}])
         return content
     
-    def run_plan_CoT(self, prompt_query : str):
+    def run_plan_CoT(self, prompt_query : str, ctx):
         global plan_CoT   
         if not isinstance(globals().get("prompt_CoT"), list):
             plan_CoT = []
@@ -105,7 +104,7 @@ class PlanningAgent:
         try:
             res = self.client.chat.completions.create(model=self.model, messages=call_msgs)
         except Exception:
-            plan_CoT[:] = self.compress.compress_history(plan_CoT)
+            plan_CoT[:] = self.compress.compress_history(plan_CoT, ctx=ctx)
             call_msgs = plan_CoT + [state_msg, user_msg]
             res = self.client.chat.completions.create(model=self.model, messages=call_msgs)
 
@@ -124,7 +123,7 @@ class PlanningAgent:
         res = self.client.chat.completions.create(model=self.model, messages=prompt_Cal)
         return res.choices[0].message.content
     
-    def start_workflow(self, option:str , ctx):
+    def first_workflow(self, option:str , ctx):
         state = core.load_json("state.json", default="")
         plan = core.load_json("plan.json", default="")
 
@@ -151,13 +150,48 @@ class PlanningAgent:
             
             console.print("=== Discuss ===", style='bold green')
             Cot_query = build_query(option = option, code = planning_discuss, state = state, plan=plan)
+
+        # CoT 
+        console.print("=== CoT Run ===", style='bold green')
+        CoT_return = self.run_CoT(prompt_query = Cot_query, ctx=ctx)
+        CoT_json = core.safe_json_loads(CoT_return)
+        core.save_json(fileName="CoT.json", obj=CoT_json)
+
+        # Cal 
+        Cal_query = build_query(option = "--Cal", state = state, CoT = CoT_return)
+        console.print("=== Cal Run ===", style='bold green')
+        Cal_return = self.run_Cal(prompt_query = Cal_query)
+        Cal_json = core.safe_json_loads(Cal_return)
+        core.save_json(fileName="Cal.json", obj=Cal_json)
+        
+        # instruction
+        instruction_query = build_query(option = "--instruction", CoT= CoT_json,Cal=Cal_return)
+        console.print("=== instruction Agent Run ===", style='bold green')
+        instruction_return = ctx.instruction.run_instruction(instruction_query, state=state)
+        instruction_json = core.safe_json_loads(instruction_return)
+        core.save_json(fileName="instruction.json", obj=instruction_json)
+        
+        #instruction print
+        cmd_human = ctx.parsing.Human__translation_run(prompt_query=instruction_return)
+        console.print(f"{cmd_human}", style='bold yellow')
+        
+    def loop_workflow(self, option:str , ctx):
+        state = core.load_json("state.json", default="")
+        plan = core.load_json("plan.json", default="")
+        
+        if(option == "--discuss"):
+            console.print("Ask questions or describe your intended approach.", style="blue")
+            planning_discuss = core.multi_line_input()
+            
+            console.print("=== Discuss ===", style='bold green')
+            Cot_query = build_query(option = option, code = planning_discuss, state = state, plan=plan)
             
         elif(option == "--continue"):
             Cot_query = build_query(option = "--plan", state = state, plan=plan)
 
         # CoT 
         console.print("=== CoT Run ===", style='bold green')
-        CoT_return = self.run_CoT(prompt_query = Cot_query)
+        CoT_return = self.run_plan_CoT(prompt_query = Cot_query, ctx=ctx)
         CoT_json = core.safe_json_loads(CoT_return)
         core.save_json(fileName="CoT.json", obj=CoT_json)
 
@@ -181,7 +215,7 @@ class PlanningAgent:
                 
     def ok(self):
         console.print("Should we proceed like this? ", style="blue")
-        console.print("ex) yes, y || no, n", style="blue", end="")
+        console.print("ex) yes, y || no, n ", style="blue", end="")
         select = input()
         
         select.lower()
@@ -223,7 +257,7 @@ class PlanningAgent:
             console.print("--quit : Exit the program.", style="bold yellow")
         
         elif option == "--discuss":
-            self.start_workflow(option=option, ctx=ctx)
+            self.first_workflow(option=option, ctx=ctx)
             
             if(self.ok()):
                 pass
@@ -236,7 +270,7 @@ class PlanningAgent:
             return 1
         
         elif option == "--file":
-            self.start_workflow(option=option, ctx=ctx)
+            self.first_workflow(option=option, ctx=ctx)
             
             if(self.ok()):
                 pass
@@ -249,7 +283,7 @@ class PlanningAgent:
             return 1
             
         elif option == "--ghidra":
-            self.start_workflow(option=option, ctx=ctx)
+            self.first_workflow(option=option, ctx=ctx)
             
             if(self.ok()):
                 pass
@@ -281,7 +315,7 @@ class PlanningAgent:
             console.print("--quit : Exit the program.", style="bold yellow")
             
         elif option == "--discuss":
-            self.start_workflow(option=option, ctx=ctx)
+            self.loop_workflow(option=option, ctx=ctx)
             
             if(self.ok()):
                 pass
@@ -292,7 +326,7 @@ class PlanningAgent:
             self.feedback_rutin(ctx)
             
         elif option == "--continue":
-            self.start_workflow(option=option, ctx=ctx)
+            self.loop_workflow(option=option, ctx=ctx)
             
             if(self.ok()):
                 pass
