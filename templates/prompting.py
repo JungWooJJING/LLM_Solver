@@ -360,48 +360,246 @@ class CTFSolvePrompt:
     - Otherwise OMIT these keys entirely.
     """
 
-    parsing_compress = """
-    You are a JSON compressor for downstream LLMs.
+    compress_state = """
+    You are a CTF state compressor.
 
-    Input: the next user message will be a single JSON document (no prose).
-    Task: output a MINIMAL, STRICT JSON that preserves ONLY the required fields and aggressively compresses content.
+    GOAL
+    - Compress the given state.json while preserving ALL fields and their semantic meaning.
+    - Reduce character count by optimizing text representation without losing information.
 
-    If the user message is not valid JSON, respond ONLY with:
-    {"error":"INVALID_JSON","reason":"<short reason>"}
+    INPUT
+    - STATE: JSON containing challenge, constraints, env, artifacts, facts, selected, results.
 
-    Return VALID JSON only. No markdown, no comments, no backticks, no extra keys.
+    COMPRESSION RULES
+    - Keep ALL fields: challenge, constraints, env, artifacts, facts, selected, results.
+    - Shorten verbose descriptions while preserving meaning.
+    - Abbreviate common terms: "vulnerability" → "vuln", "exploitation" → "exploit".
+    - Compress long strings: keep first 50 chars + "..." for very long descriptions.
+    - Remove redundant whitespace and normalize formatting.
+    - Keep essential technical details, remove verbose explanations.
+    - Preserve all JSON structure and data types.
 
-    REQUIRED TOP-LEVEL SCHEMA (exact keys, no extras):
+    OUTPUT — JSON ONLY:
     {
-    "iter": int,
-    "goal": string,
-    "constraints": [ string ],
-    "env": object,
-    "cot_history": [ { "iter": int, "candidates": [ { "id": string, "thought": string } ] } ],
-    "selected": { "id": string, "score": number, "thought": string, "notes": string },
-    "results": [ { "id": string, "score": number, "thought": string, "notes": string, "verdict": string,
-                    "signals": [ { "type": string, "name": string, "value": string } ] } ]
+        "challenge": { /* compressed but complete */ },
+        "scenario": { /* compressed but complete */ },
+        "constraints": { /* compressed but complete */ },
+        "env": { /* compressed but complete */ },
+        "artifacts": { /* compressed but complete */ },
+        "facts": { /* compressed but complete */ },
+        "selected": { /* compressed but complete */ },
+        "results": [ /* compressed but complete */ ]
     }
 
-    COMPRESSION RULES (apply all):
-    - Keep ONLY the fields shown in the schema above. Drop every other key.
-    - String caps: thought ≤ 120 chars; any other free text ≤ 80 chars. Truncate with "…".
-    - Array caps:
-    constraints ≤ 3 (first 3),
-    cot_history ≤ 2 (last 2),
-    each cot_history.candidates ≤ 3 (first 3),
-    results ≤ 3 (most recent 3),
-    each results.signals ≤ 3 (unique by (type,name,value)).
-    - Deduplicate:
-    candidates by (id,thought);
-    signals by (type,name,value).
-    - Normalize types: numbers as numbers; booleans as true/false; hex like "0x..." stays string.
-    - Stable ordering: keep recency order within capped windows.
-    - If a required field would be empty, keep it as empty list/object instead of removing it.
+    CONSTRAINTS
+    - Maintain all field names and structure.
+    - Preserve all technical values, addresses, offsets, flags.
+    - Keep all timestamps, IDs, and unique identifiers.
+    - Reduce text verbosity by 30-50% while keeping meaning intact.
+    - No data loss - all information must be recoverable.
 
-    Output: ONLY the compressed JSON matching the schema. No explanations.
+    RESPOND
+    - STRICT JSON as above. No prose.
     """
-    
+
+    compress_plan = """
+    You are a CTF plan compressor.
+
+    GOAL
+    - Compress the given plan.json while preserving ALL fields and their semantic meaning.
+    - Reduce character count by optimizing text representation without losing information.
+
+    INPUT
+    - PLAN: JSON containing todos, runs, artifacts, backlog, and other planning data.
+
+    COMPRESSION RULES
+    - Keep ALL fields: todos, runs, artifacts, backlog, and any other existing fields.
+    - Shorten verbose descriptions while preserving meaning.
+    - Abbreviate common terms: "vulnerability" → "vuln", "exploitation" → "exploit", "investigation" → "invest".
+    - Compress long strings: keep first 50 chars + "..." for very long descriptions.
+    - Remove redundant whitespace and normalize formatting.
+    - Keep essential technical details, remove verbose explanations.
+    - Preserve all JSON structure and data types.
+    - Compress task descriptions and status messages.
+
+    OUTPUT — JSON ONLY:
+    {
+        "todos": [ /* compressed but complete */ ],
+        "runs": [ /* compressed but complete */ ],
+        "artifacts": [ /* compressed but complete */ ],
+        "backlog": [ /* compressed but complete */ ],
+        /* any other existing fields */
+    }
+
+    CONSTRAINTS
+    - Maintain all field names and structure.
+    - Preserve all technical values, timestamps, IDs, and unique identifiers.
+    - Keep all task names, commands, and success criteria.
+    - Reduce text verbosity by 30-50% while keeping meaning intact.
+    - No data loss - all information must be recoverable.
+    - Preserve task dependencies and execution order.
+
+    RESPOND
+    - STRICT JSON as above. No prose.
+    """
+
+    scenario_prompt = """
+    You are a CTF scenario analyzer and success tracker.
+
+    GOAL
+    - Analyze the current challenge context and create a structured scenario with clear success milestones.
+    - Define measurable success conditions that can be tracked throughout the CTF solving process.
+
+    INPUT
+    - CHALLENGE: Challenge description, category, and context
+    - STATE: Current state with facts, artifacts, and constraints
+    - OPTION: Analysis type (--file, --ghidra, --discuss)
+
+    SCENARIO STRUCTURE
+    Create a scenario JSON with the following structure:
+
+    OUTPUT — JSON ONLY:
+    {
+        "scenario_id": "unique_identifier",
+        "challenge_type": "pwn|web|crypto|reversing|forensics|misc",
+        "objective": "clear one-line goal",
+        "success_milestones": [
+            {
+                "milestone_id": "milestone_1",
+                "name": "short milestone name",
+                "description": "what needs to be achieved",
+                "success_criteria": [
+                    "specific measurable condition 1",
+                    "specific measurable condition 2"
+                ],
+                "verification_method": "how to verify success",
+                "priority": "high|medium|low",
+                "dependencies": ["milestone_id_required"],
+                "status": "pending|in_progress|completed|failed"
+            }
+        ],
+        "attack_vectors": [
+            {
+                "vector_id": "vector_1",
+                "name": "attack vector name",
+                "description": "brief description",
+                "likelihood": "high|medium|low",
+                "complexity": "low|medium|high",
+                "requirements": ["specific requirements"]
+            }
+        ],
+        "expected_artifacts": [
+            {
+                "artifact_name": "expected file/object name",
+                "type": "binary|source|log|dump|key|flag",
+                "description": "what this artifact contains",
+                "critical": true|false
+            }
+        ],
+        "success_indicators": [
+            {
+                "indicator": "specific signal to look for",
+                "type": "leak|crash|offset|mitigation|oracle|proof|other",
+                "context": "when/where to expect this signal"
+            }
+        ],
+        "failure_conditions": [
+            "condition that indicates failure",
+            "another failure condition"
+        ],
+        "estimated_difficulty": "beginner|intermediate|advanced|expert",
+        "estimated_time": "time estimate in minutes",
+        "tags": ["tag1", "tag2", "tag3"]
+    }
+
+    SCENARIO RULES
+    - Create realistic, achievable milestones based on challenge type
+    - Each milestone should have clear, measurable success criteria
+    - Dependencies should be logical and sequential
+    - Attack vectors should be specific to the challenge type
+    - Expected artifacts should be realistic for the challenge
+    - Success indicators should be observable and verifiable
+
+    RESPOND
+    - STRICT JSON as above. No prose.
+    """
+
+    scenario_tracker_prompt = """
+    You are a scenario progress tracker for CTF workflows.
+
+    GOAL
+    - Track progress against defined scenario milestones
+    - Update milestone status based on current results and artifacts
+    - Provide next steps and recommendations
+
+    INPUT
+    - SCENARIO: Current scenario JSON with milestones and success criteria
+    - STATE: Current state with facts, artifacts, and results
+    - LATEST_RESULTS: Results from the most recent execution
+
+    TRACKING LOGIC
+    - Check each milestone's success criteria against current state/results
+    - Update milestone status based on evidence
+    - Identify next priority milestone
+    - Suggest specific actions to advance
+
+    OUTPUT — JSON ONLY:
+    {
+        "scenario_progress": {
+            "overall_progress": "percentage complete",
+            "completed_milestones": ["milestone_id1", "milestone_id2"],
+            "current_milestone": "milestone_id",
+            "next_priority": "milestone_id"
+        },
+        "milestone_updates": [
+            {
+                "milestone_id": "milestone_1",
+                "old_status": "pending|in_progress|completed|failed",
+                "new_status": "pending|in_progress|completed|failed",
+                "evidence": "what evidence supports this status change",
+                "confidence": "high|medium|low"
+            }
+        ],
+        "achievements": [
+            {
+                "milestone_id": "milestone_1",
+                "achievement": "what was accomplished",
+                "timestamp": "ISO8601 timestamp",
+                "evidence": "supporting evidence"
+            }
+        ],
+        "next_actions": [
+            {
+                "action": "specific action to take",
+                "target_milestone": "milestone_id",
+                "rationale": "why this action is needed",
+                "priority": "high|medium|low"
+            }
+        ],
+        "blockers": [
+            {
+                "blocker": "what is blocking progress",
+                "affected_milestones": ["milestone_id1"],
+                "suggested_resolution": "how to resolve the blocker"
+            }
+        ],
+        "recommendations": [
+            "specific recommendation 1",
+            "specific recommendation 2"
+        ]
+    }
+
+    TRACKING RULES
+    - Only update status when there is clear evidence
+    - Be conservative with status changes
+    - Prioritize high-priority milestones
+    - Identify blockers early
+    - Provide actionable next steps
+
+    RESPOND
+    - STRICT JSON as above. No prose.
+    """
+
     exploit_prompt = """
     You are an EXPLOIT execution assistant across multiple CTF domains (pwn, web, crypto, reversing, forensics, mobile, cloud, ML, misc).
 

@@ -3,6 +3,8 @@ import os, json, re
 from openai import OpenAI
 from templates.prompting import CTFSolvePrompt
 from rich.console import Console
+from utility.core_utility import Core
+core = Core()
 
 console = Console()
 
@@ -11,31 +13,64 @@ class Compress:
         self.client = OpenAI(api_key=api_key)
         self.model = model
 
-    def compress_state(self, ctx) -> dict:
+    def compress_state(self) -> dict:
         if not os.path.exists("state.json"):
             raise FileNotFoundError("state.json not found")
-        
-        with open("state.json","r",encoding="utf-8") as f:
-            state = json.load(f)
-            
-        out = ctx.parsing.run_prompt_state_compress(json.dumps(state, ensure_ascii=False))
-        try:
-            obj = json.loads(out) if isinstance(out, str) else out
-        except Exception as e:
-            raise ValueError(f"state compressor returned invalid JSON: {e}")
-        
-        if not isinstance(obj, dict):
-            raise TypeError("state compressor returned non-dict")
-        with open("state.json","w",encoding="utf-8") as f:
-            json.dump(obj, f, ensure_ascii=False, indent=2)
-        return obj
 
-    def compress_messages(self, history: list, client, model, ctx) -> list:
+        state = core.load_json(fileName="state.json", default={})
+
+        prompt = [
+            {"role":"developer","content": CTFSolvePrompt.compress_state},
+            {"role":"user","content": json.dumps(state, ensure_ascii=False)},
+        ]
+
+        try:
+            res = self.client.chat.completions.create(model=self.model, messages=prompt)
+            raw = res.choices[0].message.content
+            compressed_state = json.loads(raw)
+            
+            # Save compressed state back to file
+            core.save_json(fileName="state.json", obj=compressed_state)
+            console.print(f"State compressed: {len(json.dumps(state))} → {len(json.dumps(compressed_state))} chars", style="green")
+            
+            return compressed_state
+        except Exception as e:
+            console.print(f"Error compressing state: {e}", style="red")
+            return state
+
+        
+    def compress_plan(self) -> dict:
+        if not os.path.exists("plan.json"):
+            raise FileNotFoundError("plan.json not found")
+
+        plan = core.load_json(fileName="plan.json", default={})
+
+        prompt = [
+            {"role":"developer","content": CTFSolvePrompt.compress_plan},
+            {"role":"user","content": json.dumps(plan, ensure_ascii=False)},
+        ]
+
+        try:
+            res = self.client.chat.completions.create(model=self.model, messages=prompt)
+            raw = res.choices[0].message.content
+            compressed_plan = json.loads(raw)
+            
+            # Save compressed plan back to file
+            core.save_json(fileName="plan.json", obj=compressed_plan)
+            console.print(f"Plan compressed: {len(json.dumps(plan))} → {len(json.dumps(compressed_plan))} chars", style="green")
+            
+            return compressed_plan
+        except Exception as e:
+            console.print(f"Error compressing plan: {e}", style="red")
+            return plan
+
+
+    def compress_messages(self, history: list) -> list:
         prompt = [
             {"role":"developer","content": CTFSolvePrompt.compress_history},
             {"role":"user","content": json.dumps(history, ensure_ascii=False)},
         ]
-        res = client.chat.completions.create(model=model, messages=prompt)
+        res = self.client.chat.completions.create(model=self.model, messages=prompt)
         raw = res.choices[0].message.content
         payload = json.loads(raw)
         msgs = payload.get("messages")
@@ -47,10 +82,14 @@ class Compress:
         return msgs
 
     def compress_history(self, history: list, ctx):
-        console.print("Compress state.json", style="bold green")
+        console.print("=== Compress state.json ===", style="bold green")
         self.compress_state()
-        console.print("Compress history query", style="bold green")
+
+        console.print("=== Compress plan.json ===", style="bold green")
+        self.compress_plan()
+
+        console.print("=== Compress history query ===", style="bold green")
         try:
-            return self.compress_messages(history, self.client, self.model, ctx)
+            return self.compress_messages(history)
         except Exception:
             return history

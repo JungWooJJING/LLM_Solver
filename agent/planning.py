@@ -25,8 +25,11 @@ console = Console()
 core = Core()
 FEWSHOT = few_Shot()
 
+gpt_5 = 1
+
 DEFAULT_STATE = {
   "challenge" : [],
+  "scenario" : [],
   "constraints": ["no brute-force > 1000"],
   "env": {},
   "selected": {},
@@ -69,6 +72,8 @@ class PlanningAgent:
         
     def run_CoT(self, prompt_query: str, ctx):
         global prompt_CoT
+        global gpt_5
+
         if not isinstance(globals().get("prompt_CoT"), list):
             prompt_CoT = []
 
@@ -79,11 +84,23 @@ class PlanningAgent:
         call_msgs = prompt_CoT + [state_msg, user_msg]
 
         try:
-            res = self.client.chat.completions.create(model=self.model, messages=call_msgs)
+            if gpt_5:
+                res = self.client.chat.completions.create(model="gpt-5", messages=call_msgs)
+            
+            else:
+                res = self.client.chat.completions.create(model="gpt-4o", messages=call_msgs, temperature=0.5)
+                gpt_5 = 1
+
         except Exception:
             prompt_CoT[:] = self.compress.compress_history(prompt_CoT, ctx=ctx)
             call_msgs = prompt_CoT + [state_msg, user_msg]
-            res = self.client.chat.completions.create(model=self.model, messages=call_msgs)
+
+            if gpt_5:
+                res = self.client.chat.completions.create(model="gpt-5", messages=call_msgs)
+            
+            else:
+                res = self.client.chat.completions.create(model="gpt-4o", messages=call_msgs, temperature=0.5)
+                gpt_5 = 1
 
         content = res.choices[0].message.content
 
@@ -92,6 +109,8 @@ class PlanningAgent:
     
     def run_plan_CoT(self, prompt_query : str, ctx):
         global plan_CoT   
+        global gpt_5
+        
         if not isinstance(globals().get("prompt_CoT"), list):
             plan_CoT = []
 
@@ -102,12 +121,24 @@ class PlanningAgent:
         call_msgs = plan_CoT + [state_msg, user_msg]
 
         try:
-            res = self.client.chat.completions.create(model=self.model, messages=call_msgs)
+            if gpt_5:
+                res = self.client.chat.completions.create(model="gpt-5", messages=call_msgs)
+            
+            else:
+                res = self.client.chat.completions.create(model="gpt-4o", messages=call_msgs, temperature=0.5)
+                gpt_5 = 1
+
         except Exception:
             plan_CoT[:] = self.compress.compress_history(plan_CoT, ctx=ctx)
             call_msgs = plan_CoT + [state_msg, user_msg]
-            res = self.client.chat.completions.create(model=self.model, messages=call_msgs)
 
+            if gpt_5:
+                res = self.client.chat.completions.create(model="gpt-5", messages=call_msgs)
+            
+            else:
+                res = self.client.chat.completions.create(model="gpt-4o", messages=call_msgs, temperature=0.5)
+                gpt_5 = 1
+                
         content = res.choices[0].message.content
 
         plan_CoT.extend([user_msg, {"role": "assistant", "content": content}])
@@ -127,9 +158,14 @@ class PlanningAgent:
         state = core.load_json("state.json", default="")
         plan = core.load_json("plan.json", default="")
 
+        # Scenario Analysis - Create scenario first
+        console.print("=== Scenario Analysis ===", style='bold magenta')
+        challenge_info = {}
+        
         if(option == "--file"):
-            console.print("Paste the challenge’s source code. Type <<<END>>> on a new line to finish.", style="blue")
+            console.print("Paste the challenge's source code. Type <<<END>>> on a new line to finish.", style="blue")
             planning_code = core.multi_line_input()
+            challenge_info = {"type": "source_code", "content": planning_code}
             
             console.print("=== File Analysis ===", style='bold green')
             Cot_query = build_query(option = option, code = planning_code, state = state)
@@ -138,6 +174,7 @@ class PlanningAgent:
         elif(option == "--ghidra"):
             console.print("Enter the binary path: ", style="blue", end="")
             binary_path = input()
+            challenge_info = {"type": "binary", "path": binary_path}
 
             console.print("=== Ghdira Run ===", style='bold green')
             binary_code = ghdira_API(binary_path)
@@ -147,9 +184,15 @@ class PlanningAgent:
         elif(option == "--discuss"):
             console.print("Ask questions or describe your intended approach.", style="blue")
             planning_discuss = core.multi_line_input()
+            challenge_info = {"type": "discussion", "content": planning_discuss}
             
             console.print("=== Discuss ===", style='bold green')
             Cot_query = build_query(option = option, code = planning_discuss, state = state, plan=plan)
+
+        # Create scenario
+        scenario = ctx.scenario.create_scenario(challenge_info, state, option)
+        state["scenario"] = scenario
+        core.save_json(fileName="state.json", obj=state)
 
         # CoT 
         console.print("=== CoT Run ===", style='bold green')
@@ -178,6 +221,7 @@ class PlanningAgent:
     def loop_workflow(self, option:str , ctx):
         state = core.load_json("state.json", default="")
         plan = core.load_json("plan.json", default="")
+        scenario = state.get("scenario", {})
         
         if(option == "--discuss"):
             console.print("Ask questions or describe your intended approach.", style="blue")
@@ -212,6 +256,18 @@ class PlanningAgent:
         #instruction print
         cmd_human = ctx.parsing.Human__translation_run(prompt_query=instruction_return)
         console.print(f"{cmd_human}", style='bold yellow')
+        
+        # Scenario Progress Tracking (after instruction generation)
+        console.print("=== Scenario Progress Tracking ===", style='bold magenta')
+        latest_results = {
+            "CoT": CoT_json,
+            "Cal": Cal_json,
+            "instruction": instruction_json
+        }
+        progress = ctx.scenario.track_progress(scenario, state, latest_results)
+        
+        # Print scenario summary
+        ctx.scenario.print_scenario_summary(scenario)
                 
     def ok(self):
         console.print("Should we proceed like this? ", style="blue")
@@ -247,7 +303,32 @@ class PlanningAgent:
         
         # state & plan update
         core.parsing_feedback()
-        
+
+    def exploit_flow(self, ctx, option : str):
+            state = core.load_json(fileName="state.json", default="")
+            plan = core.load_json(fileName="plan.json", default="")
+            
+            exploit_prompt = build_query(option=option, state=json.dumps(state, ensure_ascii=False, indent=2), plan=json.dumps(plan, ensure_ascii=False, indent=2))
+            
+            console.print("=== Exploit Agent ===", style='bold green')
+            exploit_return = ctx.exploit.exploit_run(prompt_query=exploit_prompt)
+            
+            cmd_human = ctx.parsing.Human__translation_run(prompt_query=exploit_return)
+            console.print(f"{cmd_human}", style='bold yellow')
+            
+            # result
+            console.print("Paste the result of your command execution. Submit <<<END>>> to finish.", style="blue")
+            instruction_result = core.multi_line_input()
+
+            console.print("=== LLM_translation ===", style='bold green')
+            LLM_translation = ctx.parsing.Exploit_result_run(prompt_query=instruction_result, state=state, scenario=json.dumps(exploit_return, ensure_ascii=False, indent=2)) 
+                            
+            # feedback
+            console.print("=== feedback Agent ===", style='bold green')
+            feedback_result = ctx.feedback.exploit_feedback_run(prompt_query=LLM_translation, state=state, scenario=json.dumps(exploit_return, ensure_ascii=False, indent=2))       
+            feedback_json = core.safe_json_loads(feedback_result)
+            core.save_json(fileName="feedback.json", obj=feedback_json)
+
     def init_Option(self, option: str, ctx):
         if option == "--help":
             console.print("--help : Display the available commands.", style="bold yellow")
@@ -263,6 +344,7 @@ class PlanningAgent:
                 pass
             
             else:
+                gpt_5 = 0
                 return 0
             
             self.feedback_rutin(ctx)
@@ -276,6 +358,7 @@ class PlanningAgent:
                 pass
             
             else:
+                gpt_5 = 0
                 return 0
             
             self.feedback_rutin(ctx)
@@ -289,6 +372,7 @@ class PlanningAgent:
                 pass
             
             else:
+                gpt_5 = 0
                 return 0
 
             self.feedback_rutin(ctx)
@@ -321,6 +405,7 @@ class PlanningAgent:
                 pass
             
             else:
+                gpt_5 = 0
                 return 0
             
             self.feedback_rutin(ctx)
@@ -332,35 +417,14 @@ class PlanningAgent:
                 pass
             
             else:
+                gpt_5 = 0
                 return 0
             
             self.feedback_rutin(ctx)
             
         elif option == "--exploit":
             
-            state = core.load_json(fileName="state.json", default="")
-            plan = core.load_json(fileName="plan.json", default="")
-            
-            exploit_prompt = build_query(option=option, state=json.dumps(state, ensure_ascii=False, indent=2), plan=json.dumps(plan, ensure_ascii=False, indent=2))
-            
-            console.print("=== Exploit Agent ===", style='bold green')
-            exploit_return = ctx.exploit.exploit_run(prompt_query=exploit_prompt)
-            
-            cmd_human = ctx.parsing.Human__translation_run(prompt_query=exploit_return)
-            console.print(f"{cmd_human}", style='bold yellow')
-            
-            # result
-            console.print("Paste the result of your command execution. Submit <<<END>>> to finish.", style="blue")
-            instruction_result = core.multi_line_input()
-
-            console.print("=== LLM_translation ===", style='bold green')
-            LLM_translation = ctx.parsing.Exploit_result_run(prompt_query=instruction_result, state=state, scenario=json.dumps(exploit_return, ensure_ascii=False, indent=2)) 
-                            
-            # feedback
-            console.print("=== feedback Agent ===", style='bold green')
-            feedback_result = ctx.feedback.exploit_feedback_run(prompt_query=LLM_translation, state=state, scenario=json.dumps(exploit_return, ensure_ascii=False, indent=2))       
-            feedback_json = core.safe_json_loads(feedback_result)
-            core.save_json(fileName="feedback.json", obj=feedback_json)
+            self.exploit_flow(ctx=ctx, option=option)
         
             # state & plan Update
             core.exploit_feedback()

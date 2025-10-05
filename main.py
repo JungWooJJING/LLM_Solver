@@ -7,6 +7,7 @@ from agent.instruction import InstructionAgent
 from agent.parsing import ParserAgent
 from agent.feedback import FeedbackAgent
 from agent.exploit import ExploitAgent
+from agent.scenario import ScenarioAgent
 
 from utility.core_utility import Core
 
@@ -20,6 +21,14 @@ def test_API_KEY():
         console.print("Please set the OPENAI_API_KEY environment variable.", style='bold red')
         console.print('export OPENAI_API_KEY="<API_KEY>"', style='bold red')
         exit(1)
+    
+    # Remove any newline characters and whitespace from API key
+    api_key = api_key.strip().replace('\n', '').replace('\r', '')
+    
+    # Validate API key format
+    if not api_key.startswith('sk-'):
+        console.print("Warning: API key doesn't start with 'sk-'", style='bold yellow')
+    
     return api_key
         
 def parsing_preInformation(category: str, flag : str, checksec: str):
@@ -49,6 +58,7 @@ class AppContext:
         self.parsing = ParserAgent(api_key)
         self.feedback = FeedbackAgent(api_key)
         self.exploit = ExploitAgent(api_key)
+        self.scenario = ScenarioAgent(api_key)
 
 # === Setting: Initialize Context ===
 def setting():
@@ -88,16 +98,7 @@ def main():
         console.print("Enter the challenge flag format:", style="blue")
         format = input("> ")
         
-        parsing_preInformation(category=category, flag = format, checksec=None)
-
-    # console.print("wait...", style='bold green')
-    # result = ctx.preinfo.ask_PreInformation(title, description, category)
-
-    # console.print("\n=== LLM Analysis ===\n", style='bold yellow')
-    # console.print(result, style='bold yellow')
-    # console.print("====================\n", style='bold yellow')
-
-    
+        parsing_preInformation(category=category, flag = format, checksec=None)    
         
     while True:
         

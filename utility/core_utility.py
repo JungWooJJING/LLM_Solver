@@ -17,6 +17,7 @@ FEEDBACK_FILE = "feedback.json"
 
 DEFAULT_STATE = {
   "challenge" : [],
+  "scenario" : [],
   "constraints": ["no brute-force > 1000"],
   "env": {},
   "selected": {},
@@ -331,7 +332,8 @@ class Core:
                 
         plan_json["artifacts"].update(art_map)
 
-        plan_json["backlog"].extend(backlog_list)
+        # Add new backlog items with deduplication
+        plan_json["backlog"] = self._deduplicate_backlog(plan_json["backlog"], backlog_list)
 
         self.save_json("plan.json", plan_json)
         
@@ -454,3 +456,257 @@ class Core:
 
         self.save_json(fileName="state.json", obj=state)
         self.save_json(fileName="plan.json", obj=plan)
+    
+    def execute_instruction(self, instruction_json: dict) -> str:
+        """
+        Execute the instruction steps and return the results
+        """
+        import subprocess
+        from datetime import datetime
+        from rich.console import Console
+        
+        console = Console()
+        results = []
+        
+        for step in instruction_json.get("steps", []):
+            cmd = step.get("cmd", "")
+            name = step.get("name", "unknown")
+            artifact = step.get("artifact", "-")
+            
+            console.print(f"Executing: {name}", style="cyan")
+            console.print(f"Command: {cmd}", style="dim")
+            
+            try:
+                # Execute command
+                result = subprocess.run(
+                    cmd, 
+                    shell=True, 
+                    capture_output=True, 
+                    text=True, 
+                    timeout=30
+                )
+                
+                step_result = {
+                    "name": name,
+                    "cmd": cmd,
+                    "success": result.returncode == 0,
+                    "stdout": result.stdout,
+                    "stderr": result.stderr,
+                    "returncode": result.returncode,
+                    "timestamp": datetime.now().isoformat()
+                }
+                
+                # Save artifact if specified
+                if artifact != "-" and result.stdout:
+                    with open(artifact, "w") as f:
+                        f.write(result.stdout)
+                    step_result["artifact_saved"] = artifact
+                
+                results.append(step_result)
+                
+                console.print(f"✓ Success: {name}" if result.returncode == 0 else f"✗ Failed: {name}", 
+                            style="green" if result.returncode == 0 else "red")
+                
+            except subprocess.TimeoutExpired:
+                step_result = {
+                    "name": name,
+                    "cmd": cmd,
+                    "success": False,
+                    "error": "Command timed out",
+                    "timestamp": datetime.now().isoformat()
+                }
+                results.append(step_result)
+                console.print(f"✗ Timeout: {name}", style="red")
+                
+            except Exception as e:
+                step_result = {
+                    "name": name,
+                    "cmd": cmd,
+                    "success": False,
+                    "error": str(e),
+                    "timestamp": datetime.now().isoformat()
+                }
+                results.append(step_result)
+                console.print(f"✗ Error: {name} - {e}", style="red")
+        
+        return json.dumps(results, ensure_ascii=False, indent=2)
+    
+    def update_state_with_parsing(self, state: dict, parsed_json: dict) -> dict:
+        """
+        Update state with parsed results
+        """
+        from datetime import datetime
+        
+        # Update facts with new information
+        if "signals" in parsed_json:
+            if "facts" not in state:
+                state["facts"] = {}
+            
+            for signal in parsed_json["signals"]:
+                signal_type = signal.get("type", "other")
+                signal_name = signal.get("name", "unknown")
+                signal_value = signal.get("value", "")
+                
+                # Add signal to facts
+                fact_key = f"{signal_type}_{signal_name}"
+                state["facts"][fact_key] = signal_value
+        
+        # Update artifacts
+        if "artifacts" in parsed_json:
+            if "artifacts" not in state:
+                state["artifacts"] = {}
+            
+            for artifact in parsed_json["artifacts"]:
+                artifact_name = artifact.get("name", "unknown")
+                artifact_path = artifact.get("path", "")
+                state["artifacts"][artifact_name] = artifact_path
+        
+        # Update results with latest execution
+        if "results" not in state:
+            state["results"] = []
+        
+        execution_result = {
+            "timestamp": datetime.now().isoformat(),
+            "type": "instruction_execution",
+            "summary": parsed_json.get("summary", ""),
+            "signals": parsed_json.get("signals", []),
+            "artifacts": parsed_json.get("artifacts", []),
+            "success": parsed_json.get("status") == "success"
+        }
+        
+        state["results"].append(execution_result)
+        
+        # Update scenario progress if available
+        if "scenario" in state:
+            scenario = state["scenario"]
+            # Check if any milestones were completed based on new signals
+            for milestone in scenario.get("success_milestones", []):
+                if milestone.get("status") == "pending":
+                    # Check if success criteria are met
+                    if self.check_milestone_completion(milestone, parsed_json):
+                        milestone["status"] = "completed"
+                        milestone["completed_at"] = datetime.now().isoformat()
+                        from rich.console import Console
+                        console = Console()
+                        console.print(f"🎯 Milestone completed: {milestone.get('name', 'Unknown')}", style="bold green")
+        
+        return state
+    
+    def check_milestone_completion(self, milestone: dict, parsed_json: dict) -> bool:
+        """
+        Check if a milestone's success criteria are met based on parsed results
+        """
+        success_criteria = milestone.get("success_criteria", [])
+        signals = parsed_json.get("signals", [])
+        
+        for criteria in success_criteria:
+            criteria_met = False
+            for signal in signals:
+                if criteria.lower() in signal.get("value", "").lower() or \
+                   criteria.lower() in signal.get("name", "").lower():
+                    criteria_met = True
+                    break
+            if not criteria_met:
+                return False
+        
+        return len(success_criteria) > 0
+    
+    def _deduplicate_backlog(self, existing_backlog: list, new_backlog: list) -> list:
+        """
+        Remove duplicate backlog items based on multiple criteria
+        """
+        import hashlib
+        
+        # Create a set of existing item hashes
+        existing_hashes = set()
+        for item in existing_backlog:
+            item_hash = self._create_backlog_hash(item)
+            existing_hashes.add(item_hash)
+        
+        # Add only new items that don't already exist
+        deduplicated_backlog = existing_backlog.copy()
+        
+        for new_item in new_backlog:
+            new_hash = self._create_backlog_hash(new_item)
+            if new_hash not in existing_hashes:
+                deduplicated_backlog.append(new_item)
+                existing_hashes.add(new_hash)
+        
+        return deduplicated_backlog
+    
+    def _create_backlog_hash(self, backlog_item: dict) -> str:
+        """
+        Create a hash for backlog item based on key identifying fields
+        """
+        import hashlib
+        
+        # Use key fields that identify a unique plan
+        key_fields = {
+            "vuln": backlog_item.get("vuln", ""),
+            "function": backlog_item.get("function", ""),
+            "why": backlog_item.get("why", ""),
+            "cot_now": backlog_item.get("cot_now", "")
+        }
+        
+        # Create a consistent string representation
+        key_string = "|".join([str(v).strip() for v in key_fields.values()])
+        
+        # Generate hash
+        return hashlib.md5(key_string.encode()).hexdigest()
+    
+    def clean_backlog(self, max_items: int = 50) -> list:
+        """
+        Clean backlog by removing old/duplicate items and keeping only recent ones
+        """
+        plan_json = self.load_json(fileName="plan.json", default=DEFAULT_PLAN)
+        backlog = plan_json.get("backlog", [])
+        
+        if len(backlog) <= max_items:
+            return backlog
+        
+        # Keep only the most recent items
+        cleaned_backlog = backlog[-max_items:]
+        
+        # Update plan.json
+        plan_json["backlog"] = cleaned_backlog
+        self.save_json("plan.json", plan_json)
+        
+        return cleaned_backlog
+    
+    def remove_backlog_item(self, item_hash: str) -> bool:
+        """
+        Remove a specific backlog item by its hash
+        """
+        plan_json = self.load_json(fileName="plan.json", default=DEFAULT_PLAN)
+        backlog = plan_json.get("backlog", [])
+        
+        original_length = len(backlog)
+        
+        # Remove items with matching hash
+        backlog = [item for item in backlog if self._create_backlog_hash(item) != item_hash]
+        
+        if len(backlog) < original_length:
+            plan_json["backlog"] = backlog
+            self.save_json("plan.json", plan_json)
+            return True
+        
+        return False
+    
+    def get_backlog_stats(self) -> dict:
+        """
+        Get statistics about the current backlog
+        """
+        plan_json = self.load_json(fileName="plan.json", default=DEFAULT_PLAN)
+        backlog = plan_json.get("backlog", [])
+        
+        # Count by vulnerability type
+        vuln_counts = {}
+        for item in backlog:
+            vuln = item.get("vuln", "unknown")
+            vuln_counts[vuln] = vuln_counts.get(vuln, 0) + 1
+        
+        return {
+            "total_items": len(backlog),
+            "vulnerability_counts": vuln_counts,
+            "unique_vulnerabilities": len(vuln_counts)
+        }
