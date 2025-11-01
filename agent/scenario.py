@@ -42,6 +42,7 @@ class ScenarioAgent:
             console.print(f"Milestones: {len(scenario.get('success_milestones', []))}")
             
             return scenario
+            
         except Exception as e:
             console.print(f"Error creating scenario: {e}", style="red")
             return {}
