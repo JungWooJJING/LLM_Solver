@@ -38,3 +38,4 @@ class PlanningState(TypedDict):
     gpt_5: int  
     init_flow : int
     user_approval : bool
+    approval_choice: str  

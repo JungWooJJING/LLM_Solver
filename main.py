@@ -11,6 +11,10 @@ from agent.scenario import ScenarioAgent
 
 from utility.core_utility import Core
 
+from langgraph.workflow import create_main_workflow
+from langgraph.state import PlanningState
+
+
 core = Core()
 console = Console()
 
@@ -59,6 +63,7 @@ class AppContext:
         self.feedback = FeedbackAgent(api_key)
         self.exploit = ExploitAgent(api_key)
         self.scenario = ScenarioAgent(api_key)
+        self.core = core  # 노드에서 ctx.core 사용을 위해 추가
 
 # === Setting: Initialize Context ===
 def setting():
@@ -67,13 +72,14 @@ def setting():
 
 # === Main Program ===
 def main():    
-    exploit_iteration = 0
-
+    # Context 설정
     ctx = setting()
     
+    # 초기 상태 초기화
     core.init_state()
     core.init_plan()
 
+    # 초기 정보 입력
     console.print("Enter the challenge title:", style="blue")
     title = input("> ")
 
@@ -85,6 +91,7 @@ def main():
     
     category = category.lower()
     
+    challenge_info = []
     if(category == "pwnable"):
         console.print("Enter the binary checksec:", style="blue")
         checksec = core.multi_line_input()
@@ -92,81 +99,70 @@ def main():
         console.print("Enter the challenge flag format:", style="blue")
         format = input("> ")
 
-        parsing_preInformation(category=category, flag = format, checksec=checksec)
-
+        challenge_info = [{
+            "category": category,
+            "flag format": format,
+            "checksec": checksec
+        }]
     else: 
         console.print("Enter the challenge flag format:", style="blue")
         format = input("> ")
         
-        parsing_preInformation(category=category, flag = format, checksec=None)    
-        
-    while True:
-        
-        console.print("Please choose which option you want to choose.", style="blue")
-        option = input("> ")
-        
-        if(ctx.planning.init_Option(option=option, ctx=ctx)):
-            break
+        challenge_info = [{
+            "category": category,
+            "flag format": format
+        }]
     
-    while True:     
-        console.print("Please choose which option you want to choose.", style="blue")
-        option = input("> ")
-        
-        ctx.planning.check_Option(option=option, ctx=ctx)
-            
-        exploit_iteration += 1
+    # PlanningState 초기화
+    initial_state: PlanningState = {
+        "challenge": challenge_info,
+        "scenario": {},
+        "constraints": ["no brute-force > 1000"],
+        "env": {},
+        "selected": {},
+        "results": [],
+        "todos": [],
+        "runs": [],
+        "seen_cmd_hashes": [],
+        "artifacts": {},
+        "backlog": [],
+        "option": "",
+        "current_step": "",
+        "user_input": "",
+        "user_approval": False,
+        "binary_path": "",
+        "cot_result": "",
+        "cot_json": {},
+        "cal_result": "",
+        "cal_json": {},
+        "instruction_result": "",
+        "instruction_json": {},
+        "parsing_result": "",
+        "feedback_result": "",
+        "feedback_json": {},
+        "ctx": ctx,
+        "gpt_5": 1,
+        "init_flow": 0,
+        "approval_choice": "",
+        "API_KEY": ctx.api_key
+    }
     
-        # if exploit_iteration % 10 == 0:
-        #     if not os.path.exists("state.json"):
-        #         print("Error")
-        #         continue
-            
-        #     st = load_state()
-            
-        #     exploit_prompt = ctx.planning.build_prompt(option="--exploit", state_json=st)
-            
-        #     console.print("=== Exploit ===", style="bold green")
-        #     exploit_code = ctx.exploit.run_prompt_exploit(prompt=exploit_prompt)
-
-        #     console.print("=== Human Translation ===", style="bold green")
-        #     parsing_response = ctx.parsing.human_translation(query=exploit_code)
-            
-        #     console.print(parsing_response, style="yellow")
-            
-        #     console.print("Input result", style="blue")
-        #     result_output = multi_line_input()
-            
-        #     result_build_prompt = ctx.planning.build_prompt(option="--result", query=result_output, state_json=st)
-            
-        #     console.print("=== LLM Translation ===", style="bold green")
-        #     result_LLM_translation = ctx.parsing.LLM_translation(query=result_build_prompt)
-
-        #     console.print("=== Feedback === ", style="bold green")
-        #     result_feedback = ctx.feedback.run_prompt_feedback(result_LLM_translation)
-
-        #     update_state_json(result_feedback)
-        #     console.print("Update State.json", style="bold green")
-
-        #     plan_build_prompt = ctx.planning.build_prompt(option = "--plan", state_json=load_state(), feedback_json=result_feedback)
-
-        #     console.print("=== run_prompt_CoT ===", style='bold green')
-        #     response_CoT = ctx.planning.run_prompt_CoT(plan_build_prompt)
-        #     ctx.planning.save_prompt("CoT.json", response_CoT)
-        #     ctx.planning.update_state_from_cot(response_CoT)
-
-        #     console.print("=== run_prompt_Cal ===", style='bold green')
-        #     cal_input = ctx.planning.build_Cal_from_State()
-        #     response_Cal = ctx.planning.run_prompt_Cal(json.dumps(cal_input, ensure_ascii=False))
-        #     ctx.planning.save_prompt("Cal.json", response_Cal)
-
-        #     Cal_result = ctx.planning.cal_CoT()
-        #     ctx.planning.update_state_from_cal(Cal_result)
-
-        #     console.print("=== Human Translation ===", style="bold green")
-        #     parsing_response = ctx.parsing.human_translation(json.dumps(Cal_result, ensure_ascii=False, indent=2))
-        #     console.print(parsing_response, style='yellow')            
+    workflow = create_main_workflow()
+    
+    console.print("\n=== Starting LangGraph Workflow ===", style="bold green")
+    console.print("Type '--help' for available commands\n", style="yellow")
+    
+    try:
+        final_state = workflow.invoke(initial_state)
         
+        console.print("\n=== Workflow Completed ===", style="bold green")
         
+    except KeyboardInterrupt:
+        console.print("\n\nWorkflow interrupted by user.", style="bold yellow")
+    except Exception as e:
+        console.print(f"\nError in workflow: {e}", style="bold red")
+        import traceback
+        traceback.print_exc()
         
 if __name__ == "__main__":
     main()

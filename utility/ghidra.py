@@ -1,11 +1,35 @@
-import pyghidra, os
+import os
+import pyghidra
+
+
+GHIDRA_DIR = "/home/jungwoojjing/ghidra/build/dist/ghidra_12.1_DEV"
+
+if not os.path.isdir(GHIDRA_DIR):
+    raise RuntimeError(f"GHIDRA_INSTALL_DIR 경로가 존재하지 않습니다: {GHIDRA_DIR}")
+
+os.environ["GHIDRA_INSTALL_DIR"] = GHIDRA_DIR
+
+pyghidra.start(install_dir=GHIDRA_DIR)
 
 from ghidra.app.decompiler.flatapi import FlatDecompilerAPI
 
-os.environ["GHIDRA_INSTALL_DIR"] = "/home/wjddn0623/Ghidra/ghidra/build/dist/ghidra_12.0_DEV"
-pyghidra.start()
 
-def ghdira_API(target : str):
+def find_entry_function(fm):
+
+    preferred = ["main", "entry", "entry_point", "_start"]
+    funcs = list(fm.getFunctions(True))
+
+    # 이름 우선순위대로 검색
+    for name in preferred:
+        for f in funcs:
+            if f.getName() == name:
+                return f
+
+    return funcs[0] if funcs else None
+
+
+def ghdira_API(target: str, main_only: bool = True) -> str:
+
     result = ""
 
     with pyghidra.open_program(target) as flat:
@@ -14,28 +38,54 @@ def ghdira_API(target : str):
         listing = program.getListing()
         decomp = FlatDecompilerAPI(flat)
 
-        for f in fm.getFunctions(True):
-            name = f.getName()
+        try:
+            if main_only:
+                main_func = find_entry_function(fm)
 
-            try :
-                c_code = decomp.decompile(f, 30)
+                if main_func is None:
+                    raise RuntimeError("[!] No entry function found")
 
-                asm_line = []
-                instr_iter = listing.getInstructions(f.getBody(), True)
+                name = main_func.getName()
+                c_code = decomp.decompile(main_func, 30)
+
+                asm_lines = []
+                instr_iter = listing.getInstructions(main_func.getBody(), True)
                 while instr_iter.hasNext():
                     instr = instr_iter.next()
-                    asm_line.append(f"{instr.getAddress()}:\t{instr}")
+                    asm_lines.append(f"{instr.getAddress()}:\t{instr}")
 
-                asm_code = "\n".join(asm_line)
+                asm_code = "\n".join(asm_lines)
+                entry = main_func.getEntryPoint()
 
-                result += f"=== MATCH: {name} 0x{f.getEntryPoint()} ===\n"
-                result += f"--- Decompiled Code ---\n"
-                result += f"{c_code} \n"
-                result += f"--- Assembly ---\n"
-                result += f"{asm_code} + \n"
-            except Exception as e:
-                print(f"[!] Failed {name} : {e}")
+                result += f"=== MATCH: {name} {entry} ===\n"
+                result += "--- Decompiled Code ---\n"
+                result += f"{c_code}\n"
+                result += "--- Assembly ---\n"
+                result += f"{asm_code}\n"
 
-    decomp.dispose()
+            else:
+                for f in fm.getFunctions(True):
+                    name = f.getName()
+                    try:
+                        c_code = decomp.decompile(f, 30)
+
+                        asm_lines = []
+                        instr_iter = listing.getInstructions(f.getBody(), True)
+                        while instr_iter.hasNext():
+                            instr = instr_iter.next()
+                            asm_lines.append(f"{instr.getAddress()}:\t{instr}")
+
+                        asm_code = "\n".join(asm_lines)
+                        entry = f.getEntryPoint()
+
+                        result += f"=== MATCH: {name} {entry} ===\n"
+                        result += "--- Decompiled Code ---\n"
+                        result += f"{c_code}\n"
+                        result += "--- Assembly ---\n"
+                        result += f"{asm_code}\n"
+                    except Exception as e:
+                        print(f"[!] Failed {name}: {e}")
+        finally:
+            decomp.dispose()
 
     return result

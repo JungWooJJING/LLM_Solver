@@ -13,7 +13,13 @@ class FeedbackAgent:
             {"role": "developer", "content": CTFSolvePrompt.feedback_prompt}
         ]
         
-        state_msg = {"role": "developer", "content": "[STATE]\n" + json.dumps(state, ensure_ascii=False)}
+        # ctx는 JSON 직렬화 불가능하므로 제외
+        if isinstance(state, dict):
+            state_for_json = {k: v for k, v in state.items() if k != "ctx"}
+        else:
+            state_for_json = state
+        
+        state_msg = {"role": "developer", "content": "[STATE]\n" + json.dumps(state_for_json, ensure_ascii=False)}
         user_msg  = {"role": "user", "content": prompt_query}
         
         call_msgs = feedback_prompt + [state_msg, user_msg]
@@ -27,7 +33,13 @@ class FeedbackAgent:
             {"role": "developer", "content": CTFSolvePrompt.exploit_feedback}
         ]
         
-        state_msg = {"role": "developer", "content": "[STATE]\n" + json.dumps(state, ensure_ascii=False)}
+        # ctx는 JSON 직렬화 불가능하므로 제외
+        if isinstance(state, dict):
+            state_for_json = {k: v for k, v in state.items() if k != "ctx"}
+        else:
+            state_for_json = state
+        
+        state_msg = {"role": "developer", "content": "[STATE]\n" + json.dumps(state_for_json, ensure_ascii=False)}
         exploit_msg = {"role": "developer", "content": "[Exploit Scenario]\n" + json.dumps(scenario, ensure_ascii=False)}
         user_msg  = {"role": "user", "content": prompt_query}
         

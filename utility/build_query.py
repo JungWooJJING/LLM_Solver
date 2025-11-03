@@ -11,7 +11,7 @@ STATE_SPEC = (
     "Policies: obey constraints; build on artifacts/results.\n"
 )
 
-def build_query(option: str, code: str = "", state = None, CoT = None, Cal = None, plan = None):
+def build_query(option: str, code: str = "", state = None, CoT = None, Cal = None, plan = None, Instruction = None):
     if option == "--file":
         prompt = (
             "You are a planning assistant for CTF automation.\n\n"
@@ -229,6 +229,25 @@ def build_query(option: str, code: str = "", state = None, CoT = None, Cal = Non
             plan=plan,
             state=state  ,
         )
+        return prompt
+
+    elif option == "--human":
+        # Human translation doesn't need special prompt building
+        # Just return the instruction result as-is
+        return Instruction if Instruction else ""
+    
+    elif option == "--feedback":
+        # Feedback query - instruction result is the parsing result
+        prompt = (
+            "You are a feedback generator for CTF automation.\n\n"
+            "You will be given the result of instruction execution (parsed output).\n"
+            "Analyze the results and provide feedback on:\n"
+            "- What was learned/successful\n"
+            "- What failed or needs adjustment\n"
+            "- Next recommended actions\n\n"
+            "[Parsing Result]\n{instruction}\n\n"
+            "Return ONLY valid JSON (no markdown, no code fences, no prose).\n"
+        ).format(instruction=Instruction if Instruction else "")
         return prompt
 
 
