@@ -1,11 +1,21 @@
 import os
 import pyghidra
 
+GHIDRA_DIR = os.environ.get("GHIDRA_INSTALL_DIR")
 
-GHIDRA_DIR = "/home/jungwoojjing/ghidra/build/dist/ghidra_12.1_DEV"
+if not GHIDRA_DIR:
+    raise RuntimeError(
+        "GHIDRA_INSTALL_DIR environment variable is not set.\n"
+        "Please set the environment variable using:\n"
+        "  export GHIDRA_INSTALL_DIR=/path/to/ghidra\n\n"
+        "Or add it to ~/.zshrc or ~/.bashrc for permanent configuration."
+    )
 
 if not os.path.isdir(GHIDRA_DIR):
-    raise RuntimeError(f"GHIDRA_INSTALL_DIR 경로가 존재하지 않습니다: {GHIDRA_DIR}")
+    raise RuntimeError(
+        f"GHIDRA_INSTALL_DIR path does not exist: {GHIDRA_DIR}\n"
+        "Please set the correct Ghidra installation path in the environment variable."
+    )
 
 os.environ["GHIDRA_INSTALL_DIR"] = GHIDRA_DIR
 
