@@ -73,7 +73,3 @@ Once the workflow starts, you can use the following commands:
 - **Exploit Agent**: Generates exploit scripts
 - **Scenario Agent**: Manages challenge scenarios
 - **Ghidra Integration**: Binary analysis and decompilation support
-
-## License
-
-[Add your license here]
