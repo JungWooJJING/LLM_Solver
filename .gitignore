@@ -1,0 +1,6 @@
+**/__pycache__/
+
+/tool/.gdb_history
+/tool/test
+/tool/test.c
+/tool/deploy/
