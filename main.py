@@ -11,7 +11,6 @@ from agent.instruction import InstructionAgent
 from agent.parsing import ParserAgent
 from agent.feedback import FeedbackAgent
 from agent.exploit import ExploitAgent
-from agent.scenario import ScenarioAgent
 
 from utility.core_utility import Core
 
@@ -24,20 +23,45 @@ console = Console()
 
 # === API Key Check ===
 def test_API_KEY():
-    api_key = os.getenv("OPENAI_API_KEY")
-    if not api_key:
+    openai_api_key = os.getenv("OPENAI_API_KEY")
+    gemini_api_key = os.getenv("GEMINI_API_KEY")
+    
+    if not openai_api_key:
         console.print("Please set the OPENAI_API_KEY environment variable.", style='bold red')
         console.print('export OPENAI_API_KEY="<API_KEY>"', style='bold red')
         exit(1)
+        
+    if not gemini_api_key:
+        console.print("Please set the GEMINI_API_KEY environment variable.", style='bold red')
+        console.print('export GEMINI_API_KEY="<API_KEY>"', style='bold red')
+        exit(1)
     
     # Remove any newline characters and whitespace from API key
-    api_key = api_key.strip().replace('\n', '').replace('\r', '')
+    openai_api_key = openai_api_key.strip().replace('\n', '').replace('\r', '')
+    gemini_api_key = gemini_api_key.strip().replace('\n', '').replace('\r', '')
     
-    # Validate API key format
-    if not api_key.startswith('sk-'):
-        console.print("Warning: API key doesn't start with 'sk-'", style='bold yellow')
+    if openai_api_key and gemini_api_key:
+        while(1):
+            console.print("Both API keys are set.", style='bold green')
+            console.print("Choose the API key to use.", style='bold yellow')
+            console.print("1. OpenAI", style='bold yellow')
+            console.print("2. Gemini", style='bold yellow')
+            choice = input("> ")
+            if choice == '1':
+                console.print("OpenAI API key will be used.", style='bold green')
+                api_key = openai_api_key
+                model = "gpt-5.2"
+                break
+            elif choice == '2':
+                console.print("Gemini API key will be used.", style='bold green')
+                api_key = gemini_api_key
+                model = "gemini-3-flash-preview"
+                break
+            else: 
+                console.print("Invalid choice. Please enter 1 or 2.", style='bold red')
+                continue
     
-    return api_key
+    return api_key, model
         
 def parsing_preInformation(category: str, flag : str, checksec: str):
     st = core.load_json("state.json", default="")
@@ -59,20 +83,19 @@ def parsing_preInformation(category: str, flag : str, checksec: str):
         
 # === Context Class for All Clients ===
 class AppContext:
-    def __init__(self, api_key):
+    def __init__(self, api_key, model):
         self.api_key = api_key
-        self.planning = PlanningAgent(api_key)
-        self.instruction = InstructionAgent(api_key)
-        self.parsing = ParserAgent(api_key)
-        self.feedback = FeedbackAgent(api_key)
-        self.exploit = ExploitAgent(api_key)
-        self.scenario = ScenarioAgent(api_key)
-        self.core = core  # 노드에서 ctx.core 사용을 위해 추가
+        self.planning = PlanningAgent(api_key, model)
+        self.instruction = InstructionAgent(api_key, model)
+        self.parsing = ParserAgent(api_key, model)
+        self.feedback = FeedbackAgent(api_key, model)
+        self.exploit = ExploitAgent(api_key, model)
+        self.core = core
 
 # === Setting: Initialize Context ===
 def setting():
-    api_key = test_API_KEY()
-    return AppContext(api_key)
+    api_key, model = test_API_KEY()
+    return AppContext(api_key, model)
 
 # === Main Program ===
 def main():    

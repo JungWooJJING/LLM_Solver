@@ -125,7 +125,6 @@ When a flag is detected during parsing:
 - **Feedback Agent**: Provides feedback on exploitation attempts
 - **Exploit Agent**: Generates exploit scripts
 - **PoC Agent**: Generates Proof-of-Concept code when flag is detected
-- **Scenario Agent**: Manages challenge scenarios
 
 ### Workflow Features
 - **LangGraph-based Workflow**: State-based workflow orchestration

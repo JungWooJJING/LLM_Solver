@@ -3,11 +3,18 @@ import json
 import re
 import os
 import shlex
-import angr
 from typing import Optional, List, Dict
 from pathlib import Path
 from langchain_core.tools import BaseTool, StructuredTool
 from pydantic import BaseModel, Field
+
+# Angr는 선택적 의존성 - Protobuf 버전 충돌 방지를 위해 선택적 import
+try:
+    import angr
+    ANGR_AVAILABLE = True
+except (ImportError, Exception) as e:
+    ANGR_AVAILABLE = False
+    angr = None
 
 # PyGhidra는 선택적 의존성 - 있으면 사용, 없으면 에러 메시지
 try:
@@ -299,6 +306,14 @@ class ReversingTool:
         
         if not find_address:
             return json.dumps({"error": "find_address is required"}, indent=2)
+        
+        if not ANGR_AVAILABLE:
+            return json.dumps({
+                "error": "angr is not available. Protobuf version conflict or angr not installed.",
+                "binary_path": target,
+                "find_address": find_address,
+                "suggestion": "Install compatible protobuf version or use alternative tools"
+            }, indent=2, ensure_ascii=False)
         
         try:
             # 주소 문자열을 정수로 변환
