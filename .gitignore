@@ -1,6 +1,13 @@
 **/__pycache__/
+*.log
+*.bin
+*.txt
+.gdb_history
+
 
 /tool/.gdb_history
 /tool/test
 /tool/test.c
+/tool/example_usage.py
 /tool/deploy/
+/artifacts/

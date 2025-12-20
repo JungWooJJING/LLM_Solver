@@ -8,6 +8,8 @@ import urllib.parse
 import binascii
 from typing import Optional, List, Dict
 from pathlib import Path
+from langchain_core.tools import BaseTool, StructuredTool
+from pydantic import BaseModel, Field
 
 try:
     import requests
@@ -485,8 +487,22 @@ class WebTool:
         if not target_url:
             return json.dumps({"error": "url is required"}, indent=2)
         
-        # sqlmap 명령어 구성
-        cmd = ["sqlmap", "-u", target_url, "--batch", "--level", str(level), "--risk", str(risk)]
+        # sqlmap 명령어 구성 (가상환경의 sqlmap 우선 사용)
+        sqlmap_path = None
+        if os.path.exists("/home/wjddn0623/.venv/bin/sqlmap"):
+            sqlmap_path = "/home/wjddn0623/.venv/bin/sqlmap"
+        else:
+            # PATH에서 sqlmap 찾기
+            which_result = self._run_command(["which", "sqlmap"])
+            if which_result["success"] and which_result["stdout"].strip():
+                sqlmap_path = which_result["stdout"].strip()
+            else:
+                # python -m sqlmap 사용
+                sqlmap_path = "python3"
+                cmd = [sqlmap_path, "-m", "sqlmap", "-u", target_url, "--batch", "--level", str(level), "--risk", str(risk)]
+        
+        if sqlmap_path and sqlmap_path != "python3":
+            cmd = [sqlmap_path, "-u", target_url, "--batch", "--level", str(level), "--risk", str(risk)]
         
         if method.upper() == "POST" and data:
             cmd.extend(["--data", data])
@@ -541,3 +557,119 @@ class WebTool:
             pass
         
         return json.dumps(result_data, indent=2, ensure_ascii=False)
+
+
+# ========== LangChain 도구로 변환하는 함수들 ==========
+
+def create_web_tools(url: Optional[str] = None) -> List[BaseTool]:
+    """
+    Converts WebTool methods into individual LangChain tools
+    
+    Args:
+        url: Default URL
+    
+    Returns:
+        List of LangChain BaseTool
+    """
+    tool_instance = WebTool(url)
+    
+    # 각 메서드를 별도 도구로 생성
+    tools = [
+        StructuredTool.from_function(
+            func=tool_instance.http_request,
+            name="http_request",
+            description="Sends HTTP request and analyzes response. Supports various methods like GET, POST, PUT, DELETE, etc.",
+            args_schema=type('HttpRequestArgs', (BaseModel,), {
+                '__annotations__': {
+                    'url': Optional[str],
+                    'method': str,
+                    'headers': Optional[Dict[str, str]],
+                    'data': Optional[str],
+                    'params': Optional[Dict[str, str]],
+                    'cookies': Optional[Dict[str, str]],
+                    'timeout': int
+                },
+                'url': Field(default=None, description="URL to request (optional, can use URL set during initialization)"),
+                'method': Field(default="GET", description="HTTP method (GET, POST, PUT, DELETE, etc.)"),
+                'headers': Field(default=None, description="HTTP headers dictionary (optional)"),
+                'data': Field(default=None, description="Request body data (for POST/PUT, optional)"),
+                'params': Field(default=None, description="URL query parameters (optional)"),
+                'cookies': Field(default=None, description="Cookies dictionary (optional)"),
+                'timeout': Field(default=10, description="Timeout in seconds")
+            })
+        ),
+        StructuredTool.from_function(
+            func=tool_instance.directory_bruteforce,
+            name="directory_bruteforce",
+            description="Performs directory/file bruteforcing. Can find hidden paths or files.",
+            args_schema=type('DirectoryBruteforceArgs', (BaseModel,), {
+                '__annotations__': {
+                    'url': Optional[str],
+                    'wordlist': Optional[str],
+                    'extensions': Optional[List[str]],
+                    'status_codes': Optional[List[int]],
+                    'timeout': int
+                },
+                'url': Field(default=None, description="Target URL (optional)"),
+                'wordlist': Field(default=None, description="Wordlist file path (uses default wordlist if not provided)"),
+                'extensions': Field(default=None, description="File extension list (e.g., ['php', 'html', 'txt'])"),
+                'status_codes': Field(default=None, description="Valid status codes list (default: [200, 301, 302, 403])"),
+                'timeout': Field(default=30, description="Timeout in seconds")
+            })
+        ),
+        StructuredTool.from_function(
+            func=tool_instance.encode_decode,
+            name="encode_decode",
+            description="Encodes/decodes data. Supports various formats like Base64, URL, Hex, HTML, etc.",
+            args_schema=type('EncodeDecodeArgs', (BaseModel,), {
+                '__annotations__': {
+                    'data': str,
+                    'operation': str,
+                    'encoding_type': Optional[str]
+                },
+                'data': Field(description="Data to encode/decode"),
+                'operation': Field(default="auto", description="'encode', 'decode', or 'auto' (auto-detect)"),
+                'encoding_type': Field(default=None, description="'base64', 'url', 'hex', 'html' (optional when operation is 'auto')")
+            })
+        ),
+        StructuredTool.from_function(
+            func=tool_instance.jwt_decode,
+            name="jwt_decode",
+            description="Decodes and verifies JWT token. Can analyze header, payload, and signature.",
+            args_schema=type('JwtDecodeArgs', (BaseModel,), {
+                '__annotations__': {
+                    'token': str,
+                    'secret': Optional[str],
+                    'verify': bool
+                },
+                'token': Field(description="JWT token string"),
+                'secret': Field(default=None, description="Secret key for verification (optional)"),
+                'verify': Field(default=True, description="Whether to verify token signature")
+            })
+        ),
+        StructuredTool.from_function(
+            func=tool_instance.sqlmap_scan,
+            name="sqlmap_scan",
+            description="Scans for SQL Injection vulnerabilities using SQLMap.",
+            args_schema=type('SqlmapScanArgs', (BaseModel,), {
+                '__annotations__': {
+                    'url': Optional[str],
+                    'data': Optional[str],
+                    'method': str,
+                    'cookie': Optional[str],
+                    'level': int,
+                    'risk': int,
+                    'timeout': int
+                },
+                'url': Field(default=None, description="Target URL (optional)"),
+                'data': Field(default=None, description="POST data (e.g., 'id=1&name=test')"),
+                'method': Field(default="GET", description="HTTP method (GET or POST)"),
+                'cookie': Field(default=None, description="Cookie string (optional)"),
+                'level': Field(default=1, description="Scan level (1-5, default: 1)"),
+                'risk': Field(default=1, description="Risk level (1-3, default: 1)"),
+                'timeout': Field(default=60, description="Timeout in seconds")
+            })
+        ),
+    ]
+    
+    return tools

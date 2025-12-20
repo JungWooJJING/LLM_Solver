@@ -8,7 +8,7 @@ from openai import OpenAI
 core = Core()
 
 class InstructionAgent:
-    def __init__(self, api_key: str, model: str = "gpt-5"):
+    def __init__(self, api_key: str, model: str = "gpt-5.2"):
         self.client = OpenAI(api_key=api_key)
         self.model = model
         

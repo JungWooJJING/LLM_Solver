@@ -11,7 +11,7 @@ STATE_SPEC = (
     "Policies: obey constraints; build on artifacts/results.\n"
 )
 
-def build_query(option: str, code: str = "", state = None, CoT = None, Cal = None, plan = None, Instruction = None):
+def build_query(option: str, code: str = "", state = None, CoT = None, Cal = None, plan = None, Instruction = None, planning_context = None, available_tools = None, tool_category = None):
     if option == "--file":
         prompt = (
             "You are a planning assistant for CTF automation.\n\n"
@@ -79,9 +79,29 @@ def build_query(option: str, code: str = "", state = None, CoT = None, Cal = Non
         return prompt
     
     elif option == "--instruction":
+        import json
+        
+        # 도구 정보 추가
+        tools_info = ""
+        if available_tools and tool_category:
+            tools_info = (
+                "\n### AVAILABLE TOOLS:\n"
+                "Tool Category: {tool_category}\n"
+                "Available Tool Functions: {tool_names}\n\n"
+                "INSTRUCTIONS:\n"
+                "- Prefer using the available tool functions from {tool_category}_tool when generating commands.\n"
+                "- Tool functions are structured and provide better results than raw shell commands.\n"
+                "- If a tool function is available for your task, use it instead of raw commands.\n"
+                "- Tool function names: {tool_names}\n\n"
+            ).format(
+                tool_category=tool_category,
+                tool_names=json.dumps(available_tools, indent=2, ensure_ascii=False)
+            )
+        
         prompt = (
             "### CoT:\n{cot}\n\n"
             "### CAL:\n{cal}\n\n"
+            "{tools_info}"
             "You are an instruction generator for ONE cycle in a CTF workflow.\n"
             "Select ONLY the single candidate with the highest CAL.results[*].final score "
             "(tie-break by higher exploitability, then lower cost, then lower risk). "
@@ -92,19 +112,21 @@ def build_query(option: str, code: str = "", state = None, CoT = None, Cal = Non
             '  "steps": [\n'
             '    {{\n'
             '      "name": "short label",\n'
-            '      "cmd": "exact shell command to run",\n'
+            '      "cmd": "exact shell command to run OR tool function call",\n'
             '      "success": "substring or re:<regex> to confirm",\n'
             '      "artifact": "- or filename",\n'
-            '      "code": "full runnable helper script if needed, else -"\n'
+            '      "code": "full runnable helper script if needed, else -",\n'
+            '      "tool_function": "tool function name if using structured tool, else -"\n'
             '    }}\n'
             '  ]\n'
             "}}\n\n"
             "RULES:\n"
             "- Use only tools in STATE.env and obey STATE.constraints.\n"
+            "- If available tools are provided, prefer using structured tool functions over raw shell commands.\n"
             "- Always include exactly one primary step first; add more only if strictly required.\n"
             "- Every step MUST include cmd; if a helper is needed, put full script in steps[i].code.\n"
             "- Prefer read-only, low-cost probes; keep commands reproducible.\n"
-        ).format(cot= CoT, cal=Cal)  
+        ).format(cot=CoT, cal=Cal, tools_info=tools_info)  
     
         return prompt
 
@@ -143,7 +165,29 @@ def build_query(option: str, code: str = "", state = None, CoT = None, Cal = Non
         ).format(code=code, plan=plan, state=state, expand_k=expand_k)
         return prompt
         
-    elif option == "--discuss":
+    elif option == "--discuss" or option == "--continue":
+        # Planning context 추가 (기존 트랙, 결과, facts 등)
+        import json
+        context_info = ""
+        if planning_context:
+            context_info = (
+                "\n### PLANNING CONTEXT (Previous Exploration):\n"
+                "Existing Tracks:\n{existing_tracks}\n\n"
+                "Discovered Facts:\n{discovered_facts}\n\n"
+                "Generated Artifacts:\n{generated_artifacts}\n\n"
+                "Recent Results:\n{recent_results}\n\n"
+                "INSTRUCTIONS:\n"
+                "- If existing tracks are making progress, propose DEEPER exploration (same vulnerability, more depth)\n"
+                "- If existing tracks are stuck, propose NEW attack vectors (expand attack surface)\n"
+                "- Build on discovered facts and artifacts\n"
+                "- Avoid repeating failed approaches\n\n"
+            ).format(
+                existing_tracks=json.dumps(planning_context.get("existing_tracks", {}), indent=2, ensure_ascii=False),
+                discovered_facts=json.dumps(planning_context.get("discovered_facts", {}), indent=2, ensure_ascii=False),
+                generated_artifacts=json.dumps(planning_context.get("generated_artifacts", []), indent=2, ensure_ascii=False),
+                recent_results=json.dumps(planning_context.get("recent_results", []), indent=2, ensure_ascii=False)
+            )
+        
         prompt = (
             "You are a planning assistant for CTF automation.\n\n"
             "You will be given free-form user input about a CTF target (symptoms, logs, code snippets, ideas).\n"
@@ -151,6 +195,7 @@ def build_query(option: str, code: str = "", state = None, CoT = None, Cal = Non
             "[User Input]\n{user_input}\n\n"
             "{plan_block}"
             "{state_block}"
+            "{context_info}"
             "Rules:\n"
             "- Ground every proposal in the provided input (and plan/state if present).\n"
             "- Respect constraints in state.json.constraints and avoid repeating steps in plan.json.runs.\n"
@@ -173,11 +218,12 @@ def build_query(option: str, code: str = "", state = None, CoT = None, Cal = Non
             user_input=code,
             expand_k=expand_k,
             plan_block=(
-                "[plan.json]\n{plan}\n\n".format(plan=plan) 
+                "[plan.json]\n{plan}\n\n".format(plan=plan) if plan else ""
             ),
             state_block=(
-                "[state.json]\n{state}\n\n".format(state=state) 
+                "[state.json]\n{state}\n\n".format(state=state) if state else ""
             ),
+            context_info=context_info
         )
         return prompt
 

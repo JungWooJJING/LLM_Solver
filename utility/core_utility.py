@@ -53,12 +53,12 @@ class Core:
                 os.remove(f)
     
     def init_state(self):
-        with open(STATE_FILE, "w", encoding="utf-8") as f:
-            json.dump(DEFAULT_STATE, f, ensure_ascii=False, indent=2)    
+        # JSON 파일 저장 제거됨
+        pass
     
     def init_plan(self):
-        with open(PLAN_FILE, "w", encoding="utf-8") as f:
-            json.dump(DEFAULT_PLAN, f, ensure_ascii=False, indent=2)    
+        # JSON 파일 저장 제거됨
+        pass    
     
     def safe_json_loads(self, s):
         if isinstance(s, (dict, list)):
@@ -78,18 +78,13 @@ class Core:
     def load_json(self, fileName, default):
         if not isinstance(default, (dict, list)):
             default = {}
-        if not os.path.exists(fileName):
-            with open(fileName, "w", encoding="utf-8") as f:
-                json.dump(default, f, ensure_ascii=False, indent=2)
-            return default
-        with open(fileName, "r", encoding="utf-8") as f:
-            return json.load(f)
+        # JSON 파일 로드 제거됨 - 항상 default 반환
+        return default
 
     
     def save_json(self, fileName, obj):
-        with open(fileName, "w", encoding="utf-8") as f:
-            json.dump(obj, f, ensure_ascii=False, indent=2)
-        console.print(f"[Prompt saved to {fileName}]", style="green")
+        # JSON 파일 저장 제거됨
+        pass
 
     def parsing_CoT_stateSelected(self):
       CoT_json = self.load_json(fileName="CoT.json", default={})

@@ -1,4 +1,8 @@
 import os, json, re
+import sys
+
+# 현재 디렉토리를 Python 경로에 추가 (모듈 import를 위해)
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from rich.console import Console
 
@@ -51,7 +55,7 @@ def parsing_preInformation(category: str, flag : str, checksec: str):
             "flag format" : flag
         })
 
-    core.save_json(fileName="state.json", obj=st)  
+    # JSON 파일 저장 제거됨  
         
 # === Context Class for All Clients ===
 class AppContext:
@@ -115,36 +119,68 @@ def main():
     
     # PlanningState 초기화
     initial_state: PlanningState = {
-        "challenge": challenge_info,
-        "scenario": {},
-        "constraints": ["no brute-force > 1000"],
-        "env": {},
-        "selected": {},
-        "results": [],
-        "todos": [],
-        "runs": [],
-        "seen_cmd_hashes": [],
-        "artifacts": {},
-        "backlog": [],
-        "option": "",
-        "current_step": "",
-        "user_input": "",
-        "user_approval": False,
-        "binary_path": "",
+        # Plan: 계획 저장 및 관리
         "cot_result": "",
         "cot_json": {},
         "cal_result": "",
         "cal_json": {},
         "instruction_result": "",
         "instruction_json": {},
+        "multi_instructions": [],
+        "plan": {},
+        "todos": [],
+        "runs": [],
+        "backlog": [],
+        "seen_cmd_hashes": [],
+        "previous_plans": [],
+        "previous_cot_results": [],
+        "previous_cal_results": [],
+        "plan_success_status": {},
+        "plan_progress": {},
+        "plan_attempts": {},
+        "vulnerability_tracks": {},
+        "track_tools": {},
+        "current_track": "",
+        "selected": {},
+        
+        # State: 타겟 정보 및 실행 결과
+        "challenge": challenge_info,
+        "binary_path": "",
+        "url": "",
+        "target_info": {},
+        "protections": {},
+        "mitigations": [],
+        "facts": {},
+        "artifacts": {},
+        "signals": [],
+        "errors": [],
+        "results": [],
+        "execution_results": {},
+        "execution_output": "",
+        "execution_status": "",
         "parsing_result": "",
+        "multi_parsing_results": {},
+        "flag_detected": False,
+        "detected_flag": "",
+        "all_detected_flags": [],
+        "poc_result": "",
+        "poc_json": {},
+        "poc_script_path": "",
         "feedback_result": "",
         "feedback_json": {},
-        "ctx": ctx,
-        "gpt_5": 1,
-        "init_flow": 0,
+        
+        # Context: 컨텍스트 및 제어 정보
+        "user_input": "",
+        "option": "",
+        "current_step": "",
+        "constraints": ["no brute-force > 1000"],
+        "env": {},
+        "user_approval": False,
         "approval_choice": "",
-        "API_KEY": ctx.api_key
+        "init_flow": 0,
+        "ctx": ctx,
+        "API_KEY": ctx.api_key,
+        "scenario": {},
     }
     
     workflow = create_main_workflow()
@@ -153,7 +189,9 @@ def main():
     console.print("Type '--help' for available commands\n", style="yellow")
     
     try:
-        final_state = workflow.invoke(initial_state)
+        # 재귀 제한 설정 (기본값 25에서 50으로 증가)
+        config = {"recursion_limit": 50}
+        final_state = workflow.invoke(initial_state, config=config)
         
         console.print("\n=== Workflow Completed ===", style="bold green")
         

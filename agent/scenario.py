@@ -9,7 +9,7 @@ core = Core()
 console = Console()
 
 class ScenarioAgent:
-    def __init__(self, api_key: str, model: str = "gpt-4"):
+    def __init__(self, api_key: str, model: str = "gpt-5.2"):
         self.client = OpenAI(api_key=api_key)
         self.model = model
 
@@ -33,8 +33,7 @@ class ScenarioAgent:
             # Add timestamp
             scenario["created_at"] = datetime.now().isoformat()
             
-            # Save scenario
-            core.save_json(fileName="scenario.json", obj=scenario)
+            # JSON 파일 저장 제거됨
             console.print("=== Scenario Created ===", style="bold green")
             console.print(f"Scenario ID: {scenario.get('scenario_id', 'unknown')}")
             console.print(f"Objective: {scenario.get('objective', 'unknown')}")

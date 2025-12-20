@@ -9,7 +9,7 @@ core = Core()
 console = Console()
 
 class Compress:
-    def __init__(self, api_key: str, model: str = "gpt-5"):
+    def __init__(self, api_key: str, model: str = "gpt-5.2"):
         self.client = OpenAI(api_key=api_key)
         self.model = model
 
@@ -29,8 +29,7 @@ class Compress:
             raw = res.choices[0].message.content
             compressed_state = json.loads(raw)
             
-            # Save compressed state back to file
-            core.save_json(fileName="state.json", obj=compressed_state)
+            # JSON 파일 저장 제거됨
             console.print(f"State compressed: {len(json.dumps(state))} → {len(json.dumps(compressed_state))} chars", style="green")
             
             return compressed_state
@@ -55,8 +54,7 @@ class Compress:
             raw = res.choices[0].message.content
             compressed_plan = json.loads(raw)
             
-            # Save compressed plan back to file
-            core.save_json(fileName="plan.json", obj=compressed_plan)
+            # JSON 파일 저장 제거됨
             console.print(f"Plan compressed: {len(json.dumps(plan))} → {len(json.dumps(compressed_plan))} chars", style="green")
             
             return compressed_plan

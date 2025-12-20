@@ -4,7 +4,7 @@ import json
 # Ghidra는 선택적 의존성 - 경로가 있으면 시작, 없으면 건너뛰기
 try:
     import pyghidra
-    ghidra_dir = os.getenv("GHIDRA_INSTALL_DIR", "/home/jungwoojjing/ghidra/build/dist/ghidra_12.1_DEV")
+    ghidra_dir = os.getenv("GHIDRA_INSTALL_DIR")
     
     if os.path.exists(ghidra_dir):
         os.environ["GHIDRA_INSTALL_DIR"] = ghidra_dir
@@ -34,8 +34,6 @@ except (ImportError, ModuleNotFoundError):
 console = Console()
 core = Core()
 FEWSHOT = few_Shot()
-
-gpt_5 = 1
 
 DEFAULT_STATE = {
     "challenge": [],
@@ -73,47 +71,49 @@ plan_CoT = [
 ]
 
 class PlanningAgent:
-    def __init__(self, api_key: str, model: str = "gpt-5"):
+    def __init__(self, api_key: str, model: str = "gpt-5.2"):
         self.client = OpenAI(api_key=api_key)
         self.model = model
         self.compress = Compress(api_key=api_key)
         
-    def run_CoT(self, prompt_query: str, ctx):
+    def run_CoT(self, prompt_query: str, ctx, state: dict = None):
         global prompt_CoT
-        global gpt_5
 
         if not isinstance(globals().get("prompt_CoT"), list):
             prompt_CoT = []
 
-        state = core.load_json("state.json", default="")
+        # state가 제공되면 사용, 없으면 state.json에서 로드
+        if state is None:
+            state = core.load_json("state.json", default="")
+        else:
+            # 필터링된 state가 전달된 경우 그대로 사용
+            pass
+        
         state_msg = {"role": "developer", "content": "[STATE]\n" + json.dumps(state, ensure_ascii=False)}
         user_msg = {"role": "user", "content": prompt_query}
 
         call_msgs = prompt_CoT + [state_msg, user_msg]
 
         try:
-            model = "gpt-5" if gpt_5 else "gpt-4o"
-            kwargs = {} if gpt_5 else {"temperature": 0.5}
-            res = self.client.chat.completions.create(model=model, messages=call_msgs, **kwargs)
-            if not gpt_5:
-                gpt_5 = 1
+            res = self.client.chat.completions.create(model=self.model, messages=call_msgs)
         except Exception:
             prompt_CoT[:] = self.compress.compress_history(prompt_CoT, ctx=ctx)
             call_msgs = prompt_CoT + [state_msg, user_msg]
-            model = "gpt-5" if gpt_5 else "gpt-4o"
-            kwargs = {} if gpt_5 else {"temperature": 0.5}
-            res = self.client.chat.completions.create(model=model, messages=call_msgs, **kwargs)
-            if not gpt_5:
-                gpt_5 = 1
+            res = self.client.chat.completions.create(model=self.model, messages=call_msgs)
 
         content = res.choices[0].message.content
         plan_CoT.extend([user_msg, {"role": "assistant", "content": content}])
         return content
     
-    def run_Cal(self, prompt_query: str):
+    def run_Cal(self, prompt_query: str, state: dict = None):
         prompt_Cal = [
             {"role": "developer", "content": CTFSolvePrompt.planning_prompt_Cal},
         ]
+        
+        # state가 제공되면 STATE 메시지에 추가
+        if state is not None:
+            state_msg = {"role": "developer", "content": "[STATE]\n" + json.dumps(state, ensure_ascii=False)}
+            prompt_Cal.append(state_msg)
         
         prompt_Cal.append({"role": "user", "content": prompt_query})
         

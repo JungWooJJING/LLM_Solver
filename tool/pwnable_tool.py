@@ -631,74 +631,107 @@ def create_pwnable_tools(binary_path: Optional[str] = None) -> List[BaseTool]:
         StructuredTool.from_function(
             func=tool_instance.checksec,
             name="checksec_analysis",
-            description="바이너리의 보호 기법(NX, PIE, RELRO, Canary 등)을 분석합니다. binary_path를 지정하지 않으면 초기화 시 설정한 경로를 사용합니다."
+            description="Analyzes binary protection mechanisms (NX, PIE, RELRO, Canary, etc.). If binary_path is not specified, uses the path set during initialization."
         ),
         StructuredTool.from_function(
             func=tool_instance.ropgadget_search,
             name="rop_gadget_search",
-            description="ROPgadget으로 ROP 가젯을 검색합니다. search_pattern으로 검색할 가젯 패턴을 지정합니다 (예: 'pop rdi', 'ret').",
+            description="Searches for ROP gadgets using ROPgadget. Specify the gadget pattern to search with search_pattern (e.g., 'pop rdi', 'ret').",
             args_schema=type('ROPArgs', (BaseModel,), {
-                'search_pattern': Field(description="검색할 가젯 패턴 (예: 'pop rdi', 'ret')"),
-                'binary_path': Field(default=None, description="바이너리 경로 (선택사항)"),
-                'gadget_type': Field(default=None, description="가젯 타입 필터 (선택사항)")
+                '__annotations__': {
+                    'search_pattern': str,
+                    'binary_path': Optional[str],
+                    'gadget_type': Optional[str]
+                },
+                'search_pattern': Field(description="Gadget pattern to search (e.g., 'pop rdi', 'ret')"),
+                'binary_path': Field(default=None, description="Binary path (optional)"),
+                'gadget_type': Field(default=None, description="Gadget type filter (optional)")
             })
         ),
         StructuredTool.from_function(
             func=tool_instance.objdump_disassemble,
             name="objdump_disassemble",
-            description="objdump로 바이너리를 디스어셈블합니다. 특정 함수나 섹션만 디스어셈블할 수 있습니다.",
+            description="Disassembles binary using objdump. Can disassemble specific functions or sections only.",
             args_schema=type('ObjdumpArgs', (BaseModel,), {
-                'function_name': Field(default=None, description="특정 함수만 디스어셈블하려면 함수명 지정 (선택사항)"),
-                'binary_path': Field(default=None, description="바이너리 경로 (선택사항)"),
-                'section': Field(default=None, description="특정 섹션만 디스어셈블 (선택사항)")
+                '__annotations__': {
+                    'function_name': Optional[str],
+                    'binary_path': Optional[str],
+                    'section': Optional[str]
+                },
+                'function_name': Field(default=None, description="Function name to disassemble specific function only (optional)"),
+                'binary_path': Field(default=None, description="Binary path (optional)"),
+                'section': Field(default=None, description="Specific section to disassemble (optional)")
             })
         ),
         StructuredTool.from_function(
             func=tool_instance.strings_extract,
             name="strings_extract",
-            description="바이너리에서 문자열을 추출합니다. 최소 길이와 필터 패턴을 지정할 수 있습니다.",
+            description="Extracts strings from binary. Can specify minimum length and filter pattern.",
             args_schema=type('StringsArgs', (BaseModel,), {
-                'binary_path': Field(default=None, description="바이너리 경로 (선택사항)"),
-                'min_length': Field(default=4, description="최소 문자열 길이 (기본값: 4)"),
-                'filter_pattern': Field(default=None, description="필터링할 정규식 패턴 (선택사항)")
+                '__annotations__': {
+                    'binary_path': Optional[str],
+                    'min_length': int,
+                    'filter_pattern': Optional[str]
+                },
+                'binary_path': Field(default=None, description="Binary path (optional)"),
+                'min_length': Field(default=4, description="Minimum string length (default: 4)"),
+                'filter_pattern': Field(default=None, description="Regex pattern for filtering (optional)")
             })
         ),
         StructuredTool.from_function(
             func=tool_instance.readelf_info,
             name="readelf_info",
-            description="ELF 파일의 정보를 추출합니다. 헤더, 섹션, 심볼, 재배치 정보 등을 조회할 수 있습니다.",
+            description="Extracts ELF file information. Can query headers, sections, symbols, relocation information, etc.",
             args_schema=type('ReadelfArgs', (BaseModel,), {
-                'binary_path': Field(default=None, description="바이너리 경로 (선택사항)"),
-                'section': Field(default=None, description="특정 섹션만 조회 (선택사항)"),
-                'info_type': Field(default="all", description="정보 타입: 'all', 'headers', 'sections', 'symbols', 'relocs'")
+                '__annotations__': {
+                    'binary_path': Optional[str],
+                    'section': Optional[str],
+                    'info_type': str
+                },
+                'binary_path': Field(default=None, description="Binary path (optional)"),
+                'section': Field(default=None, description="Specific section to query (optional)"),
+                'info_type': Field(default="all", description="Info type: 'all', 'headers', 'sections', 'symbols', 'relocs'")
             })
         ),
         StructuredTool.from_function(
             func=tool_instance.one_gadget_search,
             name="one_gadget_search",
-            description="one_gadget으로 libc 파일에서 one_gadget을 검색합니다.",
+            description="Searches for one_gadget in libc file using one_gadget tool.",
             args_schema=type('OneGadgetArgs', (BaseModel,), {
-                'libc_path': Field(description="libc 혹은 바이너리 경로")
+                '__annotations__': {
+                    'libc_path': str
+                },
+                'libc_path': Field(description="Path to libc or binary file")
             })
         ),
         StructuredTool.from_function(
             func=tool_instance.pwndbg_debug,
             name="gdb_debug",
-            description="gdb로 바이너리를 디버깅합니다.",
+            description="Debugs binary using gdb.",
             args_schema=type('GdbArgs', (BaseModel,), {
-                'binary_path': Field(default=None, description="바이너리 경로 (선택사항)"),
-                'command': Field(default="info functions", description="디버깅 명령")
+                '__annotations__': {
+                    'binary_path': Optional[str],
+                    'command': str
+                },
+                'binary_path': Field(default=None, description="Binary path (optional)"),
+                'command': Field(default="info functions", description="Debugging command")
             })
         ),
         StructuredTool.from_function(
             func=tool_instance.ghidra_decompile,
             name="ghidra_decompile",
-            description="Ghidra로 바이너리의 특정 함수를 디컴파일합니다. 함수명 또는 주소로 함수를 찾아 디컴파일된 코드와 어셈블리 코드를 반환합니다.",
+            description="Decompiles specific function of binary using Ghidra. Finds function by name or address and returns decompiled code and assembly code.",
             args_schema=type('GhidraArgs', (BaseModel,), {
-                'function_name': Field(default=None, description="디컴파일할 함수명 또는 주소 (예: 'main', '0x401200', '401200')"),
-                'binary_path': Field(default=None, description="바이너리 경로 (선택사항)"),
-                'function_address': Field(default=None, description="함수 주소 (16진수, 예: '0x401200' 또는 '401200')"),
-                'analyze_binary': Field(default=True, description="바이너리 분석 여부")
+                '__annotations__': {
+                    'function_name': Optional[str],
+                    'binary_path': Optional[str],
+                    'function_address': Optional[str],
+                    'analyze_binary': bool
+                },
+                'function_name': Field(default=None, description="Function name or address to decompile (e.g., 'main', '0x401200', '401200')"),
+                'binary_path': Field(default=None, description="Binary path (optional)"),
+                'function_address': Field(default=None, description="Function address (hex, e.g., '0x401200' or '401200')"),
+                'analyze_binary': Field(default=True, description="Whether to analyze binary")
             })
         ),
     ]

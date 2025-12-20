@@ -189,6 +189,7 @@ class CTFSolvePrompt:
     GOAL
     - Normalize noisy text/logs into a structured schema.
     - Keep only signal. Remove banners, prompts, ANSI, timestamps, duplicates.
+    - CRITICAL: Detect flags (CTF flags) in the output and mark them as "flag" type signals.
 
     NORMALIZATION RULES
     - Language: keep original; translate only labels you add.
@@ -197,7 +198,7 @@ class CTFSolvePrompt:
     - Numbers: unify units (bytes, ms, sec), hex as 0x..., lowercase hex.
     - Booleans: true/false only. Null as null.
     - Paths: keep relative if possible.
-    - Security signals: map to {leak, crash, offset, mitigation, other}.
+    - Security signals: map to {leak, crash, offset, mitigation, flag, other}.
     - Deduplicate identical lines; keep first occurrence.
 
     SCHEMA (JSON ONLY)
@@ -205,7 +206,7 @@ class CTFSolvePrompt:
     "summary": "≤120 chars single-sentence gist",
     "artifacts": [{"name":"...", "path":"..."}],
     "signals": [
-        {"type":"leak|crash|offset|mitigation|other", "name":"...", "value":"...", "hint":"..."}
+        {"type":"leak|crash|offset|mitigation|flag|other", "name":"...", "value":"...", "hint":"..."}
     ],
     "code": [
         {"lang":"python|bash|c|asm|unknown", "content":"<verbatim code>"}
@@ -220,6 +221,13 @@ class CTFSolvePrompt:
     - 'Segmentation fault' / 'SIGSEGV' → crash
     - 'printf %p leak' or hex pointer → leak
     - 'offset N bytes' / 'RIP offset' → offset
+    - FLAG DETECTION: Any string matching common CTF flag patterns (e.g., FLAG{...}, flag{...}, CTF{...}, *{...} with alphanumeric/hex content) → signals[{type:"flag", name:"flag", value:"<detected_flag>", hint:"CTF flag detected"}]
+
+    FLAG DETECTION RULES
+    - Look for patterns like: FLAG{...}, flag{...}, CTF{...}, *{...} where content is alphanumeric/hex
+    - Also detect flags in formats like: flag: <value>, Flag: <value>, FLAG = <value>
+    - Extract the complete flag string including brackets/format
+    - If multiple flags found, create separate signal entries for each
 
     OUTPUT
     - Return VALID JSON ONLY. No markdown, no fences, no extra text.
@@ -442,162 +450,48 @@ class CTFSolvePrompt:
     RESPOND
     - STRICT JSON as above. No prose.
     """
+    
+    poc_prompt = """
+    You are a PoC (Proof of Concept) code generator for CTF challenges.
 
-    scenario_prompt = """
-    You are a CTF scenario analyzer and success tracker.
-
-    GOAL
-    - Analyze the current challenge context and create a structured scenario with clear success milestones.
-    - Define measurable success conditions that can be tracked throughout the CTF solving process.
-
-    INPUT
-    - CHALLENGE: Challenge description, category, and context
-    - STATE: Current state with facts, artifacts, and constraints
-    - OPTION: Analysis type (--file, --ghidra, --discuss)
-
-    SCENARIO STRUCTURE
-    Create a scenario JSON with the following structure:
-
-    OUTPUT — JSON ONLY:
-    {
-        "scenario_id": "unique_identifier",
-        "challenge_type": "pwn|web|crypto|reversing|forensics|misc",
-        "objective": "clear one-line goal",
-        "success_milestones": [
-            {
-                "milestone_id": "milestone_1",
-                "name": "short milestone name",
-                "description": "what needs to be achieved",
-                "success_criteria": [
-                    "specific measurable condition 1",
-                    "specific measurable condition 2"
-                ],
-                "verification_method": "how to verify success",
-                "priority": "high|medium|low",
-                "dependencies": ["milestone_id_required"],
-                "status": "pending|in_progress|completed|failed"
-            }
-        ],
-        "attack_vectors": [
-            {
-                "vector_id": "vector_1",
-                "name": "attack vector name",
-                "description": "brief description",
-                "likelihood": "high|medium|low",
-                "complexity": "low|medium|high",
-                "requirements": ["specific requirements"]
-            }
-        ],
-        "expected_artifacts": [
-            {
-                "artifact_name": "expected file/object name",
-                "type": "binary|source|log|dump|key|flag",
-                "description": "what this artifact contains",
-                "critical": true|false
-            }
-        ],
-        "success_indicators": [
-            {
-                "indicator": "specific signal to look for",
-                "type": "leak|crash|offset|mitigation|oracle|proof|other",
-                "context": "when/where to expect this signal"
-            }
-        ],
-        "failure_conditions": [
-            "condition that indicates failure",
-            "another failure condition"
-        ],
-        "estimated_difficulty": "beginner|intermediate|advanced|expert",
-        "estimated_time": "time estimate in minutes",
-        "tags": ["tag1", "tag2", "tag3"]
-    }
-
-    SCENARIO RULES
-    - Create realistic, achievable milestones based on challenge type
-    - Each milestone should have clear, measurable success criteria
-    - Dependencies should be logical and sequential
-    - Attack vectors should be specific to the challenge type
-    - Expected artifacts should be realistic for the challenge
-    - Success indicators should be observable and verifiable
-
-    RESPOND
-    - STRICT JSON as above. No prose.
-    """
-
-    scenario_tracker_prompt = """
-    You are a scenario progress tracker for CTF workflows.
+    CONTEXT
+    - A FLAG has been successfully detected during execution.
+    - Your task is to generate a complete, runnable PoC script that reproduces the exploit and retrieves the flag.
 
     GOAL
-    - Track progress against defined scenario milestones
-    - Update milestone status based on current results and artifacts
-    - Provide next steps and recommendations
+    - Produce a complete, standalone PoC script that demonstrates the exploit.
+    - The script should be executable and produce the same flag that was detected.
+    - Include all necessary setup, payload construction, and execution logic.
 
-    INPUT
-    - SCENARIO: Current scenario JSON with milestones and success criteria
-    - STATE: Current state with facts, artifacts, and results
-    - LATEST_RESULTS: Results from the most recent execution
+    INPUTS
+    - Detected flag: The flag that was found during execution
+    - Execution history: Previous steps, commands, and artifacts that led to flag discovery
+    - Target info: binary/service, protections, environment details
+    - Artifacts: Generated files, offsets, addresses, and other discovered facts
 
-    TRACKING LOGIC
-    - Check each milestone's success criteria against current state/results
-    - Update milestone status based on evidence
-    - Identify next priority milestone
-    - Suggest specific actions to advance
-
-    OUTPUT — JSON ONLY:
+    OUTPUT — JSON ONLY (no markdown/fences). If invalid, return {"error":"BAD_OUTPUT"}.
+    Schema:
     {
-        "scenario_progress": {
-            "overall_progress": "percentage complete",
-            "completed_milestones": ["milestone_id1", "milestone_id2"],
-            "current_milestone": "milestone_id",
-            "next_priority": "milestone_id"
-        },
-        "milestone_updates": [
-            {
-                "milestone_id": "milestone_1",
-                "old_status": "pending|in_progress|completed|failed",
-                "new_status": "pending|in_progress|completed|failed",
-                "evidence": "what evidence supports this status change",
-                "confidence": "high|medium|low"
-            }
-        ],
-        "achievements": [
-            {
-                "milestone_id": "milestone_1",
-                "achievement": "what was accomplished",
-                "timestamp": "ISO8601 timestamp",
-                "evidence": "supporting evidence"
-            }
-        ],
-        "next_actions": [
-            {
-                "action": "specific action to take",
-                "target_milestone": "milestone_id",
-                "rationale": "why this action is needed",
-                "priority": "high|medium|low"
-            }
-        ],
-        "blockers": [
-            {
-                "blocker": "what is blocking progress",
-                "affected_milestones": ["milestone_id1"],
-                "suggested_resolution": "how to resolve the blocker"
-            }
-        ],
-        "recommendations": [
-            "specific recommendation 1",
-            "specific recommendation 2"
-        ]
+      "technique": "Brief description of the exploit technique used",
+      "flag": "The detected flag value",
+      "summary": "One-line summary of how the flag was obtained",
+      "poc_script": "<COMPLETE STANDALONE SCRIPT (Python/pwntools preferred)>",
+      "script_language": "python|bash|c|other",
+      "dependencies": ["list of required tools/libraries"],
+      "usage": "How to run the PoC script",
+      "explanation": "Brief explanation of how the exploit works"
     }
 
-    TRACKING RULES
-    - Only update status when there is clear evidence
-    - Be conservative with status changes
-    - Prioritize high-priority milestones
-    - Identify blockers early
-    - Provide actionable next steps
+    SCRIPT REQUIREMENTS
+    - Must be complete and runnable without modification
+    - Include all necessary imports and setup
+    - Use discovered facts (offsets, addresses, etc.) from execution history
+    - Print the flag clearly when executed
+    - Handle both local and remote scenarios if applicable
+    - Include error handling where appropriate
 
     RESPOND
-    - STRICT JSON as above. No prose.
+    - STRICT JSON as above. No prose outside JSON.
     """
 
     exploit_prompt = """

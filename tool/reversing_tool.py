@@ -6,6 +6,8 @@ import shlex
 import angr
 from typing import Optional, List, Dict
 from pathlib import Path
+from langchain_core.tools import BaseTool, StructuredTool
+from pydantic import BaseModel, Field
 
 # PyGhidra는 선택적 의존성 - 있으면 사용, 없으면 에러 메시지
 try:
@@ -441,3 +443,84 @@ class ReversingTool:
                 "error": f"Unexpected error: {str(e)}",
                 "binary_path": target
             }, indent=2)
+
+
+# ========== LangChain 도구로 변환하는 함수들 ==========
+
+def create_reversing_tools(binary_path: Optional[str] = None) -> List[BaseTool]:
+    """
+    Converts ReversingTool methods into individual LangChain tools
+    
+    Args:
+        binary_path: Default binary path
+    
+    Returns:
+        List of LangChain BaseTool
+    """
+    tool_instance = ReversingTool(binary_path)
+    
+    # 각 메서드를 별도 도구로 생성
+    tools = [
+        StructuredTool.from_function(
+            func=tool_instance.ghidra_decompile,
+            name="ghidra_decompile",
+            description="Decompiles specific function of binary using Ghidra. Finds function by name or address and returns decompiled code and assembly code.",
+            args_schema=type('GhidraArgs', (BaseModel,), {
+                '__annotations__': {
+                    'function_name': Optional[str],
+                    'binary_path': Optional[str],
+                    'function_address': Optional[str],
+                    'analyze_binary': bool,
+                    'project_path': Optional[str]
+                },
+                'function_name': Field(default=None, description="Function name or address to decompile (e.g., 'main', '0x401200', '401200')"),
+                'binary_path': Field(default=None, description="Binary path (optional)"),
+                'function_address': Field(default=None, description="Function address (hex, e.g., '0x401200' or '401200')"),
+                'analyze_binary': Field(default=True, description="Whether to analyze binary"),
+                'project_path': Field(default=None, description="Ghidra project path (optional)")
+            })
+        ),
+        StructuredTool.from_function(
+            func=tool_instance.angr_symbolic_execution,
+            name="angr_symbolic_execution",
+            description="Performs symbolic execution using Angr. Finds input that reaches a specific address.",
+            args_schema=type('AngrArgs', (BaseModel,), {
+                '__annotations__': {
+                    'binary_path': Optional[str],
+                    'find_address': str,
+                    'avoid_address': Optional[str]
+                },
+                'binary_path': Field(default=None, description="Binary path (optional)"),
+                'find_address': Field(description="Target address to reach (hex string, e.g., '0x401200' or '401200')"),
+                'avoid_address': Field(default=None, description="Address to avoid (hex string, optional)")
+            })
+        ),
+        StructuredTool.from_function(
+            func=tool_instance.pwndbg_debug,
+            name="gdb_debug",
+            description="Debugs binary using GDB (Pwndbg). Can execute various debugging commands.",
+            args_schema=type('GdbArgs', (BaseModel,), {
+                '__annotations__': {
+                    'binary_path': Optional[str],
+                    'command': str
+                },
+                'binary_path': Field(default=None, description="Binary path (optional)"),
+                'command': Field(default="info functions", description="Debugging command (e.g., 'vmmap', 'telescope', 'info functions')")
+            })
+        ),
+        StructuredTool.from_function(
+            func=tool_instance.xxd_hex,
+            name="xxd_hex_dump",
+            description="Converts binary file to hex dump using xxd. By default, only outputs first 512 bytes to consider LLM context limitations.",
+            args_schema=type('XxdArgs', (BaseModel,), {
+                '__annotations__': {
+                    'binary_path': Optional[str],
+                    'command': Optional[str]
+                },
+                'binary_path': Field(default=None, description="Binary path (optional)"),
+                'command': Field(default=None, description="Additional options to pass to xxd (e.g., '-l 100', '-s 0x400')")
+            })
+        ),
+    ]
+    
+    return tools
