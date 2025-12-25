@@ -1,5 +1,15 @@
+# Python cache
 __pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
 
+# Artifacts
+artifacts/
+**/artifacts/
+
+# Logs and binaries
 *.log
 *.bin
 *.txt
@@ -11,4 +21,3 @@ __pycache__/
 /tool/test.c
 /tool/example_usage.py
 /tool/deploy/
-/artifacts/

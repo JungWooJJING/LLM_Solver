@@ -170,7 +170,11 @@ class CTFSolvePrompt:
 
     HARD REQUIREMENTS
     - Always include a concrete, executable 'cmd' in the first step.
-    - The 'cmd' must be copy-paste runnable in a POSIX shell and reference real tools/paths available in STATE.env.
+    - The 'cmd' must be either:
+      * A copy-paste runnable POSIX shell command for regular tools, OR
+      * A Python function call format for structured tool functions (e.g., tool_name(param1='value1', param2='value2'))
+    - If using structured tool functions (from available_tools), use Python function call syntax, not shell command format.
+    - Reference real tools/paths available in STATE.env.
     - If required inputs are unknown, add a single 'precheck' step first that deterministically discovers them (e.g., compute offset, resolve symbol/address, locate file).
     - Do NOT emit dangerous operations (no networking unless explicitly allowed; no deletion or system changes beyond minimal tool install when permitted).
 
@@ -190,6 +194,7 @@ class CTFSolvePrompt:
     - Normalize noisy text/logs into a structured schema.
     - Keep only signal. Remove banners, prompts, ANSI, timestamps, duplicates.
     - CRITICAL: Detect flags (CTF flags) in the output and mark them as "flag" type signals.
+    - CRITICAL: Detect privilege escalation (root/admin access) in the output and mark them as "privilege" type signals.
 
     NORMALIZATION RULES
     - Language: keep original; translate only labels you add.
@@ -198,7 +203,7 @@ class CTFSolvePrompt:
     - Numbers: unify units (bytes, ms, sec), hex as 0x..., lowercase hex.
     - Booleans: true/false only. Null as null.
     - Paths: keep relative if possible.
-    - Security signals: map to {leak, crash, offset, mitigation, flag, other}.
+    - Security signals: map to {leak, crash, offset, mitigation, flag, privilege, other}.
     - Deduplicate identical lines; keep first occurrence.
 
     SCHEMA (JSON ONLY)
@@ -206,7 +211,7 @@ class CTFSolvePrompt:
     "summary": "≤120 chars single-sentence gist",
     "artifacts": [{"name":"...", "path":"..."}],
     "signals": [
-        {"type":"leak|crash|offset|mitigation|flag|other", "name":"...", "value":"...", "hint":"..."}
+        {"type":"leak|crash|offset|mitigation|flag|privilege|other", "name":"...", "value":"...", "hint":"..."}
     ],
     "code": [
         {"lang":"python|bash|c|asm|unknown", "content":"<verbatim code>"}
@@ -221,13 +226,52 @@ class CTFSolvePrompt:
     - 'Segmentation fault' / 'SIGSEGV' → crash
     - 'printf %p leak' or hex pointer → leak
     - 'offset N bytes' / 'RIP offset' → offset
+    - CRITICAL: EIP/RIP register redirection → signals[{type:"proof", name:"eip_redirection", value:"<target_address>", hint:"EIP successfully redirected to target address"}]
+    - EIP/RIP register changes in gdb output (e.g., "eip 0x08048669" or "rip 0x...") → signals[{type:"proof", name:"eip_redirection", value:"<address>", hint:"Control flow redirected"}]
+    - If EIP/RIP matches expected target address (e.g., get_shell function address) → signals[{type:"proof", name:"exploit_success", value:"<address>", hint:"Exploit successful - control flow hijacked"}]
+    - CRITICAL: Shell acquisition detection → signals[{type:"proof", name:"shell_acquired", value:"<evidence>", hint:"Shell successfully acquired"}]
+    - Shell acquisition indicators (ANY of these means shell is acquired, regardless of returncode):
+      * "uid=" or "gid=" in output (from "id" command) → DEFINITELY shell acquired
+      * "total " in output (from "ls" command) → DEFINITELY shell acquired
+      * Directory paths like "/home/", "/root/", "/tmp/" in output → DEFINITELY shell acquired
+      * File permissions like "drwx", "-rwx" in output (from "ls -la") → DEFINITELY shell acquired
+      * Shell prompt patterns (e.g., "$", "#", ">") → shell acquired
+      * Command execution output from "id", "pwd", "ls", "whoami", "cat", "echo" commands → shell acquired
+      * ANY command output that shows the command was executed (even if followed by segmentation fault) → shell acquired
+    - IMPORTANT: If output contains "uid=" or "gid=" (even with segmentation fault after), the shell WAS acquired and the command executed successfully. Return code 139 (segmentation fault) AFTER command execution still means shell was acquired.
+    - If you see "uid=1000" or similar in output, ALWAYS create signals[{type:"proof", name:"shell_acquired", value:"uid=<value>", hint:"Shell successfully acquired - command executed"}]
     - FLAG DETECTION: Any string matching common CTF flag patterns (e.g., FLAG{...}, flag{...}, CTF{...}, *{...} with alphanumeric/hex content) → signals[{type:"flag", name:"flag", value:"<detected_flag>", hint:"CTF flag detected"}]
 
     FLAG DETECTION RULES
+    - CRITICAL: Only detect flags from ACTUAL EXECUTION OUTPUT, NOT from code analysis results (decompiled code, source code, disassembly, etc.)
+    - Do NOT mark flags found in:
+      * Decompiled code (e.g., "std::string wanted = \"flag{...}\"")
+      * Source code analysis
+      * Disassembly output
+      * Static analysis results
+      * Code comments or variable names
+    - Only mark flags found in:
+      * Program execution output (stdout/stderr)
+      * Command execution results
+      * Network responses
+      * File contents that are actual program output (not source code)
     - Look for patterns like: FLAG{...}, flag{...}, CTF{...}, *{...} where content is alphanumeric/hex
     - Also detect flags in formats like: flag: <value>, Flag: <value>, FLAG = <value>
     - Extract the complete flag string including brackets/format
     - If multiple flags found, create separate signal entries for each
+    - If you see a flag pattern in decompiled code or source code, DO NOT mark it as a flag signal - it's likely a hardcoded string used for verification, not the actual flag
+    
+    PRIVILEGE ESCALATION DETECTION RULES
+    - Detect root/admin access indicators:
+      * Prompt ending with "#" (root prompt)
+      * "uid=0" or "gid=0" in id command output
+      * "whoami" output is "root"
+      * "id" command shows "uid=0(root)" or "gid=0(root)"
+      * "sudo" successful messages
+      * "root@" in prompt or output
+      * "Administrator" or "admin" with elevated context
+    - Mark as signals[{type:"privilege", name:"root_access", value:"<evidence>", hint:"Privilege escalation detected"}]
+    - Extract evidence text (e.g., "uid=0", "root prompt", "sudo success")
 
     OUTPUT
     - Return VALID JSON ONLY. No markdown, no fences, no extra text.

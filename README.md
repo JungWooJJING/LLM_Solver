@@ -5,7 +5,8 @@ An AI-powered CTF (Capture The Flag) challenge solver that uses LLM to analyze, 
 ## Prerequisites
 
 - Python 3.8+
-- OpenAI API Key (GPT-5.2)
+- OpenAI API Key
+- Gemini API KEY
 - Ghidra (optional, for binary analysis)
 
 ## Installation
@@ -22,6 +23,7 @@ Set the required environment variables:
 
 ```bash
 export OPENAI_API_KEY="<YOUR_API_KEY>"
+export GEMINI_API_KEY="<YOUR_API_KEY>"
 ```
 
 If you want to use Ghidra for binary analysis:

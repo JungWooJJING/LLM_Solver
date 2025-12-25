@@ -85,14 +85,26 @@ def build_query(option: str, code: str = "", state = None, CoT = None, Cal = Non
         tools_info = ""
         if available_tools and tool_category:
             tools_info = (
-                "\n### AVAILABLE TOOLS:\n"
+                "\n### AVAILABLE TOOLS (MUST USE):\n"
                 "Tool Category: {tool_category}\n"
                 "Available Tool Functions: {tool_names}\n\n"
-                "INSTRUCTIONS:\n"
-                "- Prefer using the available tool functions from {tool_category}_tool when generating commands.\n"
+                "CRITICAL INSTRUCTIONS FOR TOOL USAGE:\n"
+                "- You MUST use the available tool functions from {tool_category}_tool when generating commands.\n"
+                "- ALL available tools should be considered and used when appropriate for the task.\n"
                 "- Tool functions are structured and provide better results than raw shell commands.\n"
-                "- If a tool function is available for your task, use it instead of raw commands.\n"
+                "- If a tool function is available for your task, you MUST use it instead of raw commands.\n"
+                "- Review ALL tool functions and use multiple tools if needed to complete the task comprehensively.\n"
+                "- Do NOT skip available tools - use them to gather maximum information.\n"
                 "- Tool function names: {tool_names}\n\n"
+                "TOOL CALL FORMAT:\n"
+                "- When using a tool function, use Python function call syntax in the 'cmd' field:\n"
+                "  Example: ghidra_decompile(binary_path='/path/to/binary', function_address='0x4019a6')\n"
+                "  Example: checksec_analysis(binary_path='/path/to/binary')\n"
+                "  Example: rop_gadget_search(binary_path='/path/to/binary', search_pattern='pop rdi')\n"
+                "- DO NOT use shell command format like 'ghidra_decompile /path/to/binary 0x4019a6'\n"
+                "- DO NOT use command-line flags like 'ghidra_decompile --binary /path/to/binary --address 0x4019a6'\n"
+                "- Use keyword arguments with proper parameter names from the tool schema.\n"
+                "- For regular shell commands (not tool functions), use normal POSIX shell format.\n\n"
             ).format(
                 tool_category=tool_category,
                 tool_names=json.dumps(available_tools, indent=2, ensure_ascii=False)
@@ -112,7 +124,7 @@ def build_query(option: str, code: str = "", state = None, CoT = None, Cal = Non
             '  "steps": [\n'
             '    {{\n'
             '      "name": "short label",\n'
-            '      "cmd": "exact shell command to run OR tool function call",\n'
+            '      "cmd": "exact shell command (POSIX) OR Python function call for tools (e.g., tool_name(param1=\'value1\', param2=\'value2\'))",\n'
             '      "success": "substring or re:<regex> to confirm",\n'
             '      "artifact": "- or filename",\n'
             '      "code": "full runnable helper script if needed, else -",\n'

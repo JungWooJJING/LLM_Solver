@@ -1,10 +1,17 @@
 import os, json, re
 
 from openai import OpenAI
+import warnings
+# google.generativeai FutureWarning 억제
+warnings.filterwarnings("ignore", category=FutureWarning, message=".*google.generativeai.*")
+
 try:
-    import google.generativeai as genai
+    from google import genai
 except ImportError:
-    genai = None
+    try:
+        import google.generativeai as genai
+    except ImportError:
+        genai = None
 from templates.prompting import CTFSolvePrompt
 from rich.console import Console
 from utility.core_utility import Core
@@ -22,7 +29,7 @@ class Compress:
             self.is_gemini = False
         elif model == "gemini-3-flash-preview":
             if genai is None:
-                raise ImportError("google-generativeai package is required for Gemini. Install with: pip install google-generativeai")
+                raise ImportError("google-genai package is required for Gemini. Install with: pip install google-genai")
             genai.configure(api_key=api_key)
             self.client = genai.GenerativeModel(model)
             self.is_gemini = True
@@ -58,8 +65,32 @@ class Compress:
 
         try:
             if self.is_gemini:
-                prompt_text = self._convert_messages_to_prompt(prompt)
-                res = self.client.generate_content(prompt_text)
+                # Gemini API 호출 - 시스템 프롬프트와 대화 분리
+                system_parts = []
+                user_parts = []
+                
+                for msg in prompt:
+                    role = msg.get("role", "user")
+                    content = msg.get("content", "")
+                    if role == "developer" or role == "system":
+                        system_parts.append(content)
+                    elif role == "user":
+                        user_parts.append(content)
+                
+                system_instruction = "\n\n".join(system_parts) if system_parts else None
+                user_content = "\n\n".join(user_parts) if user_parts else ""
+                
+                if system_instruction:
+                    try:
+                        res = self.client.generate_content(
+                            user_content,
+                            system_instruction=system_instruction
+                        )
+                    except TypeError:
+                        full_prompt = f"{system_instruction}\n\n---\n\n{user_content}"
+                        res = self.client.generate_content(full_prompt)
+                else:
+                    res = self.client.generate_content(user_content)
                 raw = res.text
             else:
                 res = self.client.chat.completions.create(model=self.model, messages=prompt)
@@ -88,8 +119,32 @@ class Compress:
 
         try:
             if self.is_gemini:
-                prompt_text = self._convert_messages_to_prompt(prompt)
-                res = self.client.generate_content(prompt_text)
+                # Gemini API 호출 - 시스템 프롬프트와 대화 분리
+                system_parts = []
+                user_parts = []
+                
+                for msg in prompt:
+                    role = msg.get("role", "user")
+                    content = msg.get("content", "")
+                    if role == "developer" or role == "system":
+                        system_parts.append(content)
+                    elif role == "user":
+                        user_parts.append(content)
+                
+                system_instruction = "\n\n".join(system_parts) if system_parts else None
+                user_content = "\n\n".join(user_parts) if user_parts else ""
+                
+                if system_instruction:
+                    try:
+                        res = self.client.generate_content(
+                            user_content,
+                            system_instruction=system_instruction
+                        )
+                    except TypeError:
+                        full_prompt = f"{system_instruction}\n\n---\n\n{user_content}"
+                        res = self.client.generate_content(full_prompt)
+                else:
+                    res = self.client.generate_content(user_content)
                 raw = res.text
             else:
                 res = self.client.chat.completions.create(model=self.model, messages=prompt)

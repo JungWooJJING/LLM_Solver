@@ -372,28 +372,188 @@ class PwnableTool:
         ansi_escape = re.compile(r'\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])')
         return ansi_escape.sub('', text)
 
-    def pwndbg_debug(self, binary_path: Optional[str] = None, command: str = "info functions") -> str:
+    def _validate_gdb_command(self, command: str, binary_path: str) -> Dict[str, any]:
+        """GDB 명령어 실행 전 검증"""
+        # 1. 바이너리가 실행 가능한지 확인
+        if not os.path.exists(binary_path):
+            return {"valid": False, "error": f"Binary not found: {binary_path}"}
+
+        if not os.access(binary_path, os.R_OK):
+            return {"valid": False, "error": f"Binary is not readable: {binary_path}"}
+
+        # 2. 명령어에서 메모리 주소 추출 및 검증
+        addr_pattern = r'0x[0-9a-fA-F]+'
+        addresses = re.findall(addr_pattern, command)
+
+        # 3. 위험한 명령어 패턴 확인
+        dangerous_patterns = [
+            r'rm\s+-rf',
+            r'dd\s+if=',
+            r'mkfs',
+            r'format',
+        ]
+
+        for pattern in dangerous_patterns:
+            if re.search(pattern, command, re.IGNORECASE):
+                return {"valid": False, "error": f"Dangerous command pattern detected: {pattern}"}
+
+        # 4. GDB 명령어 형식 검증
+        valid_gdb_commands = [
+            'info', 'x/', 'disassemble', 'break', 'run', 'continue',
+            'step', 'next', 'print', 'set', 'vmmap', 'telescope',
+            'checksec', 'cyclic', 'ropgadget', 'ropper', 'search',
+            'find', 'pattern', 'quit', 'q', 'p', 'display'
+        ]
+
+        # 명령어의 첫 단어 추출
+        first_word = command.split()[0] if command.split() else ""
+
+        # x/ 명령어는 특별 처리 (메모리 검사)
+        if first_word.startswith('x/'):
+            # x/NNNxb 0xADDRESS 형식 검증
+            if not addresses:
+                return {"valid": False, "error": "x/ command requires a valid memory address"}
+            return {"valid": True}
+
+        # 일반 GDB 명령어 검증
+        if not any(first_word.startswith(cmd) for cmd in valid_gdb_commands):
+            return {
+                "valid": False,
+                "error": f"Unknown or unsafe GDB command: {first_word}. Use standard GDB commands only."
+            }
+
+        return {"valid": True}
+
+    def pwndbg_debug(self, binary_path: Optional[str] = None, command: str = "info functions", commands: Optional[List[str]] = None) -> str:
         """
         GDB(Pwndbg)로 바이너리 디버깅
         Args:
-            command: 디버깅 명령 (예: 'vmmap', 'telescope', 'info functions')
+            command: 단일 디버깅 명령 (예: 'vmmap', 'telescope', 'info functions')
+            commands: 복수 디버깅 명령 리스트 (예: ['break main', 'run', 'info registers'])
             binary_path: 바이너리 경로
+
+        Note:
+            - command와 commands 중 하나만 사용
+            - 복수 명령어는 GDB 스크립트 파일로 실행됨
         """
         target = binary_path or self.binary_path
         if not target:
             return json.dumps({"error": "binary_path is required"})
-        
+
+        # FreeBSD/비호환 바이너리 감지 및 차단
+        try:
+            file_check = subprocess.run(
+                ["file", target],
+                capture_output=True,
+                text=True,
+                timeout=5
+            )
+            file_output = file_check.stdout.lower()
+
+            if "freebsd" in file_output:
+                # FreeBSD 바이너리: 실행 및 메모리 접근 명령 차단
+                all_commands = commands if commands else [command]
+
+                # 실행 필요 명령어 패턴 (run, start, 메모리 검사)
+                execution_patterns = [
+                    'run', 'start', 'continue', 'step', 'next', 'finish',
+                    'x/', 'examine', 'print ', 'p ', 'display', 'watch',
+                    'break *', 'b *'  # 메모리 주소 브레이크포인트
+                ]
+
+                for cmd in all_commands:
+                    if cmd:
+                        cmd_lower = cmd.lower().strip()
+                        for pattern in execution_patterns:
+                            if pattern in cmd_lower:
+                                return json.dumps({
+                                    "error": "CRITICAL: Cannot execute FreeBSD binary on Linux - Memory commands require execution",
+                                    "binary_type": "FreeBSD",
+                                    "blocked_command": cmd,
+                                    "blocked_pattern": pattern,
+                                    "reason": "FreeBSD binaries use /libexec/ld-elf.so.1 (incompatible with Linux). Memory is UNINITIALIZED without execution.",
+                                    "why_this_fails": f"Command '{pattern}' requires the binary to be RUNNING. FreeBSD binaries CANNOT run on Linux.",
+                                    "allowed_gdb_commands": [
+                                        "info functions - List all functions",
+                                        "info variables - List global variables",
+                                        "info files - Show file/section info",
+                                        "disassemble <function> - Disassemble WITHOUT execution"
+                                    ],
+                                    "recommended_tools": [
+                                        "ghidra_decompile(function_address='0x...') - BEST for reading code logic",
+                                        "objdump_disassemble(start_address='0x...') - Get assembly",
+                                        "strings(binary_path) - Extract hardcoded strings",
+                                        "readelf -a - Analyze ELF structure"
+                                    ]
+                                }, indent=2)
+
+        except Exception:
+            pass  # 파일 체크 실패 시 계속 진행
+
+        # 복수 명령어 처리
+        if commands and isinstance(commands, list):
+            # 임시 GDB 스크립트 파일 생성
+            import tempfile
+            with tempfile.NamedTemporaryFile(mode='w', suffix='.gdb', delete=False) as f:
+                script_path = f.name
+                for cmd in commands:
+                    # 각 명령어 검증
+                    validation = self._validate_gdb_command(cmd, target)
+                    if not validation.get("valid", False):
+                        os.unlink(script_path)
+                        return json.dumps({
+                            "error": "Command validation failed",
+                            "details": validation.get("error", "Unknown validation error"),
+                            "command": cmd,
+                            "suggestion": "Check your GDB commands for correctness"
+                        }, indent=2)
+                    f.write(cmd + '\n')
+
+            # GDB 스크립트 실행
+            gdb_cmd = ['gdb', '--batch', '-x', script_path, target]
+            run_result = self._run_command(gdb_cmd, timeout=30)
+
+            # 스크립트 파일 삭제
+            try:
+                os.unlink(script_path)
+            except:
+                pass
+
+            if not run_result["success"]:
+                return json.dumps({
+                    "error": run_result.get("error", "GDB script execution failed"),
+                    "stderr": run_result.get("stderr", ""),
+                    "commands": commands
+                }, indent=2)
+
+            cleaned_output = self._remove_ansi_colors(run_result["stdout"])
+            return json.dumps({
+                "binary_path": target,
+                "commands": commands,
+                "result": cleaned_output
+            }, indent=2, ensure_ascii=False)
+
+        # 단일 명령어 처리
+        validation = self._validate_gdb_command(command, target)
+        if not validation.get("valid", False):
+            return json.dumps({
+                "error": "Command validation failed",
+                "details": validation.get("error", "Unknown validation error"),
+                "command": command,
+                "suggestion": "Try using standard GDB commands like 'info functions', 'disassemble main', or 'vmmap'"
+            }, indent=2)
+
         gdb_cmd = ['gdb', '--batch', '-ex', command, target]
-        
+
         # Pwndbg는 출력이 매우 길고 컬러 코드가 섞여 있어서 타임아웃을 넉넉히 잡아야 함
         run_result = self._run_command(gdb_cmd, timeout=15)
-        
+
         if not run_result["success"]:
             return json.dumps({
                 "error": run_result.get("error", "GDB failed"),
                 "stderr": run_result.get("stderr", "")
             }, indent=2)
-        
+
         # ANSI 컬러 코드 제거
         cleaned_output = self._remove_ansi_colors(run_result["stdout"])
 
@@ -707,14 +867,16 @@ def create_pwnable_tools(binary_path: Optional[str] = None) -> List[BaseTool]:
         StructuredTool.from_function(
             func=tool_instance.pwndbg_debug,
             name="gdb_debug",
-            description="Debugs binary using gdb.",
+            description="Debugs binary using gdb. Supports both single command and multiple commands via script file. For complex debugging scenarios with multiple steps (break, run, examine memory), use 'commands' parameter with a list of GDB commands.",
             args_schema=type('GdbArgs', (BaseModel,), {
                 '__annotations__': {
                     'binary_path': Optional[str],
-                    'command': str
+                    'command': str,
+                    'commands': Optional[List[str]]
                 },
                 'binary_path': Field(default=None, description="Binary path (optional)"),
-                'command': Field(default="info functions", description="Debugging command")
+                'command': Field(default="info functions", description="Single debugging command (e.g., 'vmmap', 'disassemble main')"),
+                'commands': Field(default=None, description="List of multiple GDB commands for complex debugging sequences (e.g., ['break main', 'run', 'info registers', 'quit'])")
             })
         ),
         StructuredTool.from_function(

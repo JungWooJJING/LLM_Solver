@@ -85,6 +85,50 @@ class Core:
     def save_json(self, fileName, obj):
         # JSON 파일 저장 제거됨
         pass
+    
+    def make_json_serializable(self, obj):
+        """직렬화 불가 객체를 제거하고 직렬화 가능한 형태로 변환"""
+        import json
+        
+        if isinstance(obj, dict):
+            result = {}
+            for k, v in obj.items():
+                # StructuredTool 같은 객체는 제외하고 이름만 저장
+                if hasattr(v, '__class__') and 'Tool' in str(type(v)):
+                    continue
+                result[k] = self.make_json_serializable(v)
+            return result
+        elif isinstance(obj, list):
+            return [self.make_json_serializable(item) for item in obj if not (hasattr(item, '__class__') and 'Tool' in str(type(item)))]
+        else:
+            # 기본 타입은 그대로 반환
+            try:
+                json.dumps(obj)
+                return obj
+            except (TypeError, ValueError):
+                # 직렬화 불가 객체는 문자열로 변환
+                return str(obj)
+    
+    def clean_state_for_json(self, state: Dict[str, Any]) -> Dict[str, Any]:
+        """State에서 JSON 직렬화 가능한 형태로 변환 (ctx 제외, track_tools 정리)"""
+        # ctx 제외
+        state_for_json = {k: v for k, v in state.items() if k != "ctx"}
+        
+        # track_tools 정리: toolset 객체 제거, tool_names만 유지
+        if "track_tools" in state_for_json:
+            cleaned_track_tools = {}
+            for track_id, tool_info in state_for_json["track_tools"].items():
+                if isinstance(tool_info, dict):
+                    cleaned_track_tools[track_id] = {
+                        "tool_category": tool_info.get("tool_category"),
+                        "tool_names": tool_info.get("tool_names", [])
+                    }
+                else:
+                    cleaned_track_tools[track_id] = tool_info
+            state_for_json["track_tools"] = cleaned_track_tools
+        
+        # 최종적으로 직렬화 불가 객체 제거
+        return self.make_json_serializable(state_for_json)
 
     def parsing_CoT_stateSelected(self):
       CoT_json = self.load_json(fileName="CoT.json", default={})
@@ -499,7 +543,7 @@ class Core:
                 
                 results.append(step_result)
                 
-                console.print(f"✓ Success: {name}" if result.returncode == 0 else f"✗ Failed: {name}", 
+                console.print(f"Success: {name}" if result.returncode == 0 else f"Failed: {name}", 
                             style="green" if result.returncode == 0 else "red")
                 
             except subprocess.TimeoutExpired:
@@ -511,7 +555,7 @@ class Core:
                     "timestamp": datetime.now().isoformat()
                 }
                 results.append(step_result)
-                console.print(f"✗ Timeout: {name}", style="red")
+                console.print(f"Timeout: {name}", style="red")
                 
             except Exception as e:
                 step_result = {
@@ -522,7 +566,7 @@ class Core:
                     "timestamp": datetime.now().isoformat()
                 }
                 results.append(step_result)
-                console.print(f"✗ Error: {name} - {e}", style="red")
+                console.print(f"Error: {name} - {e}", style="red")
         
         return json.dumps(results, ensure_ascii=False, indent=2)
     
@@ -583,7 +627,7 @@ class Core:
                         milestone["completed_at"] = datetime.now().isoformat()
                         from rich.console import Console
                         console = Console()
-                        console.print(f"🎯 Milestone completed: {milestone.get('name', 'Unknown')}", style="bold green")
+                        console.print(f"Milestone completed: {milestone.get('name', 'Unknown')}", style="bold green")
         
         return state
     

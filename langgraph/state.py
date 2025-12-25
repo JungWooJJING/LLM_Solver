@@ -70,7 +70,7 @@ class State(TypedDict):
     results: List[Any]  # 실행 이력
     execution_results: Dict[str, str]  # 각 트랙의 실행 결과 (track_id -> output)
     execution_output: str  # 기본 실행 결과
-    execution_status: str  # "success", "fail", "partial", "flag_detected"
+    execution_status: str  # "success", "fail", "partial", "flag_detected", "privilege_escalated"
     parsing_result: str
     multi_parsing_results: Dict[str, str]  # track_id -> parsing_result
     
@@ -78,6 +78,10 @@ class State(TypedDict):
     flag_detected: bool  # Flag가 감지되었는지 여부
     detected_flag: str  # 감지된 flag 값 (첫 번째)
     all_detected_flags: List[str]  # 감지된 모든 flag 값들
+    
+    # 관리자 권한 획득 관련
+    privilege_escalated: bool  # 관리자 권한이 획득되었는지 여부
+    privilege_evidence: str  # 관리자 권한 획득 증거 (예: "uid=0", "root prompt", etc.)
     
     # PoC 코드 생성 관련
     poc_result: str  # PoC 생성 결과 (원본 텍스트)
@@ -87,6 +91,11 @@ class State(TypedDict):
     # Feedback 결과
     feedback_result: str
     feedback_json: Dict[str, Any]
+    
+    # 재시도 제한 관련
+    instruction_retry_count: int  # Instruction 재시도 횟수
+    iteration_count: int  # 워크플로우 반복 횟수 (--continue 시 리셋)
+    workflow_step_count: int  # Workflow step count (recursion_limit 체크용)
 
 
 class Context(TypedDict):
@@ -186,6 +195,8 @@ def get_state(state: PlanningState) -> Dict[str, Any]:
         "parsing_result": state.get("parsing_result", ""),
         "multi_parsing_results": state.get("multi_parsing_results", {}),
         "flag_detected": state.get("flag_detected", False),
+        "privilege_escalated": state.get("privilege_escalated", False),
+        "privilege_evidence": state.get("privilege_evidence", ""),
         "detected_flag": state.get("detected_flag", ""),
         "all_detected_flags": state.get("all_detected_flags", []),
         "poc_result": state.get("poc_result", ""),
@@ -193,6 +204,7 @@ def get_state(state: PlanningState) -> Dict[str, Any]:
         "poc_script_path": state.get("poc_script_path", ""),
         "feedback_result": state.get("feedback_result", ""),
         "feedback_json": state.get("feedback_json", {}),
+        "instruction_retry_count": state.get("instruction_retry_count", 0),
     }
 
 

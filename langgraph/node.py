@@ -1,5 +1,6 @@
 from typing import Dict, Any
 import os
+import re
 from rich.console import Console
 
 try:
@@ -167,24 +168,42 @@ def tool_selection_node(state: State) -> State:
     """
     from datetime import datetime
     from tool import create_pwnable_tools, create_reversing_tools, create_web_tools
-    
+
     console.print("=== Tool Selection Node ===", style='bold magenta')
-    
+
     cot_json = state.get("cot_json", {})
     cal_json = state.get("cal_json", {})
     tracks = state.get("vulnerability_tracks", {})
     binary_path = state.get("binary_path", "")
     challenge = state.get("challenge", [])
-    
+
     # Challenge 카테고리 확인
     challenge_category = challenge[0].get("category", "").lower() if challenge else ""
-    
+
     # Cal 결과에서 상위 candidates 선택 (최대 3개)
     cal_results = cal_json.get("results", [])
     if not cal_results:
         console.print("No Cal results available. Skipping tool selection.", style="yellow")
         return state
-    
+
+    # 실패율 기반 우선순위 조정
+    def calculate_failure_rate(track):
+        """트랙의 실패율 계산"""
+        attempts = track.get("attempts", 0)
+        consecutive_failures = track.get("consecutive_failures", 0)
+        if attempts == 0:
+            return 0.0
+        return consecutive_failures / max(attempts, 1)
+
+    # 기존 트랙의 실패율을 기반으로 우선순위 조정
+    for track_id, track in tracks.items():
+        failure_rate = calculate_failure_rate(track)
+        if failure_rate > 0.5:
+            # 실패율이 50% 이상이면 우선순위 반감
+            current_priority = track.get("priority", 1.0)
+            track["priority"] = current_priority * 0.5
+            console.print(f"  Adjusted priority for {track_id} (failure rate: {failure_rate:.1%}) -> {track['priority']:.2f}", style="yellow")
+
     # 점수 순으로 정렬
     sorted_results = sorted(cal_results, key=lambda x: x.get("final", 0), reverse=True)
     
@@ -382,21 +401,49 @@ def multi_instruction_node(state: State) -> State:
         # 해당 트랙의 instruction 생성
         # 기존 트랙이 있으면 다음 단계, 없으면 첫 단계
         track = tracks[track_id]
-        
+
         # 해당 트랙의 도구 정보 가져오기
         track_tool_info = track_tools.get(track_id, {})
         available_tools = track_tool_info.get("tool_names", [])
         tool_category = track_tool_info.get("tool_category", "unknown")
-        
-        # Instruction 생성 (트랙 정보 + 도구 정보 포함)
-        instruction_query = build_query(
-            option="--instruction",
-            CoT={"candidates": [cot_candidate]},  # 해당 candidate만
-            Cal={"results": [candidate]},  # 해당 result만
-            available_tools=available_tools,  # 사용 가능한 도구 목록
-            tool_category=tool_category  # 도구 카테고리
-        )
-        
+
+        # Fallback 전략: 실패 횟수에 따라 접근 방식 변경
+        retry_count = state.get("instruction_retry_count", 0)
+        consecutive_failures = track.get("consecutive_failures", 0)
+
+        # Fallback 로직
+        if consecutive_failures >= 3:
+            # 3번 연속 실패: 완전히 다른 접근 방식 제안
+            console.print(f"  {track_id} has failed {consecutive_failures} times. Switching to alternative approach.", style="yellow")
+            instruction_query = build_query(
+                option="--instruction_fallback",
+                CoT={"candidates": [cot_candidate]},
+                Cal={"results": [candidate]},
+                available_tools=available_tools,
+                tool_category=tool_category,
+                fallback_mode="alternative"
+            )
+        elif consecutive_failures >= 2:
+            # 2번 연속 실패: 단순한 접근으로 전환
+            console.print(f"  {track_id} has failed {consecutive_failures} times. Using simpler approach.", style="yellow")
+            instruction_query = build_query(
+                option="--instruction_fallback",
+                CoT={"candidates": [cot_candidate]},
+                Cal={"results": [candidate]},
+                available_tools=available_tools,
+                tool_category=tool_category,
+                fallback_mode="simple"
+            )
+        else:
+            # 정상 실행
+            instruction_query = build_query(
+                option="--instruction",
+                CoT={"candidates": [cot_candidate]},  # 해당 candidate만
+                Cal={"results": [candidate]},  # 해당 result만
+                available_tools=available_tools,  # 사용 가능한 도구 목록
+                tool_category=tool_category  # 도구 카테고리
+            )
+
         # Instruction Agent에 필요한 정보만 필터링
         filtered_state = get_state_for_instruction(state)
         # 트랙 정보 + 도구 정보 추가
@@ -404,12 +451,13 @@ def multi_instruction_node(state: State) -> State:
         filtered_state["current_track_info"] = track
         filtered_state["available_tools"] = available_tools
         filtered_state["tool_category"] = tool_category
-        
+        filtered_state["fallback_mode"] = "alternative" if consecutive_failures >= 3 else "simple" if consecutive_failures >= 2 else "normal"
+
         instruction_return = ctx.instruction.run_instruction(
             prompt_query=instruction_query,
             state=filtered_state
         )
-        
+
         instruction_json = core.safe_json_loads(instruction_return)
         
         multi_instructions.append({
@@ -481,32 +529,242 @@ def execution_node(state: State) -> State:
             console.print(f"  Executing: {name}", style="cyan")
             console.print(f"  Command: {cmd}", style="dim")
             
+            # 도구 호출인지 확인
+            track_tools = state.get("track_tools", {})
+            track_tool_info = track_tools.get(track_id, {})
+            toolset = track_tool_info.get("toolset", [])
+            tool_names = track_tool_info.get("tool_names", [])
+            
+            # cmd가 도구 이름으로 시작하는지 확인
+            is_tool_call = False
+            tool_name = None
+            tool_instance = None
+            
+            # 도구 이름 확인 (예: "ghidra_decompile", "checksec_analysis" 등)
+            for tool in toolset:
+                if cmd.strip().startswith(tool.name):
+                    is_tool_call = True
+                    tool_name = tool.name
+                    tool_instance = tool
+                    break
+            
             try:
-                # 명령 실행
-                result = subprocess.run(
-                    cmd,
-                    shell=True,
-                    capture_output=True,
-                    text=True,
-                    timeout=60  # 60초 타임아웃
-                )
+                if is_tool_call and tool_instance:
+                    # LangChain 도구 호출
+                    console.print(f"    Detected tool call: {tool_name}", style="yellow")
+                    
+                    # cmd에서 도구 인자 파싱 시도
+                    # 예: "ghidra_decompile /path/to/binary 0x4019a6" 또는
+                    #     "ghidra_decompile(binary_path='/path/to/binary', function_address='0x4019a6')"
+                    tool_args = {}
+                    
+                    # 방법 1: 함수 호출 형식 파싱 (예: tool_name(arg1=val1, arg2=val2))
+                    func_call_pattern = rf"{re.escape(tool_name)}\s*\(([^)]+)\)"
+                    func_match = re.search(func_call_pattern, cmd)
+                    if func_match:
+                        args_str = func_match.group(1)
+                        # 간단한 파싱: key='value' 또는 key="value" 형식
+                        arg_pattern = r"(\w+)\s*=\s*['\"]([^'\"]+)['\"]"
+                        for arg_match in re.finditer(arg_pattern, args_str):
+                            key = arg_match.group(1)
+                            value = arg_match.group(2)
+                            tool_args[key] = value
+                    else:
+                        # 방법 2: 옵션 형식 파싱 (예: tool_name --param1 value1 --param2 value2)
+                        args_str = cmd.replace(tool_name, "").strip()
+                        if args_str:
+                            # --param value 형식 파싱
+                            option_pattern = r"--(\w+)\s+([^\s]+(?:\s+[^\s]+)*?)(?=\s+--|\s*$)"
+                            option_matches = re.finditer(option_pattern, args_str)
+                            
+                            # 도구 스키마 확인하여 인자 매핑
+                            param_mapping = {}
+                            if hasattr(tool_instance, 'args_schema'):
+                                schema = tool_instance.args_schema
+                                if hasattr(schema, 'schema'):
+                                    schema_dict = schema.schema()
+                                    properties = schema_dict.get('properties', {})
+                                    # 옵션 이름을 파라미터 이름으로 매핑 (예: --binary -> binary_path)
+                                    for prop_name, prop_info in properties.items():
+                                        # 일반적인 매핑 규칙
+                                        if 'binary' in prop_name.lower() or 'file' in prop_name.lower():
+                                            param_mapping['binary'] = prop_name
+                                            param_mapping['file'] = prop_name
+                                        elif 'address' in prop_name.lower() or 'addr' in prop_name.lower():
+                                            param_mapping['address'] = prop_name
+                                            param_mapping['addr'] = prop_name
+                                        elif 'function' in prop_name.lower() or 'func' in prop_name.lower():
+                                            param_mapping['function'] = prop_name
+                                            param_mapping['func'] = prop_name
+                                        elif 'name' in prop_name.lower():
+                                            param_mapping['name'] = prop_name
+                                        # 직접 매핑
+                                        param_mapping[prop_name] = prop_name
+                            
+                            for match in option_matches:
+                                option_name = match.group(1)
+                                option_value = match.group(2).strip().strip('"\'')
+                                # 매핑된 파라미터 이름 사용
+                                param_name = param_mapping.get(option_name, option_name)
+                                tool_args[param_name] = option_value
+                            
+                            # 옵션 형식이 아니면 방법 3: 공백으로 구분된 인자 파싱
+                            if not tool_args:
+                                parts = args_str.split()
+                                if hasattr(tool_instance, 'args_schema'):
+                                    schema = tool_instance.args_schema
+                                    if hasattr(schema, 'schema'):
+                                        schema_dict = schema.schema()
+                                        properties = schema_dict.get('properties', {})
+                                        prop_names = list(properties.keys())
+                                        
+                                        # 위치 기반 인자 매핑
+                                        for i, part in enumerate(parts):
+                                            if i < len(prop_names):
+                                                prop_name = prop_names[i]
+                                                # 경로나 주소인지 확인
+                                                if '/' in part or part.startswith('0x'):
+                                                    tool_args[prop_name] = part
+                                                else:
+                                                    tool_args[prop_name] = part
+                    
+                    # 도구 호출
+                    try:
+                        if tool_args:
+                            tool_result = tool_instance.invoke(tool_args)
+                        else:
+                            # 인자가 없으면 빈 딕셔너리로 호출
+                            tool_result = tool_instance.invoke({})
+                        
+                        # 결과를 문자열로 변환
+                        if isinstance(tool_result, str):
+                            stdout_text = tool_result
+                        else:
+                            import json
+                            stdout_text = json.dumps(tool_result, indent=2, ensure_ascii=False)
+                        
+                        stderr_text = ""
+                        returncode = 0
+                        
+                        # subprocess 결과 형식으로 변환
+                        class ToolResult:
+                            def __init__(self, stdout, stderr, returncode):
+                                self.stdout = stdout.encode('utf-8') if isinstance(stdout, str) else stdout
+                                self.stderr = stderr.encode('utf-8') if isinstance(stderr, str) else stderr
+                                self.returncode = returncode
+                        
+                        result = ToolResult(stdout_text, stderr_text, returncode)
+                        
+                    except Exception as e:
+                        # 도구 호출 실패
+                        stdout_text = f"Tool execution error: {str(e)}"
+                        stderr_text = str(e)
+                        returncode = 1
+                        
+                        class ToolResult:
+                            def __init__(self, stdout, stderr, returncode):
+                                self.stdout = stdout.encode('utf-8') if isinstance(stdout, str) else stdout
+                                self.stderr = stderr.encode('utf-8') if isinstance(stderr, str) else stderr
+                                self.returncode = returncode
+                        
+                        result = ToolResult(stdout_text, stderr_text, returncode)
+                else:
+                    # 일반 커맨드 실행
+                    result = subprocess.run(
+                        cmd,
+                        shell=True,
+                        capture_output=True,
+                        text=False,  # 바이너리 모드로 먼저 받기
+                        timeout=60  # 60초 타임아웃
+                    )
+                    
+                    # stdout/stderr를 안전하게 디코딩 (UTF-8 에러 무시)
+                    try:
+                        stdout_text = result.stdout.decode('utf-8', errors='replace')
+                    except (UnicodeDecodeError, AttributeError):
+                        stdout_text = result.stdout.decode('latin-1', errors='replace') if result.stdout else ""
+                    
+                    try:
+                        stderr_text = result.stderr.decode('utf-8', errors='replace')
+                    except (UnicodeDecodeError, AttributeError):
+                        stderr_text = result.stderr.decode('latin-1', errors='replace') if result.stderr else ""
+                
+                # 쉘 획득 여부 직접 확인 (파이프 사용 시 출력 확인)
+                # 더 엄격한 검증: 여러 인디케이터를 조합해서 확인
+                def is_shell_acquired(text: str) -> bool:
+                    """쉘 획득 여부를 엄격하게 검증"""
+                    if not text:
+                        return False
+                    
+                    text_lower = text.lower()
+                    
+                    # 1. 쉘 프롬프트 확인 (가장 확실한 신호)
+                    shell_prompts = ["$ ", "# ", "> ", "bash:", "sh:", "zsh:", "csh:"]
+                    has_prompt = any(prompt in text for prompt in shell_prompts)
+                    
+                    # 2. 실제 명령어 실행 결과 패턴 확인
+                    # "id" 명령어의 전체 출력 패턴: "uid=0(root) gid=0(root) groups=0(root)"
+                    id_pattern = r"uid=\d+\([^)]+\)\s+gid=\d+\([^)]+\)"
+                    has_id_output = bool(re.search(id_pattern, text))
+                    
+                    # 3. "whoami" 명령어 결과 확인
+                    whoami_pattern = r"^(root|admin|user|www-data|nobody|daemon)\s*$"
+                    has_whoami = bool(re.search(whoami_pattern, text, re.MULTILINE))
+                    
+                    # 4. 쉘 환경 변수 확인
+                    env_vars = ["PATH=", "HOME=", "USER=", "SHELL="]
+                    has_env_vars = sum(1 for var in env_vars if var in text) >= 2  # 최소 2개 이상
+                    
+                    # 5. 실제 쉘 명령어 실행 결과 (ls -la 출력 패턴)
+                    # "drwx" 또는 "-rwx"가 있고, 그 다음에 파일명이나 디렉토리명이 있는 경우
+                    ls_pattern = r"[d-][rwx-]{9}\s+\d+\s+\w+\s+\w+\s+\d+\s+[A-Za-z]{3}\s+\d+\s+[\d:]+\s+[^\s]+"
+                    has_ls_output = bool(re.search(ls_pattern, text))
+                    
+                    # 6. 쉘 세션 시작 신호
+                    session_indicators = ["welcome", "last login", "login:", "password:", "command not found"]
+                    has_session = any(ind in text_lower for ind in session_indicators)
+                    
+                    # 최소 2개 이상의 강한 신호가 있어야 쉘 획득으로 판단
+                    strong_signals = [
+                        has_prompt,  # 쉘 프롬프트
+                        has_id_output,  # id 명령어 출력
+                        (has_whoami and has_env_vars),  # whoami + 환경 변수
+                        (has_ls_output and has_env_vars),  # ls 출력 + 환경 변수
+                    ]
+                    
+                    # 또는 쉘 프롬프트가 있고 추가 신호가 하나라도 있으면
+                    if has_prompt and (has_id_output or has_whoami or has_ls_output or has_env_vars):
+                        return True
+                    
+                    # 또는 강한 신호가 2개 이상
+                    if sum(strong_signals) >= 2:
+                        return True
+                    
+                    return False
+                
+                has_shell_output = is_shell_acquired(stdout_text)
                 
                 step_output = {
                     "name": name,
                     "cmd": cmd,
-                    "success": result.returncode == 0,
-                    "stdout": result.stdout,
-                    "stderr": result.stderr,
+                    "success": result.returncode == 0 or has_shell_output,  # 쉘 출력이 있으면 성공으로 간주
+                    "stdout": stdout_text,
+                    "stderr": stderr_text,
                     "returncode": result.returncode,
-                    "timestamp": datetime.now().isoformat()
+                    "timestamp": datetime.now().isoformat(),
+                    "shell_acquired": has_shell_output  # 쉘 획득 플래그 추가
                 }
                 
-                # 아티팩트 저장
+                if has_shell_output:
+                    console.print(f"    🐚 Shell output detected in {name}", style="bold green")
+                
+                # 아티팩트 저장 (바이너리 모드로 저장 가능하도록)
                 if artifact != "-" and result.stdout:
                     try:
                         artifact_path = f"./artifacts/{artifact}"
                         os.makedirs("./artifacts", exist_ok=True)
-                        with open(artifact_path, "w") as f:
+                        # 바이너리 데이터일 수 있으므로 바이너리 모드로 저장
+                        with open(artifact_path, "wb") as f:
                             f.write(result.stdout)
                         step_output["artifact_saved"] = artifact_path
                         
@@ -518,14 +776,20 @@ def execution_node(state: State) -> State:
                         console.print(f"    Warning: Failed to save artifact {artifact}: {e}", style="yellow")
                 
                 track_output.append(step_output)
-                all_outputs.append(f"[{track_id}] {name}: {result.stdout[:200]}...")
+                # 출력 미리보기 (안전하게)
+                preview = stdout_text[:200] if stdout_text else ""
+                all_outputs.append(f"[{track_id}] {name}: {preview}...")
                 
-                status_style = "green" if result.returncode == 0 else "red"
-                status_symbol = "✓" if result.returncode == 0 else "✗"
-                console.print(f"    {status_symbol} {name} (returncode: {result.returncode})", style=status_style)
+                # 쉘 출력이 있으면 returncode와 관계없이 성공으로 처리
+                if has_shell_output:
+                    status_style = "green"
+                    console.print(f"    {name} (shell acquired, returncode: {result.returncode})", style=status_style)
+                else:
+                    status_style = "green" if result.returncode == 0 else "red"
+                    console.print(f"    {name} (returncode: {result.returncode})", style=status_style)
                 
             except subprocess.TimeoutExpired:
-                console.print(f"    ✗ {name} (timeout)", style="red")
+                console.print(f"    {name} (timeout)", style="red")
                 track_output.append({
                     "name": name,
                     "cmd": cmd,
@@ -534,7 +798,7 @@ def execution_node(state: State) -> State:
                     "timestamp": datetime.now().isoformat()
                 })
             except Exception as e:
-                console.print(f"    ✗ {name} (error: {e})", style="red")
+                console.print(f"    {name} (error: {e})", style="red")
                 track_output.append({
                     "name": name,
                     "cmd": cmd,
@@ -543,25 +807,34 @@ def execution_node(state: State) -> State:
                     "timestamp": datetime.now().isoformat()
                 })
         
-        # 트랙별 결과 저장
+        # 트랙별 결과 저장 및 쉘 획득 확인
+        track_has_shell = any(step.get('shell_acquired', False) for step in track_output)
+        
         execution_results[track_id] = "\n".join([
             f"=== {step['name']} ===\n"
             f"Command: {step['cmd']}\n"
             f"Return code: {step.get('returncode', 'N/A')}\n"
+            f"Shell acquired: {step.get('shell_acquired', False)}\n"
             f"Stdout:\n{step.get('stdout', '')}\n"
             f"Stderr:\n{step.get('stderr', '')}\n"
             for step in track_output
         ])
+        
+        # 쉘 획득이 있으면 execution_status를 success로 설정
+        if track_has_shell:
+            state["execution_status"] = "success"
+            console.print(f"  {track_id}: Shell acquired - marking as success", style="bold green")
     
     # State 업데이트
     state["execution_results"] = execution_results
     state["execution_output"] = "\n".join(all_outputs) if all_outputs else ""
     
-    # 기본 execution_status 설정 (parsing_node에서 더 정확하게 판단)
-    if execution_results:
-        state["execution_status"] = "partial"  # 기본값, parsing에서 업데이트
-    else:
-        state["execution_status"] = "fail"
+    # execution_status가 아직 설정되지 않았으면 기본값 설정
+    if "execution_status" not in state or state.get("execution_status") == "":
+        if execution_results:
+            state["execution_status"] = "partial"  # 기본값, parsing에서 업데이트
+        else:
+            state["execution_status"] = "fail"
     
     console.print(f"\n=== Execution Complete: {len(execution_results)} track(s) ===", style="bold green")
     
@@ -771,36 +1044,251 @@ def parsing_node(state: State) -> State:
     errors = parsing_json.get("errors", [])
     summary = parsing_json.get("summary", "")
     
+    # 실행 결과에서 직접 쉘 출력 확인 (parsing이 놓쳤을 수 있음)
+    execution_output = state.get("execution_output", "")
+    execution_results = state.get("execution_results", {})
+    
+    # 쉘 출력 직접 확인 (엄격한 검증)
+    def is_shell_acquired_strict(text: str) -> bool:
+        """쉘 획득 여부를 엄격하게 검증"""
+        if not text:
+            return False
+        
+        text_lower = text.lower()
+        
+        # 1. 쉘 프롬프트 확인 (가장 확실한 신호)
+        shell_prompts = ["$ ", "# ", "> ", "bash:", "sh:", "zsh:", "csh:"]
+        has_prompt = any(prompt in text for prompt in shell_prompts)
+        
+        # 2. 실제 명령어 실행 결과 패턴 확인
+        # "id" 명령어의 전체 출력 패턴: "uid=0(root) gid=0(root) groups=0(root)"
+        id_pattern = r"uid=\d+\([^)]+\)\s+gid=\d+\([^)]+\)"
+        has_id_output = bool(re.search(id_pattern, text))
+        
+        # 3. "whoami" 명령어 결과 확인
+        whoami_pattern = r"^(root|admin|user|www-data|nobody|daemon)\s*$"
+        has_whoami = bool(re.search(whoami_pattern, text, re.MULTILINE))
+        
+        # 4. 쉘 환경 변수 확인
+        env_vars = ["PATH=", "HOME=", "USER=", "SHELL="]
+        has_env_vars = sum(1 for var in env_vars if var in text) >= 2  # 최소 2개 이상
+        
+        # 5. 실제 쉘 명령어 실행 결과 (ls -la 출력 패턴)
+        ls_pattern = r"[d-][rwx-]{9}\s+\d+\s+\w+\s+\w+\s+\d+\s+[A-Za-z]{3}\s+\d+\s+[\d:]+\s+[^\s]+"
+        has_ls_output = bool(re.search(ls_pattern, text))
+        
+        # 최소 2개 이상의 강한 신호가 있어야 쉘 획득으로 판단
+        strong_signals = [
+            has_prompt,  # 쉘 프롬프트
+            has_id_output,  # id 명령어 출력
+            (has_whoami and has_env_vars),  # whoami + 환경 변수
+            (has_ls_output and has_env_vars),  # ls 출력 + 환경 변수
+        ]
+        
+        # 또는 쉘 프롬프트가 있고 추가 신호가 하나라도 있으면
+        if has_prompt and (has_id_output or has_whoami or has_ls_output or has_env_vars):
+            return True
+        
+        # 또는 강한 신호가 2개 이상
+        if sum(strong_signals) >= 2:
+            return True
+        
+        return False
+    
+    has_shell_in_output = False
+    if execution_output:
+        has_shell_in_output = is_shell_acquired_strict(execution_output)
+    if not has_shell_in_output:
+        for result_text in execution_results.values():
+            if is_shell_acquired_strict(result_text):
+                has_shell_in_output = True
+                break
+    
     # FLAG 감지 확인 (최우선)
+    # 중요: 코드 분석 결과가 아닌 실제 실행 결과에서만 플래그를 감지
     flag_signals = [s for s in signals if s.get("type") == "flag"]
+
+    # 플래그 형식 정보 가져오기
+    challenge_info = state.get("challenge", [])
+    flag_format = challenge_info[0].get("flag format", "") if challenge_info else ""
+
     if flag_signals:
-        # Flag가 감지됨 - state에 저장하고 플래그 설정
-        detected_flags = [s.get("value", "") for s in flag_signals if s.get("value")]
-        if detected_flags:
-            state["detected_flag"] = detected_flags[0]  # 첫 번째 flag 저장
-            state["all_detected_flags"] = detected_flags  # 모든 flag 저장
+        # 실행 결과에서 플래그가 감지되었는지 확인
+        # 코드 분석 도구(ghidra_decompile, objdump 등)의 결과에서는 플래그를 신뢰하지 않음
+        execution_output = state.get("execution_output", "")
+        execution_results = state.get("execution_results", {})
+        
+        # 플래그 형식 검증 함수
+        def matches_flag_format(flag_value: str, flag_format: str) -> bool:
+            """플래그가 지정된 형식과 일치하는지 확인"""
+            if not flag_format or not flag_value:
+                return True  # 형식 정보가 없으면 패스
+
+            # flag_format: "csawctf{}", "flag{}", "HTB{}" 등
+            import re
+
+            # 형식에서 prefix 추출 (예: "csawctf{}" -> "csawctf{")
+            if "{}" in flag_format or "{" in flag_format:
+                prefix = flag_format.split("{")[0] + "{"
+                suffix = "}"
+            else:
+                # 형식이 명확하지 않으면 패스
+                return True
+
+            # 플래그가 prefix{...}suffix 패턴인지 확인
+            pattern = re.escape(prefix) + r".+" + re.escape(suffix)
+            return bool(re.match(pattern, flag_value, re.IGNORECASE))
+
+        # 실행 결과에서 플래그 패턴 확인
+        def is_flag_in_execution_output(flag_value: str, output_text: str) -> bool:
+            """실행 결과에서 플래그가 실제로 출력되었는지 확인"""
+            if not flag_value or not output_text:
+                return False
+
+            # 1. 플래그 형식 검증 (가장 먼저)
+            if flag_format and not matches_flag_format(flag_value, flag_format):
+                console.print(f"⚠️  Flag format mismatch: Expected '{flag_format}', got '{flag_value[:50]}...'", style="yellow")
+                return False
+
+            # 플래그가 실행 결과에 직접 포함되어 있는지 확인
+            # 코드 분석 결과의 하드코딩 문자열이 아닌 실제 출력인지 확인
+            flag_lower = flag_value.lower()
+            output_lower = output_text.lower()
+            
+            # 플래그가 실행 결과에 포함되어 있고, 코드 분석 컨텍스트가 아닌 경우
+            if flag_value in output_text or flag_lower in output_lower:
+                # 코드 분석 도구 출력 패턴 제외
+                analysis_patterns = [
+                    "decompiled_code",
+                    "assembly_code",
+                    "disassembly",
+                    "std::string",
+                    "char",
+                    "wanted =",
+                    "expected =",
+                    "target =",
+                    "correct =",
+                    "if (",
+                    "for (",
+                    "void ",
+                    "int main",
+                    "def ",
+                    "class ",
+                    "const ",
+                    "#include",
+                    "//",  # C++ 주석
+                    "/*",  # C 블록 주석
+                    ".cpp",  # 소스 파일 경로
+                    ".c:",
+                    ".h:",
+                    "→",  # Read 도구의 라인 번호 마커
+                ]
+                
+                # 플래그 주변 컨텍스트 확인 (코드 분석 결과인지 판단)
+                flag_index = output_lower.find(flag_lower)
+                if flag_index >= 0:
+                    # 플래그 앞뒤 200자 확인
+                    start = max(0, flag_index - 200)
+                    end = min(len(output_text), flag_index + len(flag_value) + 200)
+                    context = output_text[start:end].lower()
+                    
+                    # 코드 분석 결과 패턴이 있으면 무시
+                    if any(pattern in context for pattern in analysis_patterns):
+                        console.print(f"⚠️  Flag pattern found in code analysis output (ignoring): {flag_value[:50]}...", style="yellow")
+                        return False
+                
+                return True
+            
+            return False
+        
+        # 실행 결과에서 실제로 플래그가 출력되었는지 확인
+        valid_flags = []
+        for flag_signal in flag_signals:
+            flag_value = flag_signal.get("value", "")
+            if not flag_value:
+                continue
+
+            # execution_output에서 확인
+            if execution_output and is_flag_in_execution_output(flag_value, execution_output):
+                valid_flags.append(flag_value)
+                continue
+
+            # execution_results에서 확인 (각 트랙별 결과)
+            found_in_results = False
+            for track_id, result_text in execution_results.items():
+                # 소스코드 읽기 명령어 제외
+                if any(keyword in result_text.lower() for keyword in ["read", "cat ", "source code", "file contents", ".cpp", ".c:", ".h:", "→"]):
+                    console.print(f"Skipping {track_id}: Contains source code or file read output", style="dim")
+                    continue
+
+                if is_flag_in_execution_output(flag_value, result_text):
+                    valid_flags.append(flag_value)
+                    found_in_results = True
+                    break
+
+            if not found_in_results:
+                console.print(f"⚠️  Flag pattern found but not in execution output (ignoring): {flag_value[:50]}...", style="yellow")
+                console.print("   This might be a hardcoded string in source code, not an actual flag.", style="dim")
+        
+        # 유효한 플래그가 있으면 처리
+        if valid_flags:
+            state["detected_flag"] = valid_flags[0]  # 첫 번째 flag 저장
+            state["all_detected_flags"] = valid_flags  # 모든 flag 저장
             state["flag_detected"] = True
-            console.print(f"🚩 FLAG DETECTED: {detected_flags[0]}", style="bold green")
-            console.print("→ Stopping workflow to generate PoC code", style="bold yellow")
+            console.print(f"🚩 FLAG DETECTED (from execution output): {valid_flags[0]}", style="bold green")
+            console.print("Stopping workflow to generate PoC code", style="bold yellow")
             state["execution_status"] = "flag_detected"
+            return state
+        else:
+            console.print("⚠️  Flag patterns found in analysis but not in execution output. Continuing workflow.", style="yellow")
+    
+    # 관리자 권한 획득 감지 확인 (Flag 다음 우선순위)
+    privilege_signals = [s for s in signals if s.get("type") == "privilege"]
+    if privilege_signals:
+        # 관리자 권한이 획득됨 - state에 저장하고 플래그 설정
+        privilege_evidences = [s.get("value", "") for s in privilege_signals if s.get("value")]
+        if privilege_evidences:
+            state["privilege_evidence"] = privilege_evidences[0]  # 첫 번째 증거 저장
+            state["privilege_escalated"] = True
+            console.print(f"PRIVILEGE ESCALATION DETECTED: {privilege_evidences[0]}", style="bold green")
+            console.print("Stopping workflow to generate PoC code", style="bold yellow")
+            state["execution_status"] = "privilege_escalated"
             return state
     
     # 성공/실패 판단 로직
+    # proof 타입은 EIP 리다이렉션, 쉘 획득 등 익스플로잇 성공 신호
     has_success_signal = any(s.get("type") in ["leak", "offset", "proof", "oracle"] for s in signals)
+    # EIP 리다이렉션은 명확한 성공 신호
+    has_eip_redirection = any(s.get("type") == "proof" and ("eip" in s.get("name", "").lower() or "redirection" in s.get("name", "").lower()) for s in signals)
+    # 쉘 획득도 명확한 성공 신호 (LLM이 parsing에서 감지한 경우)
+    has_shell_acquired_signal = any(s.get("type") == "proof" and s.get("name") == "shell_acquired" for s in signals)
+    # 쉘 획득도 명확한 성공 신호 (기존 로직)
+    has_shell_acquired = any(s.get("type") == "proof" and ("shell" in s.get("name", "").lower() or "acquired" in s.get("name", "").lower()) for s in signals)
     has_errors = len(errors) > 0
     
     # execution_status는 이미 execution_node에서 설정되었을 수 있음
     current_status = state.get("execution_status", "")
     
-    if has_success_signal and not has_errors:
+    # EIP 리다이렉션이나 쉘 획득이 있으면 명확한 성공 (우선순위: EIP > Shell > 기타 성공 신호)
+    if has_eip_redirection:
         state["execution_status"] = "success"
-        console.print("✓ Execution successful - useful signals found", style="bold green")
+        state["instruction_retry_count"] = 0
+        console.print("Execution successful - EIP redirection detected (exploit working!)", style="bold green")
+    elif has_shell_acquired or has_shell_in_output:
+        state["execution_status"] = "success"
+        state["instruction_retry_count"] = 0
+        console.print("Execution successful - Shell acquired (exploit working!)", style="bold green")
+    elif has_success_signal and not has_errors:
+        state["execution_status"] = "success"
+        # 성공 시 재시도 횟수 리셋
+        state["instruction_retry_count"] = 0
+        console.print("Execution successful - useful signals found", style="bold green")
     elif has_errors or current_status == "fail":
         state["execution_status"] = "fail"
-        console.print("✗ Execution failed - errors detected", style="bold red")
+        console.print("Execution failed - errors detected", style="bold red")
     else:
         state["execution_status"] = "partial"
-        console.print("~ Execution partial - some progress made", style="yellow")
+        console.print("Execution partial - some progress made", style="yellow")
     
     return state
 
@@ -846,6 +1334,10 @@ def poc_node(state: State) -> State:
     detected_flag = state.get("detected_flag", "")
     all_flags = state.get("all_detected_flags", [])
     
+    # 관리자 권한 획득 정보
+    privilege_escalated = state.get("privilege_escalated", False)
+    privilege_evidence = state.get("privilege_evidence", "")
+    
     # 실행 이력 및 발견된 사실들
     results = state.get("results", [])
     facts = state.get("facts", {})
@@ -858,6 +1350,8 @@ def poc_node(state: State) -> State:
     poc_context = {
         "detected_flag": detected_flag,
         "all_flags": all_flags,
+        "privilege_escalated": privilege_escalated,
+        "privilege_evidence": privilege_evidence,
         "execution_history": results[-5:] if results else [],  # 최근 5개 결과
         "discovered_facts": facts,
         "artifacts": artifacts,
@@ -871,11 +1365,16 @@ def poc_node(state: State) -> State:
         "mitigations": state.get("mitigations", [])
     }
     
+    # PoC 생성 이유 표시
+    if privilege_escalated:
+        console.print(f"🔐 Privilege escalation detected: {privilege_evidence}", style="cyan")
+    elif detected_flag:
+        console.print(f"Flag detected: {detected_flag}", style="cyan")
+    
     # PoC 프롬프트 생성
     poc_query = json.dumps(poc_context, ensure_ascii=False, indent=2)
     
     console.print("=== Generating PoC Script ===", style='bold green')
-    console.print(f"Flag detected: {detected_flag}", style="cyan")
     
     # PoC Agent 실행
     try:
@@ -903,7 +1402,7 @@ def poc_node(state: State) -> State:
                 f.write(poc_script)
             
             state["poc_script_path"] = script_path
-            console.print(f"✓ PoC script saved to: {script_path}", style="bold green")
+            console.print(f"PoC script saved to: {script_path}", style="bold green")
         
         console.print("=== PoC Generation Complete ===", style="bold green")
         console.print(f"Technique: {poc_json.get('technique', 'Unknown')}", style="cyan")
@@ -923,7 +1422,10 @@ def exploit_node(state: State) -> State:
     console.print("=== Exploit Agent ===", style='bold magenta')
 
     import json
-    state_for_json = {k: v for k, v in state.items() if k != "ctx"}
+    
+    # JSON 직렬화 가능한 state 생성 (직렬화 불가 객체 제거)
+    state_for_json = core.clean_state_for_json(state)
+    
     plan = state.get("plan", {})
     
     exploit_query = build_query(
@@ -934,6 +1436,101 @@ def exploit_node(state: State) -> State:
     console.print("=== Exploit Run ===", style='bold green')
 
     exploit_return = ctx.exploit.exploit_run(prompt_query = exploit_query)
+    
+    # Exploit 결과 저장
+    state["exploit_result"] = exploit_return
+    
+    # 결과 출력
+    console.print("\n=== Exploit Result ===", style='bold green')
+    console.print(exploit_return, style='cyan')
+    
+    # PoC 코드 생성
+    console.print("\n=== Generating PoC Code ===", style='bold magenta')
+    
+    import os
+    # PoC 생성을 위한 컨텍스트 구성
+    poc_context = {
+        "exploit_result": exploit_return,
+        "execution_history": state.get("results", [])[-5:] if state.get("results") else [],
+        "discovered_facts": state.get("facts", {}),
+        "artifacts": state.get("artifacts", {}),
+        "signals": state.get("signals", []),
+        "execution_results": state.get("execution_results", {}),
+        "parsing_result": state.get("parsing_result", ""),
+        "challenge": state.get("challenge", []),
+        "binary_path": state.get("binary_path", ""),
+        "url": state.get("url", ""),
+        "protections": state.get("protections", {}),
+        "mitigations": state.get("mitigations", []),
+        "plan": plan
+    }
+    
+    poc_query = json.dumps(poc_context, ensure_ascii=False, indent=2)
+    
+    try:
+        poc_result = ctx.exploit.poc_run(prompt_query="[CONTEXT]\n" + poc_query)
+        
+        # PoC 결과 파싱 및 저장
+        poc_json = core.safe_json_loads(poc_result)
+        state["poc_result"] = poc_result
+        state["poc_json"] = poc_json
+        
+        # PoC 스크립트 저장
+        poc_script = None
+        script_lang = "python"
+        
+        # JSON에서 PoC 스크립트 추출 시도
+        if isinstance(poc_json, dict):
+            poc_script = poc_json.get("poc_script") or poc_json.get("script_py")
+            script_lang = poc_json.get("script_language") or poc_json.get("language", "python")
+        else:
+            # JSON 파싱 실패 시 원본 텍스트에서 코드 블록 추출
+            import re
+            # Python 코드 블록 찾기
+            python_match = re.search(r'```(?:python|py)?\n(.*?)```', poc_result, re.DOTALL)
+            if not python_match:
+                # 일반 코드 블록 찾기
+                python_match = re.search(r'```\n(.*?)```', poc_result, re.DOTALL)
+            if python_match:
+                poc_script = python_match.group(1).strip()
+                script_lang = "python"
+        
+        if poc_script:
+            script_lang = str(script_lang).lower()
+            script_ext = {
+                "python": ".py",
+                "bash": ".sh",
+                "c": ".c",
+                "other": ".txt"
+            }.get(script_lang, ".py")
+            
+            script_path = f"./artifacts/poc{script_ext}"
+            os.makedirs("./artifacts", exist_ok=True)
+            with open(script_path, "w", encoding='utf-8') as f:
+                f.write(poc_script)
+            
+            state["poc_script_path"] = script_path
+            console.print(f"PoC script saved to: {script_path}", style="bold green")
+        else:
+            console.print("Warning: PoC script not found in response. Saving raw result.", style="yellow")
+            # 원본 결과를 파일로 저장
+            script_path = "./artifacts/poc_result.txt"
+            os.makedirs("./artifacts", exist_ok=True)
+            with open(script_path, "w", encoding='utf-8') as f:
+                f.write(poc_result)
+            state["poc_script_path"] = script_path
+            console.print(f"Raw PoC result saved to: {script_path}", style="cyan")
+        
+        console.print("\n=== PoC Generation Complete ===", style='bold green')
+        if isinstance(poc_json, dict) and "technique" in poc_json:
+            console.print(f"Technique: {poc_json.get('technique', 'Unknown')}", style="cyan")
+        
+    except Exception as e:
+        console.print(f"Error generating PoC: {e}", style="bold red")
+        state["poc_result"] = f"Error: {str(e)}"
+        state["poc_json"] = {}
+    
+    console.print("\n=== Exploit & PoC Generation Complete ===", style='bold green')
 
     return state
 
@@ -988,8 +1585,27 @@ def help_node(state: State) -> State:
     return state
 
 def option_input_node(state: State) -> State:
+    # Workflow step count 추적 (recursion_limit 체크용)
+    workflow_step_count = state.get("workflow_step_count", 0)
+    workflow_step_count += 1
+    state["workflow_step_count"] = workflow_step_count
+    
+    # Recursion limit 체크 (50에 가까워지면 경고)
+    RECURSION_LIMIT = 50
+    if workflow_step_count >= RECURSION_LIMIT - 5:
+        console.print(f"Approaching recursion limit: {workflow_step_count}/{RECURSION_LIMIT} steps", style="yellow")
+        if workflow_step_count >= RECURSION_LIMIT:
+            console.print(f"Recursion limit ({RECURSION_LIMIT}) reached. Please choose an option.", style="bold yellow")
+            console.print("  Consider using --continue to reset or --quit to exit.", style="cyan")
+    
     console.print("Please choose which option you want to choose.", style="blue")
     option = input("> ").strip()
     state["option"] = option
+    
+    # --continue 옵션 선택 시 반복 횟수 및 step count 리셋
+    if option == "--continue":
+        state["iteration_count"] = 0
+        state["workflow_step_count"] = 0
+        console.print("Iteration count and workflow step count reset. Starting fresh cycle.", style="bold green")
     
     return state

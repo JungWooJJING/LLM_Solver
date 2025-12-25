@@ -48,9 +48,9 @@ def visualize_workflow(workflow, name="Workflow", output_format="mermaid"):
                     f.write("```mermaid\n")
                     f.write(mermaid_diagram)
                     f.write("\n```\n")
-                console.print(f"\n✓ Saved to: {output_file}", style="green")
+                console.print(f"\nSaved to: {output_file}", style="green")
             except AttributeError:
-                console.print("⚠ draw_mermaid() 메서드를 사용할 수 없습니다.", style="yellow")
+                console.print("draw_mermaid() 메서드를 사용할 수 없습니다.", style="yellow")
                 console.print("LangGraph 버전을 확인하세요.", style="cyan")
             
         elif output_format == "ascii":
@@ -76,14 +76,14 @@ def visualize_workflow(workflow, name="Workflow", output_format="mermaid"):
                     f.write(f"{name} - ASCII Diagram\n")
                     f.write("=" * 80 + "\n\n")
                     f.write(ascii_diagram)
-                console.print(f"\n✓ Saved to: {output_file}", style="green")
+                console.print(f"\nSaved to: {output_file}", style="green")
             except Exception as e:
-                console.print(f"⚠ ASCII 출력 중 오류: {e}", style="yellow")
+                console.print(f"ASCII 출력 중 오류: {e}", style="yellow")
                 console.print("Mermaid 형식으로 시도해보세요.", style="cyan")
             
         elif output_format in ["png", "svg"]:
             # 이미지로 저장 (Mermaid를 이미지로 변환하려면 추가 도구 필요)
-            console.print("\n⚠ PNG/SVG 출력은 Mermaid 다이어그램을 이미지로 변환해야 합니다.", style="yellow")
+            console.print("\nPNG/SVG 출력은 Mermaid 다이어그램을 이미지로 변환해야 합니다.", style="yellow")
             console.print("다음 방법을 사용할 수 있습니다:", style="cyan")
             console.print("  1) Mermaid Live Editor (https://mermaid.live/)에 코드 붙여넣기", style="cyan")
             console.print("  2) mermaid-cli 설치: npm install -g @mermaid-js/mermaid-cli", style="cyan")
@@ -92,11 +92,11 @@ def visualize_workflow(workflow, name="Workflow", output_format="mermaid"):
             visualize_workflow(workflow, name, "mermaid")
                 
         else:
-            console.print(f"⚠ 지원하지 않는 형식: {output_format}", style="yellow")
+            console.print(f"지원하지 않는 형식: {output_format}", style="yellow")
             console.print("지원 형식: mermaid, ascii, png, svg", style="cyan")
             
     except Exception as e:
-        console.print(f"✗ 시각화 중 오류 발생: {e}", style="bold red")
+        console.print(f"시각화 중 오류 발생: {e}", style="bold red")
         import traceback
         console.print(traceback.format_exc(), style="dim")
 
