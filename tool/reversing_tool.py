@@ -3,7 +3,7 @@ import json
 import re
 import os
 import shlex
-from typing import Optional, List, Dict
+from typing import Optional, List, Dict, Any
 from pathlib import Path
 from langchain_core.tools import BaseTool, StructuredTool
 from pydantic import BaseModel, Field
@@ -285,6 +285,41 @@ class ReversingTool:
                 "error": f"Decompilation failed: {str(e)}"
             }
     
+    def _remove_ansi_colors(self, text: str) -> str:
+        ansi_escape = re.compile(r'\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])')
+        return ansi_escape.sub('', text)
+
+    def pwndbg_debug(self, binary_path: Optional[str] = None, command: str = None) -> str:
+        """
+        GDB(Pwndbg)로 바이너리 디버깅
+        Args:
+            command: 디버깅 명령 (예: 'vmmap', 'telescope', 'info functions')
+            binary_path: 바이너리 경로
+        """
+        target = binary_path or self.binary_path
+        if not target:
+            return json.dumps({"error": "binary_path is required"})
+        
+        gdb_cmd = ['gdb', '--batch', '-ex', command, target]
+        
+        # Pwndbg는 출력이 매우 길고 컬러 코드가 섞여 있어서 타임아웃을 넉넉히 잡아야 함
+        run_result = self._run_command(gdb_cmd, timeout=15)
+        
+        if not run_result["success"]:
+            return json.dumps({
+                "error": run_result.get("error", "GDB failed"),
+                "stderr": run_result.get("stderr", "")
+            }, indent=2)
+        
+        # ANSI 컬러 코드 제거
+        cleaned_output = self._remove_ansi_colors(run_result["stdout"])
+
+        return json.dumps({
+            "binary_path": target,
+            "command": command,
+            "result": cleaned_output
+        }, indent=2, ensure_ascii=False)
+    
     def angr_symbolic_execution(self, binary_path: Optional[str] = None, find_address: str = None, avoid_address: Optional[str] = None) -> str:
         """
         Angr를 사용하여 심볼릭 실행을 수행합니다.
@@ -363,53 +398,23 @@ class ReversingTool:
                 "traceback": traceback.format_exc(),
                 "binary_path": target
             }, indent=2)
-    
-    def _remove_ansi_colors(self, text: str) -> str:
-        ansi_escape = re.compile(r'\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])')
-        return ansi_escape.sub('', text)
 
-    def pwndbg_debug(self, binary_path: Optional[str] = None, command: str = None) -> str:
+    def extract_strings(
+        self,
+        binary_path: Optional[str] = None,
+        min_length: int = 4,
+        max_results: int = 100
+    ) -> str:
         """
-        GDB(Pwndbg)로 바이너리 디버깅
-        Args:
-            command: 디버깅 명령 (예: 'vmmap', 'telescope', 'info functions')
-            binary_path: 바이너리 경로
-        """
-        target = binary_path or self.binary_path
-        if not target:
-            return json.dumps({"error": "binary_path is required"})
-        
-        gdb_cmd = ['gdb', '--batch', '-ex', command, target]
-        
-        # Pwndbg는 출력이 매우 길고 컬러 코드가 섞여 있어서 타임아웃을 넉넉히 잡아야 함
-        run_result = self._run_command(gdb_cmd, timeout=15)
-        
-        if not run_result["success"]:
-            return json.dumps({
-                "error": run_result.get("error", "GDB failed"),
-                "stderr": run_result.get("stderr", "")
-            }, indent=2)
-        
-        # ANSI 컬러 코드 제거
-        cleaned_output = self._remove_ansi_colors(run_result["stdout"])
-
-        return json.dumps({
-            "binary_path": target,
-            "command": command,
-            "result": cleaned_output
-        }, indent=2, ensure_ascii=False)
-
-    def xxd_hex(self, binary_path: Optional[str] = None, command: Optional[str] = None) -> str:
-        """
-        바이너리 파일을 xxd를 사용하여 헥스 덤프로 변환합니다.
-        LLM의 컨텍스트 제한을 고려하여 command 인자가 없을 경우 기본적으로 앞부분(512바이트)만 출력합니다.
+        바이너리에서 문자열을 추출합니다.
         
         Args:
             binary_path: 대상 바이너리 경로 (선택사항, self.binary_path 사용 가능)
-            command: xxd에 전달할 추가 옵션 (예: "-l 100", "-s 0x400")
+            min_length: 최소 문자열 길이 (기본: 4)
+            max_results: 최대 결과 개수 (기본: 100)
         
         Returns:
-            JSON 형식의 실행 결과
+            JSON 형식의 문자열 목록
         """
         target = binary_path or self.binary_path
         if not target:
@@ -419,67 +424,244 @@ class ReversingTool:
             return json.dumps({"error": f"Binary not found: {target}"}, indent=2)
         
         try:
-            # 기본 명령어 구성
-            cmd_list = ["xxd"]
+            # strings 명령어 사용 시도
+            cmd = ["strings", "-n", str(min_length), target]
+            result = self._run_command(cmd, timeout=30)
             
-            # command 인자가 있으면 파싱해서 추가, 없으면 안전하게 앞부분 512바이트만 (-l 512)
-            if command:
-                # shlex.split을 사용하여 "-l 100" 같은 문자열을 리스트로 안전하게 변환
-                cmd_list.extend(shlex.split(command))
-            else:
-                # Agent가 실수로 전체 덤프를 시도하지 않도록 안전장치 (Default Limit)
-                cmd_list.extend(["-l", "512"])
+            if result["success"]:
+                strings_list = [s for s in result["stdout"].strip().split("\n") if s.strip()][:max_results]
                 
-            cmd_list.append(target)
-
-            # _run_command 헬퍼 사용 (타임아웃 포함)
-            run_result = self._run_command(cmd_list, timeout=30)
-            
-            if not run_result["success"]:
+                # 흥미로운 문자열 필터링 (URL, 경로, 패스워드 등)
+                interesting = []
+                for s in strings_list:
+                    s_lower = s.lower()
+                    if any(keyword in s_lower for keyword in ["http://", "https://", "/bin/", "/usr/", "password", "flag", "secret", "key", "token"]):
+                        interesting.append(s)
+                
                 return json.dumps({
-                    "error": run_result.get("error", "xxd command failed"),
-                    "stderr": run_result.get("stderr", ""),
-                    "binary_path": target
-                }, indent=2)
+                    "binary_path": target,
+                    "min_length": min_length,
+                    "total_found": len(strings_list),
+                    "interesting_strings": interesting[:20],  # 최대 20개
+                    "all_strings": strings_list,
+                    "method": "strings command"
+                }, indent=2, ensure_ascii=False)
+            
+            # strings 명령어가 없으면 Python으로 직접 추출
+            strings_list = []
+            with open(target, 'rb') as f:
+                data = f.read()
+                current_string = ""
+                for byte in data:
+                    if 32 <= byte <= 126:  # 출력 가능한 ASCII 문자
+                        current_string += chr(byte)
+                    else:
+                        if len(current_string) >= min_length:
+                            strings_list.append(current_string)
+                        current_string = ""
+                if len(current_string) >= min_length:
+                    strings_list.append(current_string)
+            
+            strings_list = list(set(strings_list))[:max_results]  # 중복 제거 및 제한
+            
+            interesting = []
+            for s in strings_list:
+                s_lower = s.lower()
+                if any(keyword in s_lower for keyword in ["http://", "https://", "/bin/", "/usr/", "password", "flag", "secret", "key", "token"]):
+                    interesting.append(s)
             
             return json.dumps({
                 "binary_path": target,
-                "command": command,
-                "result": run_result["stdout"].strip()
+                "min_length": min_length,
+                "total_found": len(strings_list),
+                "interesting_strings": interesting[:20],
+                "all_strings": strings_list[:100],  # 최대 100개만
+                "method": "python extraction"
             }, indent=2, ensure_ascii=False)
-
-        except FileNotFoundError:
-            return json.dumps({
-                "error": "'xxd' command not found. Please install xxd or use a minimal python implementation.",
-                "binary_path": target
-            }, indent=2)
+            
         except Exception as e:
             return json.dumps({
-                "error": f"Unexpected error: {str(e)}",
+                "error": f"String extraction failed: {str(e)}",
                 "binary_path": target
             }, indent=2)
-
+    
+    def checksec(
+        self,
+        binary_path: Optional[str] = None
+    ) -> str:
+        """
+        바이너리의 보안 기능을 확인합니다 (ASLR, NX, Stack Canary, RELRO 등).
+        
+        Args:
+            binary_path: 대상 바이너리 경로 (선택사항, self.binary_path 사용 가능)
+        
+        Returns:
+            JSON 형식의 보안 기능 정보
+        """
+        target = binary_path or self.binary_path
+        if not target:
+            return json.dumps({"error": "binary_path is required"}, indent=2)
+        
+        if not Path(target).exists():
+            return json.dumps({"error": f"Binary not found: {target}"}, indent=2)
+        
+        security_features = {
+            "binary_path": target
+        }
+        
+        # checksec 명령어 시도 (pwntools의 checksec)
+        checksec_result = self._run_command(["checksec", target])
+        if checksec_result["success"]:
+            security_features["checksec_output"] = checksec_result["stdout"]
+            return json.dumps(security_features, indent=2, ensure_ascii=False)
+        
+        # checksec가 없으면 readelf로 직접 확인
+        readelf_result = self._run_command(["readelf", "-W", "-l", target])
+        if readelf_result["success"]:
+            output = readelf_result["stdout"]
+            
+            # NX 확인
+            security_features["nx"] = "GNU_STACK" in output and "RWE" not in output
+            
+            # PIE 확인
+            readelf_ehdr = self._run_command(["readelf", "-h", target])
+            if readelf_ehdr["success"]:
+                ehdr_output = readelf_ehdr["stdout"]
+                security_features["pie"] = "EXEC" not in ehdr_output or "DYN" in ehdr_output
+            
+            # RELRO 확인
+            readelf_dyn = self._run_command(["readelf", "-d", target])
+            if readelf_dyn["success"]:
+                dyn_output = readelf_dyn["stdout"]
+                security_features["relro"] = "BIND_NOW" in dyn_output or "RELRO" in dyn_output
+            
+            # Stack Canary 확인
+            nm_result = self._run_command(["nm", target])
+            if nm_result["success"]:
+                nm_output = nm_result["stdout"]
+                security_features["stack_canary"] = "__stack_chk_fail" in nm_output or "__stack_chk_guard" in nm_output
+        
+        return json.dumps(security_features, indent=2, ensure_ascii=False)
+    
+    def disassemble(
+        self,
+        binary_path: Optional[str] = None,
+        function_name: Optional[str] = None,
+        address: Optional[str] = None,
+        num_instructions: int = 50
+    ) -> str:
+        """
+        바이너리의 특정 함수나 주소를 디스어셈블합니다.
+        
+        Args:
+            binary_path: 대상 바이너리 경로 (선택사항, self.binary_path 사용 가능)
+            function_name: 디스어셈블할 함수명 (예: "main")
+            address: 디스어셈블할 주소 (16진수, 예: "0x401200")
+            num_instructions: 출력할 명령어 개수 (기본: 50)
+        
+        Returns:
+            JSON 형식의 디스어셈블 결과
+        """
+        target = binary_path or self.binary_path
+        if not target:
+            return json.dumps({"error": "binary_path is required"}, indent=2)
+        
+        if not Path(target).exists():
+            return json.dumps({"error": f"Binary not found: {target}"}, indent=2)
+        
+        if not function_name and not address:
+            return json.dumps({"error": "function_name or address is required"}, indent=2)
+        
+        try:
+            cmd = ["objdump", "-d", "-M", "intel"]
+            
+            if function_name:
+                cmd.extend(["--disassemble", f"={function_name}"])
+            elif address:
+                # 주소를 정수로 변환
+                addr_str = address.replace("0x", "").replace("0X", "")
+                addr_int = int(addr_str, 16)
+                # objdump는 시작 주소를 직접 지원하지 않으므로 -S 옵션으로 시도
+                cmd.append("--start-address")
+                cmd.append(hex(addr_int))
+                cmd.append("--stop-address")
+                cmd.append(hex(addr_int + (num_instructions * 20)))  # 대략적인 범위
+            
+            cmd.append(target)
+            
+            result = self._run_command(cmd, timeout=30)
+            
+            if result["success"]:
+                # 출력을 줄 단위로 나누고 필요한 부분만 추출
+                lines = result["stdout"].split("\n")
+                disassembly_lines = []
+                
+                for line in lines:
+                    if any(marker in line for marker in [":\t", "Disassembly of", "<"]):
+                        disassembly_lines.append(line)
+                    if len(disassembly_lines) >= num_instructions * 2:  # 여유 있게
+                        break
+                
+                return json.dumps({
+                    "binary_path": target,
+                    "function_name": function_name,
+                    "address": address,
+                    "disassembly": "\n".join(disassembly_lines[:num_instructions * 2])
+                }, indent=2, ensure_ascii=False)
+            else:
+                return json.dumps({
+                    "error": "objdump failed",
+                    "stderr": result.get("stderr", ""),
+                    "binary_path": target
+                }, indent=2)
+                
+        except Exception as e:
+            return json.dumps({
+                "error": f"Disassembly failed: {str(e)}",
+                "binary_path": target
+            }, indent=2)
+    
 
 # ========== LangChain 도구로 변환하는 함수들 ==========
 
-def create_reversing_tools(binary_path: Optional[str] = None) -> List[BaseTool]:
+def create_reversing_tools(binary_path: Optional[str] = None, challenge_info: Optional[List[Dict[str, Any]]] = None) -> List[BaseTool]:
     """
     Converts ReversingTool methods into individual LangChain tools
     
     Args:
         binary_path: Default binary path
+        challenge_info: Challenge information list (from state["challenge"])
     
     Returns:
         List of LangChain BaseTool
     """
     tool_instance = ReversingTool(binary_path)
     
+    # Challenge 정보 추출
+    challenge_context = ""
+    if challenge_info and len(challenge_info) > 0:
+        challenge = challenge_info[0]
+        title = challenge.get("title", "")
+        description = challenge.get("description", "")
+        category = challenge.get("category", "")
+        
+        challenge_parts = []
+        if title:
+            challenge_parts.append(f"Challenge: {title}")
+        if description:
+            challenge_parts.append(f"Description: {description}")
+        if category:
+            challenge_parts.append(f"Category: {category}")
+        
+        if challenge_parts:
+            challenge_context = "\n".join(challenge_parts) + "\n\n"
+    
     # 각 메서드를 별도 도구로 생성
     tools = [
         StructuredTool.from_function(
             func=tool_instance.ghidra_decompile,
             name="ghidra_decompile",
-            description="Decompiles specific function of binary using Ghidra. Finds function by name or address and returns decompiled code and assembly code.",
+            description=f"{challenge_context}Decompiles specific function of binary using Ghidra. Finds function by name or address and returns decompiled code and assembly code.",
             args_schema=type('GhidraArgs', (BaseModel,), {
                 '__annotations__': {
                     'function_name': Optional[str],
@@ -496,9 +678,22 @@ def create_reversing_tools(binary_path: Optional[str] = None) -> List[BaseTool]:
             })
         ),
         StructuredTool.from_function(
+            func=tool_instance.pwndbg_debug,
+            name="gdb_debug",
+            description=f"{challenge_context}Debugs binary using GDB (Pwndbg). Can execute various debugging commands.",
+            args_schema=type('GdbArgs', (BaseModel,), {
+                '__annotations__': {
+                    'binary_path': Optional[str],
+                    'command': str
+                },
+                'binary_path': Field(default=None, description="Binary path (optional)"),
+                'command': Field(default="info functions", description="Debugging command (e.g., 'vmmap', 'telescope', 'info functions')")
+            })
+        ),
+        StructuredTool.from_function(
             func=tool_instance.angr_symbolic_execution,
             name="angr_symbolic_execution",
-            description="Performs symbolic execution using Angr. Finds input that reaches a specific address.",
+            description=f"{challenge_context}Performs symbolic execution using Angr. Finds input that reaches a specific address.",
             args_schema=type('AngrArgs', (BaseModel,), {
                 '__annotations__': {
                     'binary_path': Optional[str],
@@ -511,29 +706,46 @@ def create_reversing_tools(binary_path: Optional[str] = None) -> List[BaseTool]:
             })
         ),
         StructuredTool.from_function(
-            func=tool_instance.pwndbg_debug,
-            name="gdb_debug",
-            description="Debugs binary using GDB (Pwndbg). Can execute various debugging commands.",
-            args_schema=type('GdbArgs', (BaseModel,), {
+            func=tool_instance.extract_strings,
+            name="extract_strings",
+            description=f"{challenge_context}Extracts readable strings from binary file. Useful for finding hardcoded passwords, URLs, flags, etc.",
+            args_schema=type('ExtractStringsArgs', (BaseModel,), {
                 '__annotations__': {
                     'binary_path': Optional[str],
-                    'command': str
+                    'min_length': int,
+                    'max_results': int
                 },
                 'binary_path': Field(default=None, description="Binary path (optional)"),
-                'command': Field(default="info functions", description="Debugging command (e.g., 'vmmap', 'telescope', 'info functions')")
+                'min_length': Field(default=4, description="Minimum string length (default: 4)"),
+                'max_results': Field(default=100, description="Maximum number of results (default: 100)")
             })
         ),
         StructuredTool.from_function(
-            func=tool_instance.xxd_hex,
-            name="xxd_hex_dump",
-            description="Converts binary file to hex dump using xxd. By default, only outputs first 512 bytes to consider LLM context limitations.",
-            args_schema=type('XxdArgs', (BaseModel,), {
+            func=tool_instance.checksec,
+            name="checksec",
+            description=f"{challenge_context}Checks security features of binary (ASLR/PIE, NX, Stack Canary, RELRO, etc.). Useful for exploit development.",
+            args_schema=type('ChecksecArgs', (BaseModel,), {
+                '__annotations__': {
+                    'binary_path': Optional[str]
+                },
+                'binary_path': Field(default=None, description="Binary path (optional)")
+            })
+        ),
+        StructuredTool.from_function(
+            func=tool_instance.disassemble,
+            name="disassemble",
+            description=f"{challenge_context}Disassembles specific function or address in binary using objdump. Returns assembly code.",
+            args_schema=type('DisassembleArgs', (BaseModel,), {
                 '__annotations__': {
                     'binary_path': Optional[str],
-                    'command': Optional[str]
+                    'function_name': Optional[str],
+                    'address': Optional[str],
+                    'num_instructions': int
                 },
                 'binary_path': Field(default=None, description="Binary path (optional)"),
-                'command': Field(default=None, description="Additional options to pass to xxd (e.g., '-l 100', '-s 0x400')")
+                'function_name': Field(default=None, description="Function name to disassemble (e.g., 'main')"),
+                'address': Field(default=None, description="Address to disassemble (hex, e.g., '0x401200')"),
+                'num_instructions': Field(default=50, description="Number of instructions to output (default: 50)")
             })
         ),
     ]

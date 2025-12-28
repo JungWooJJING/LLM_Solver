@@ -23,18 +23,14 @@ import warnings
 warnings.filterwarnings("ignore", category=FutureWarning, message=".*google.generativeai.*")
 
 try:
-    from google import genai
+    import google.generativeai as genai
 except ImportError:
-    try:
-        import google.generativeai as genai
-    except ImportError:
-        genai = None
+    genai = None
 
 from templates.prompting import CTFSolvePrompt, few_Shot
 from rich.console import Console
 from utility.build_query import build_query
 from utility.core_utility import Core
-from utility.compress import Compress
 
 # Ghidra API (선택적)
 try:
@@ -87,19 +83,18 @@ class PlanningAgent:
         self.api_key = api_key
         self.model = model
         
-        if model == "gpt-5.2":
+        if model == "gpt-4o":
             self.client = OpenAI(api_key=api_key)
             self.is_gemini = False
-        elif model == "gemini-3-flash-preview":
+        elif model == "gemini-1.5-flash" or model == "gemini-1.5-flash-latest" or model == "gemini-3-flash-preview":
             if genai is None:
-                raise ImportError("google-genai package is required for Gemini. Install with: pip install google-genai")
+                raise ImportError("google-generativeai package is required for Gemini. Install with: pip install google-generativeai")
             genai.configure(api_key=api_key)
             self.client = genai.GenerativeModel(model)
             self.is_gemini = True
         else:
-            raise ValueError(f"Invalid model: {model}. Supported: gpt-5.2, gemini-3-flash-preview")
+            raise ValueError(f"Invalid model: {model}. Supported: gpt-4o, gemini-1.5-flash, gemini-1.5-flash-latest, gemini-3-flash-preview")
         
-        self.compress = Compress(api_key=api_key, model=model)
         
     def run_CoT(self, prompt_query: str, ctx, state: dict = None):
         global prompt_CoT
@@ -162,47 +157,10 @@ class PlanningAgent:
                 # OpenAI API 호출
                 res = self.client.chat.completions.create(model=self.model, messages=call_msgs)
                 content = res.choices[0].message.content
-        except Exception:
-            prompt_CoT[:] = self.compress.compress_history(prompt_CoT, ctx=ctx)
-            call_msgs = prompt_CoT + [state_msg, user_msg]
-            if self.is_gemini:
-                # Gemini API 호출 - 시스템 프롬프트와 대화 분리
-                system_parts = []
-                user_parts = []
-                assistant_parts = []
-                
-                for msg in call_msgs:
-                    role = msg.get("role", "user")
-                    content = msg.get("content", "")
-                    if role == "developer" or role == "system":
-                        system_parts.append(content)
-                    elif role == "user":
-                        user_parts.append(content)
-                    elif role == "assistant":
-                        assistant_parts.append(content)
-                
-                system_instruction = "\n\n".join(system_parts) if system_parts else None
-                conversation_text = ""
-                for i, user_content in enumerate(user_parts):
-                    conversation_text += f"User: {user_content}\n"
-                    if i < len(assistant_parts):
-                        conversation_text += f"Model: {assistant_parts[i]}\n"
-                
-                if system_instruction:
-                    try:
-                        res = self.client.generate_content(
-                            conversation_text if conversation_text else user_parts[-1] if user_parts else "",
-                            system_instruction=system_instruction
-                        )
-                    except TypeError:
-                        full_prompt = f"{system_instruction}\n\n---\n\n{conversation_text if conversation_text else user_parts[-1] if user_parts else ''}"
-                        res = self.client.generate_content(full_prompt)
-                else:
-                    res = self.client.generate_content(conversation_text if conversation_text else user_parts[-1] if user_parts else "")
-                content = res.text
-            else:
-                res = self.client.chat.completions.create(model=self.model, messages=call_msgs)
-                content = res.choices[0].message.content
+        except Exception as e:
+            # API 호출 실패 시 에러 로깅 후 재시도 없이 에러 전파
+            console.print(f"Error in CoT API call: {e}", style="bold red")
+            raise
 
         plan_CoT.extend([user_msg, {"role": "assistant", "content": content}])
         return content

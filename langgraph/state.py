@@ -300,6 +300,8 @@ def get_state_for_instruction(state: PlanningState) -> Dict[str, Any]:
     - 생성된 아티팩트 (artifacts)
     - 제약 조건 (constraints)
     - 현재 트랙 정보 (current_track, selected)
+    - 이미 실행한 명령어 (seen_cmd_hashes) - 중복 방지
+    - 실행 결과 (execution_results) - 이전 실행 내용 참고
     """
     return {
         # 계획 결과
@@ -307,23 +309,32 @@ def get_state_for_instruction(state: PlanningState) -> Dict[str, Any]:
         "cal_json": state.get("cal_json", {}),
         "current_track": state.get("current_track", ""),
         "selected": state.get("selected", {}),
-        
+
         # 타겟 정보
         "challenge": state.get("challenge", []),
         "binary_path": state.get("binary_path", ""),
         "url": state.get("url", ""),
         "target_info": state.get("target_info", {}),
-        
+
         # 보호 기법
         "protections": state.get("protections", {}),
         "mitigations": state.get("mitigations", []),
-        
+
         # 발견된 정보
         "facts": state.get("facts", {}),
         "artifacts": state.get("artifacts", {}),
-        
+
         # 제약 조건
         "constraints": state.get("constraints", []),
+
+        # 이미 실행한 명령어 (중복 방지)
+        "seen_cmd_hashes": state.get("seen_cmd_hashes", []),
+        "command_cache": state.get("command_cache", {}),
+        "failed_commands": state.get("failed_commands", {}),
+
+        # 이전 실행 결과 (참고용)
+        "execution_results": state.get("execution_results", {}),
+        "results": state.get("results", [])[-5:] if state.get("results") else [],  # 최근 5개만
     }
 
 
@@ -367,3 +378,56 @@ def get_state_for_feedback(state: PlanningState) -> Dict[str, Any]:
         "errors": state.get("errors", []),
         "challenge": state.get("challenge", []),
     }
+
+
+# === 공통 유틸리티 함수 ===
+def is_shell_acquired(text: str) -> bool:
+    """
+    쉘 획득 여부를 엄격하게 검증
+    여러 신호를 조합하여 false positive를 방지
+    """
+    import re
+
+    if not text:
+        return False
+
+    text_lower = text.lower()
+
+    # 1. 쉘 프롬프트 확인 (가장 확실한 신호)
+    shell_prompts = ["$ ", "# ", "> ", "bash:", "sh:", "zsh:", "csh:"]
+    has_prompt = any(prompt in text for prompt in shell_prompts)
+
+    # 2. 실제 명령어 실행 결과 패턴 확인
+    # "id" 명령어의 전체 출력 패턴: "uid=0(root) gid=0(root) groups=0(root)"
+    id_pattern = r"uid=\d+\([^)]+\)\s+gid=\d+\([^)]+\)"
+    has_id_output = bool(re.search(id_pattern, text))
+
+    # 3. "whoami" 명령어 결과 확인
+    whoami_pattern = r"^(root|admin|user|www-data|nobody|daemon)\s*$"
+    has_whoami = bool(re.search(whoami_pattern, text, re.MULTILINE))
+
+    # 4. 쉘 환경 변수 확인
+    env_vars = ["PATH=", "HOME=", "USER=", "SHELL="]
+    has_env_vars = sum(1 for var in env_vars if var in text) >= 2  # 최소 2개 이상
+
+    # 5. 실제 쉘 명령어 실행 결과 (ls -la 출력 패턴)
+    ls_pattern = r"[d-][rwx-]{9}\s+\d+\s+\w+\s+\w+\s+\d+\s+[A-Za-z]{3}\s+\d+\s+[\d:]+\s+[^\s]+"
+    has_ls_output = bool(re.search(ls_pattern, text))
+
+    # 최소 2개 이상의 강한 신호가 있어야 쉘 획득으로 판단
+    strong_signals = [
+        has_prompt,  # 쉘 프롬프트
+        has_id_output,  # id 명령어 출력
+        (has_whoami and has_env_vars),  # whoami + 환경 변수
+        (has_ls_output and has_env_vars),  # ls 출력 + 환경 변수
+    ]
+
+    # 쉘 프롬프트가 있고 추가 신호가 하나라도 있으면
+    if has_prompt and (has_id_output or has_whoami or has_ls_output or has_env_vars):
+        return True
+
+    # 또는 강한 신호가 2개 이상
+    if sum(strong_signals) >= 2:
+        return True
+
+    return False

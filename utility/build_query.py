@@ -11,7 +11,7 @@ STATE_SPEC = (
     "Policies: obey constraints; build on artifacts/results.\n"
 )
 
-def build_query(option: str, code: str = "", state = None, CoT = None, Cal = None, plan = None, Instruction = None, planning_context = None, available_tools = None, tool_category = None):
+def build_query(option: str, code: str = "", state = None, CoT = None, Cal = None, plan = None, Instruction = None, planning_context = None, available_tools = None, tool_category = None, fallback_mode = None):
     if option == "--file":
         prompt = (
             "You are a planning assistant for CTF automation.\n\n"
@@ -78,9 +78,9 @@ def build_query(option: str, code: str = "", state = None, CoT = None, Cal = Non
         ).format(state_spec=STATE_SPEC, state=state, CoT=CoT)
         return prompt
     
-    elif option == "--instruction":
+    elif option == "--instruction" or option == "--instruction_fallback":
         import json
-        
+
         # 도구 정보 추가
         tools_info = ""
         if available_tools and tool_category:
@@ -109,11 +109,39 @@ def build_query(option: str, code: str = "", state = None, CoT = None, Cal = Non
                 tool_category=tool_category,
                 tool_names=json.dumps(available_tools, indent=2, ensure_ascii=False)
             )
+
+        # 이미 실행한 명령어 정보 추가 (중복 방지)
+        executed_commands_info = ""
+        if state and isinstance(state, dict):
+            command_cache = state.get("command_cache", {})
+            failed_commands = state.get("failed_commands", {})
+            execution_results = state.get("execution_results", {})
+
+            if command_cache or failed_commands:
+                executed_list = []
+                # 성공한 명령어
+                for cmd_hash, cmd_info in command_cache.items():
+                    executed_list.append(f"✓ {cmd_info.get('cmd', 'unknown')}")
+                # 실패한 명령어
+                for cmd_hash, cmd_info in failed_commands.items():
+                    executed_list.append(f"✗ {cmd_info.get('cmd', 'unknown')} (failed)")
+
+                if executed_list:
+                    executed_commands_info = (
+                        "\n### ALREADY EXECUTED COMMANDS (DO NOT REPEAT):\n"
+                        "The following commands have already been executed in previous iterations:\n"
+                        "{executed_list}\n\n"
+                        "CRITICAL: You MUST NOT repeat these commands. Generate NEW and DIFFERENT commands.\n"
+                        "- If you need similar functionality, use different tools or different parameters.\n"
+                        "- Focus on UNEXPLORED approaches and NEW techniques.\n"
+                        "- Consider using different tools from the available toolset.\n\n"
+                    ).format(executed_list="\n".join(executed_list[:20]))  # 최대 20개만 표시
         
         prompt = (
             "### CoT:\n{cot}\n\n"
             "### CAL:\n{cal}\n\n"
             "{tools_info}"
+            "{executed_commands_info}"
             "You are an instruction generator for ONE cycle in a CTF workflow.\n"
             "Select ONLY the single candidate with the highest CAL.results[*].final score "
             "(tie-break by higher exploitability, then lower cost, then lower risk). "
@@ -138,7 +166,9 @@ def build_query(option: str, code: str = "", state = None, CoT = None, Cal = Non
             "- Always include exactly one primary step first; add more only if strictly required.\n"
             "- Every step MUST include cmd; if a helper is needed, put full script in steps[i].code.\n"
             "- Prefer read-only, low-cost probes; keep commands reproducible.\n"
-        ).format(cot=CoT, cal=Cal, tools_info=tools_info)  
+            "- CRITICAL: Do NOT repeat commands from the ALREADY EXECUTED COMMANDS list above.\n"
+            "- Generate NEW commands that explore DIFFERENT aspects or use DIFFERENT tools.\n"
+        ).format(cot=CoT, cal=Cal, tools_info=tools_info, executed_commands_info=executed_commands_info)  
     
         return prompt
 

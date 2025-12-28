@@ -3,10 +3,10 @@ from langgraph.graph.message import add_messages
 
 # 상대 import로 변경 (langgraph 패키지 내에서 사용)
 try:
-    from langgraph.state import PlanningState
+    from langgraph.state import PlanningState, is_shell_acquired
 except ImportError:
     # 같은 디렉토리에서 실행하는 경우
-    from state import PlanningState
+    from state import PlanningState, is_shell_acquired
 
 try:
     from langgraph.node import CoT_node, Cal_node, instruction_node, tool_selection_node, multi_instruction_node, execution_node, track_update_node, parsing_node, feedback_node, exploit_node, poc_node, help_node, option_input_node
@@ -27,15 +27,27 @@ def route_by_option(state: PlanningState) -> str:
         option = state.get("option", "")
         if not option:
             return "invalid"  # help로 가서 옵션 안내
-    
+
     option = state.get("option", "")
     has_cot_result = bool(state.get("cot_result"))
-    
+
+    # 카테고리 확인
+    challenge = state.get("challenge", [])
+    category = ""
+    if challenge and len(challenge) > 0:
+        category = challenge[0].get("category", "").lower()
+
     if not has_cot_result:
         # 초기 실행: CoT가 아직 실행되지 않음
         if option == "--help":
             return "help"
-        elif option == "--file" or option == "--ghidra" or option == "--discuss":
+        elif option == "--ghidra":
+            # --ghidra는 pwnable/reversing에서만 허용
+            if category in ["pwnable", "reversing"]:
+                return "first_workflow"
+            else:
+                return "invalid_category"
+        elif option == "--file" or option == "--discuss":
             return "first_workflow"
         elif option == "--quit":
             return "end"
@@ -118,62 +130,15 @@ def route_after_parsing(state: PlanningState) -> str:
     has_shell_acquired = any(s.get("type") == "proof" and ("shell" in s.get("name", "").lower() or "acquired" in s.get("name", "").lower()) for s in signals)
     has_errors = len(errors) > 0
     
-    # execution_output에서 직접 쉘 출력 확인 (엄격한 검증)
-    def is_shell_acquired_strict(text: str) -> bool:
-        """쉘 획득 여부를 엄격하게 검증"""
-        import re
-        if not text:
-            return False
-        
-        text_lower = text.lower()
-        
-        # 1. 쉘 프롬프트 확인 (가장 확실한 신호)
-        shell_prompts = ["$ ", "# ", "> ", "bash:", "sh:", "zsh:", "csh:"]
-        has_prompt = any(prompt in text for prompt in shell_prompts)
-        
-        # 2. 실제 명령어 실행 결과 패턴 확인
-        # "id" 명령어의 전체 출력 패턴: "uid=0(root) gid=0(root) groups=0(root)"
-        id_pattern = r"uid=\d+\([^)]+\)\s+gid=\d+\([^)]+\)"
-        has_id_output = bool(re.search(id_pattern, text))
-        
-        # 3. "whoami" 명령어 결과 확인
-        whoami_pattern = r"^(root|admin|user|www-data|nobody|daemon)\s*$"
-        has_whoami = bool(re.search(whoami_pattern, text, re.MULTILINE))
-        
-        # 4. 쉘 환경 변수 확인
-        env_vars = ["PATH=", "HOME=", "USER=", "SHELL="]
-        has_env_vars = sum(1 for var in env_vars if var in text) >= 2  # 최소 2개 이상
-        
-        # 5. 실제 쉘 명령어 실행 결과 (ls -la 출력 패턴)
-        ls_pattern = r"[d-][rwx-]{9}\s+\d+\s+\w+\s+\w+\s+\d+\s+[A-Za-z]{3}\s+\d+\s+[\d:]+\s+[^\s]+"
-        has_ls_output = bool(re.search(ls_pattern, text))
-        
-        # 최소 2개 이상의 강한 신호가 있어야 쉘 획득으로 판단
-        strong_signals = [
-            has_prompt,  # 쉘 프롬프트
-            has_id_output,  # id 명령어 출력
-            (has_whoami and has_env_vars),  # whoami + 환경 변수
-            (has_ls_output and has_env_vars),  # ls 출력 + 환경 변수
-        ]
-        
-        # 또는 쉘 프롬프트가 있고 추가 신호가 하나라도 있으면
-        if has_prompt and (has_id_output or has_whoami or has_ls_output or has_env_vars):
-            return True
-        
-        # 또는 강한 신호가 2개 이상
-        if sum(strong_signals) >= 2:
-            return True
-        
-        return False
-    
+    # execution_output에서 직접 쉘 출력 확인 (is_shell_acquired 함수 사용)
     execution_output = state.get("execution_output", "")
     execution_results = state.get("execution_results", {})
     has_shell_in_output = False
     if execution_output:
-        has_shell_in_output = is_shell_acquired_strict(execution_output)
+        has_shell_in_output = is_shell_acquired(execution_output)
     if not has_shell_in_output:
         for result_text in execution_results.values():
-            if is_shell_acquired_strict(result_text):
+            if is_shell_acquired(result_text):
                 has_shell_in_output = True
                 break
     
@@ -226,26 +191,27 @@ def route_after_feedback(state: PlanningState) -> str:
     workflow_step_count += 1
     state["workflow_step_count"] = workflow_step_count
     
-    RECURSION_LIMIT = 50
-    if workflow_step_count >= RECURSION_LIMIT - 5:
-        console.print(f"Approaching recursion limit: {workflow_step_count}/{RECURSION_LIMIT} steps", style="yellow")
-        if workflow_step_count >= RECURSION_LIMIT:
-            console.print(f"Recursion limit ({RECURSION_LIMIT}) reached. Returning to option selection.", style="bold yellow")
-            console.print("  Use --continue to reset counters or --quit to exit.", style="cyan")
-            # option_input으로 돌아가기 위해 state에 플래그 설정
-            state["option"] = ""  # 옵션을 비워서 다시 입력받도록
-            return "end"  # end를 반환하면 main workflow로 돌아가서 option_input으로 이동
-    
     # 반복 횟수 추적 (--continue 시 리셋됨)
     iteration_count = state.get("iteration_count", 0)
     iteration_count += 1
     state["iteration_count"] = iteration_count
     
-    # 최대 반복 횟수 체크 (무한 루프 방지)
-    MAX_ITERATIONS = 10
+    # 최대 반복 횟수 체크 (무한 루프 방지) - 더 엄격하게
+    MAX_ITERATIONS = 3  # 5에서 3으로 줄임 (더 빠른 종료)
+    RECURSION_LIMIT = 30  # 50에서 30으로 줄임 (더 안전한 한계)
+
+    if workflow_step_count >= RECURSION_LIMIT - 5:
+        console.print(f"Approaching recursion limit: {workflow_step_count}/{RECURSION_LIMIT} steps", style="yellow")
+        if workflow_step_count >= RECURSION_LIMIT:
+            console.print(f"Recursion limit ({RECURSION_LIMIT}) reached. Ending workflow.", style="bold yellow")
+            console.print("  Use --continue to reset counters or --quit to exit.", style="cyan")
+            # option_input으로 돌아가기 위해 state에 플래그 설정
+            state["option"] = ""  # 옵션을 비워서 다시 입력받도록
+            return "end"  # end를 반환하면 main workflow로 돌아가서 option_input으로 이동
+
     if iteration_count >= MAX_ITERATIONS:
         console.print(f"Maximum iterations ({MAX_ITERATIONS}) reached. Ending workflow.", style="bold yellow")
-        console.print("  Use --continue to reset and continue for another {MAX_ITERATIONS} iterations.", style="cyan")
+        console.print(f"  Use --continue to reset and continue for another {MAX_ITERATIONS} iterations.", style="cyan")
         return "end"
     
     # 성공 조건 확인
@@ -265,7 +231,7 @@ def route_after_feedback(state: PlanningState) -> str:
         # 모든 트랙이 완료되었거나 실패
         completed_tracks = [t for t in tracks.values() if t.get("status") == "completed"]
         failed_tracks = [t for t in tracks.values() if t.get("status") == "failed"]
-        
+
         if completed_tracks:
             console.print("All tracks completed. Ending workflow.", style="bold green")
             return "end"
@@ -273,27 +239,32 @@ def route_after_feedback(state: PlanningState) -> str:
             console.print("All tracks failed. Ending workflow.", style="bold red")
             return "end"
         else:
-            console.print("No active tracks. Returning to Planning to explore new attack vectors.", style="yellow")
-            return "continue_planning"
-    
-    # 진행 중이면 계속 (하지만 최대 반복 횟수 체크)
-    if status in ["partial", "in_progress"]:
-        console.print("Progress made. Returning to Planning for deeper exploration or new vectors.", style="cyan")
-        return "continue_planning"
-    
-    # 실패면 종료 조건 확인
-    if status == "fail":
-        # 연속 실패 횟수 확인
-        consecutive_failures = sum(t.get("consecutive_failures", 0) for t in tracks.values())
-        if consecutive_failures >= 5:  # 5번 연속 실패하면 종료
-            console.print("Too many consecutive failures. Ending workflow.", style="bold red")
+            # active_tracks가 없을 때는 더 이상 Planning으로 돌아가지 않고 종료
+            # (이미 모든 트랙을 시도했거나 새로운 트랙을 만들 수 없는 상황)
+            console.print("No active tracks and no clear completion status. Ending workflow to prevent infinite loop.", style="yellow")
+            console.print("  Use --continue to explore new attack vectors.", style="cyan")
             return "end"
-        console.print("Current approach failed. Trying new approach...", style="yellow")
+
+    # 진행 중이면 한 번만 더 시도 후 옵션 선택으로 복귀 (무한 루프 방지 강화)
+    if status in ["partial", "in_progress"]:
+        # iteration_count가 1 이상이면 즉시 종료하고 옵션 선택으로 복귀
+        if iteration_count >= 1:
+            console.print(f"Iteration limit reached ({iteration_count}/{MAX_ITERATIONS}). Returning to option selection.", style="yellow")
+            console.print("  Choose --continue to continue exploration, or try a different option.", style="cyan")
+            return "end"
+        console.print("Progress made. Returning to Planning for one more iteration.", style="cyan")
         return "continue_planning"
-    
-    # 기본값: Planning으로 돌아가기 (하지만 안전장치)
-    console.print("Returning to Planning for next iteration.", style="cyan")
-    return "continue_planning"
+
+    # 실패면 즉시 종료하고 옵션 선택으로 복귀 (무한 루프 방지)
+    if status == "fail":
+        console.print("Current approach failed. Returning to option selection.", style="yellow")
+        console.print("  Choose --continue to try a new approach, or try a different option.", style="cyan")
+        return "end"
+
+    # 기본값: 무조건 종료하고 옵션 선택으로 복귀 (무한 루프 방지)
+    console.print(f"Feedback status: {status}. Returning to option selection to prevent infinite loop.", style="yellow")
+    console.print("  Choose --continue to continue exploration, or try a different option.", style="cyan")
+    return "end"
 
 def create_init_workflow():
     graph = StateGraph(PlanningState)
@@ -429,7 +400,8 @@ def create_main_workflow():
             "end": END,
             "invalid": "help",
             "invalid_init": "help",
-            "invalid_loop": "help"
+            "invalid_loop": "help",
+            "invalid_category": "help"
         }
     )
     

@@ -9,48 +9,29 @@ import warnings
 warnings.filterwarnings("ignore", category=FutureWarning, message=".*google.generativeai.*")
 
 try:
-    from google import genai
+    import google.generativeai as genai
 except ImportError:
-    try:
-        import google.generativeai as genai
-    except ImportError:
-        genai = None
+    genai = None
 
 core = Core()
 
 class InstructionAgent:
-    def __init__(self, api_key: str, model: str = "gpt-5.2"):
+    def __init__(self, api_key: str, model: str = "gpt-4o"):
         self.api_key = api_key
         self.model = model
         
-        if model == "gpt-5.2":
+        if model == "gpt-4o":
             self.client = OpenAI(api_key=api_key)
             self.is_gemini = False
-        elif model == "gemini-3-flash-preview":
+        elif model == "gemini-1.5-flash" or model == "gemini-1.5-flash-latest" or model == "gemini-3-flash-preview":
             if genai is None:
-                raise ImportError("google-genai package is required for Gemini. Install with: pip install google-genai")
+                raise ImportError("google-generativeai package is required for Gemini. Install with: pip install google-generativeai")
             genai.configure(api_key=api_key)
             self.client = genai.GenerativeModel(model)
             self.is_gemini = True
         else:
-            raise ValueError(f"Invalid model: {model}. Supported: gpt-5.2, gemini-3-flash-preview")
+            raise ValueError(f"Invalid model: {model}. Supported: gpt-4o, gemini-1.5-flash, gemini-1.5-flash-latest, gemini-3-flash-preview")
     
-    def _convert_messages_to_prompt(self, messages):
-        """OpenAI messages 형식을 Gemini prompt 텍스트로 변환"""
-        prompt_parts = []
-        for msg in messages:
-            role = msg.get("role", "user")
-            content = msg.get("content", "")
-
-            if role == "developer" or role == "system":
-                prompt_parts.append(f"[System/Developer]\n{content}\n")
-            elif role == "user":
-                prompt_parts.append(f"[User]\n{content}\n")
-            elif role == "assistant":
-                prompt_parts.append(f"[Assistant]\n{content}\n")
-
-        return "\n".join(prompt_parts)
-
     def _collect_failed_commands(self, state_dict):
         """실패한 명령어들을 state에서 수집"""
         failed_commands = []

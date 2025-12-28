@@ -43,6 +43,39 @@ class WebTool:
         if self.url and not (self.url.startswith("http://") or self.url.startswith("https://")):
             raise ValueError(f"Invalid URL format: {self.url}. Must start with http:// or https://")
     
+    def _parse_proxy(self, proxy_url: str) -> Optional[Dict[str, str]]:
+        """
+        프록시 URL을 requests 라이브러리 형식으로 파싱합니다.
+        
+        Args:
+            proxy_url: 프록시 URL (예: "http://proxy.example.com:8080" 또는 "socks5://proxy.example.com:1080")
+        
+        Returns:
+            프록시 딕셔너리 또는 None
+        """
+        if not proxy_url:
+            return None
+        
+        # SOCKS 프록시 처리 (socks5h는 DNS 해석을 프록시 서버에서 수행)
+        if proxy_url.startswith("socks5://") or proxy_url.startswith("socks5h://"):
+            # requests[socks]가 설치되어 있는지 확인 필요
+            # 일단 HTTP/HTTPS로 변환하여 반환 (requests는 socks 지원을 위해 추가 패키지 필요)
+            return {
+                "http": proxy_url,
+                "https": proxy_url
+            }
+        elif proxy_url.startswith("http://") or proxy_url.startswith("https://"):
+            return {
+                "http": proxy_url,
+                "https": proxy_url
+            }
+        else:
+            # 프로토콜이 없으면 http로 가정
+            return {
+                "http": f"http://{proxy_url}",
+                "https": f"http://{proxy_url}"
+            }
+    
     def _run_command(self, cmd: List[str], timeout: int = 30) -> Dict[str, any]:
         """명령어 실행 헬퍼 함수"""
         try:
@@ -80,6 +113,7 @@ class WebTool:
         data: Optional[str] = None,
         params: Optional[Dict[str, str]] = None,
         cookies: Optional[Dict[str, str]] = None,
+        proxy: Optional[str] = None,
         timeout: int = 10
     ) -> str:
         """
@@ -92,6 +126,7 @@ class WebTool:
             data: 요청 본문 데이터 (POST/PUT용)
             params: URL 쿼리 파라미터
             cookies: 쿠키 딕셔너리
+            proxy: 프록시 URL (예: "http://proxy.example.com:8080" 또는 "socks5://proxy.example.com:1080")
             timeout: 타임아웃 (초)
         
         Returns:
@@ -120,6 +155,16 @@ class WebTool:
             if cookies:
                 request_kwargs["cookies"] = cookies
             
+            # 프록시 설정
+            if proxy:
+                proxies = self._parse_proxy(proxy)
+                if proxies:
+                    request_kwargs["proxies"] = proxies
+                else:
+                    return json.dumps({
+                        "error": f"Invalid proxy format: {proxy}. Use format like 'http://proxy.example.com:8080' or 'socks5://proxy.example.com:1080'"
+                    }, indent=2)
+            
             if method in ["POST", "PUT", "PATCH"]:
                 if data:
                     request_kwargs["data"] = data
@@ -130,7 +175,7 @@ class WebTool:
             body_preview = response.text[:5000] if len(response.text) > 5000 else response.text
             body_truncated = len(response.text) > 5000
             
-            return json.dumps({
+            result = {
                 "url": target_url,
                 "method": method,
                 "status_code": response.status_code,
@@ -141,7 +186,13 @@ class WebTool:
                 "body_length": len(response.text),
                 "redirect_history": [{"url": r.url, "status": r.status_code} for r in response.history],
                 "final_url": response.url
-            }, indent=2, ensure_ascii=False)
+            }
+            
+            # 프록시 사용 정보 추가
+            if proxy:
+                result["proxy_used"] = proxy
+            
+            return json.dumps(result, indent=2, ensure_ascii=False)
             
         except requests.exceptions.Timeout:
             return json.dumps({
@@ -557,6 +608,178 @@ class WebTool:
             pass
         
         return json.dumps(result_data, indent=2, ensure_ascii=False)
+    
+    def proxy_test(
+        self,
+        proxy_url: str,
+        test_url: Optional[str] = None,
+        timeout: int = 10
+    ) -> str:
+        """
+        프록시 서버를 테스트하여 작동 여부를 확인합니다.
+        
+        Args:
+            proxy_url: 테스트할 프록시 URL (예: "http://proxy.example.com:8080" 또는 "socks5://proxy.example.com:1080")
+            test_url: 프록시를 통해 접속할 테스트 URL (기본: "http://httpbin.org/ip")
+            timeout: 타임아웃 (초)
+        
+        Returns:
+            JSON 형식의 테스트 결과
+        """
+        if not proxy_url:
+            return json.dumps({"error": "proxy_url is required"}, indent=2)
+        
+        if not REQUESTS_AVAILABLE:
+            return json.dumps({
+                "error": "requests library is not available. Please install: pip install requests"
+            }, indent=2)
+        
+        if not test_url:
+            test_url = "http://httpbin.org/ip"
+        
+        proxies = self._parse_proxy(proxy_url)
+        if not proxies:
+            return json.dumps({
+                "error": f"Invalid proxy format: {proxy_url}. Use format like 'http://proxy.example.com:8080' or 'socks5://proxy.example.com:1080'"
+            }, indent=2)
+        
+        result = {
+            "proxy_url": proxy_url,
+            "test_url": test_url,
+            "proxies_parsed": proxies
+        }
+        
+        try:
+            # 프록시 없이 직접 접속 시도
+            try:
+                direct_response = requests.get(test_url, timeout=timeout)
+                result["direct_access"] = {
+                    "success": True,
+                    "status_code": direct_response.status_code,
+                    "ip": direct_response.json().get("origin", "unknown") if direct_response.status_code == 200 else None
+                }
+            except Exception as e:
+                result["direct_access"] = {
+                    "success": False,
+                    "error": str(e)
+                }
+            
+            # 프록시를 통해 접속 시도
+            try:
+                proxy_response = requests.get(test_url, proxies=proxies, timeout=timeout)
+                result["proxy_access"] = {
+                    "success": True,
+                    "status_code": proxy_response.status_code,
+                    "ip": proxy_response.json().get("origin", "unknown") if proxy_response.status_code == 200 else None
+                }
+                
+                # IP가 변경되었는지 확인
+                if result["direct_access"].get("success") and result["proxy_access"].get("ip"):
+                    direct_ip = result["direct_access"].get("ip")
+                    proxy_ip = result["proxy_access"].get("ip")
+                    if direct_ip and proxy_ip and direct_ip != proxy_ip:
+                        result["ip_changed"] = True
+                        result["direct_ip"] = direct_ip
+                        result["proxy_ip"] = proxy_ip
+                    else:
+                        result["ip_changed"] = False
+                
+                result["proxy_working"] = True
+                
+            except requests.exceptions.ProxyError as e:
+                result["proxy_access"] = {
+                    "success": False,
+                    "error": f"Proxy error: {str(e)}"
+                }
+                result["proxy_working"] = False
+            except requests.exceptions.Timeout:
+                result["proxy_access"] = {
+                    "success": False,
+                    "error": f"Request timed out after {timeout} seconds"
+                }
+                result["proxy_working"] = False
+            except Exception as e:
+                result["proxy_access"] = {
+                    "success": False,
+                    "error": str(e)
+                }
+                result["proxy_working"] = False
+            
+            return json.dumps(result, indent=2, ensure_ascii=False)
+            
+        except Exception as e:
+            return json.dumps({
+                "error": f"Proxy test failed: {str(e)}",
+                "proxy_url": proxy_url
+            }, indent=2)
+    
+    def proxy_chain_test(
+        self,
+        proxy_list: List[str],
+        test_url: Optional[str] = None,
+        timeout: int = 10
+    ) -> str:
+        """
+        여러 프록시를 체인으로 연결하여 테스트합니다.
+        (참고: 실제 프록시 체인은 각 프록시 서버에서 지원해야 합니다)
+        
+        Args:
+            proxy_list: 프록시 URL 리스트 (순서대로 체인)
+            test_url: 테스트 URL (기본: "http://httpbin.org/ip")
+            timeout: 타임아웃 (초)
+        
+        Returns:
+            JSON 형식의 테스트 결과
+        """
+        if not proxy_list:
+            return json.dumps({"error": "proxy_list is required"}, indent=2)
+        
+        if not REQUESTS_AVAILABLE:
+            return json.dumps({
+                "error": "requests library is not available. Please install: pip install requests"
+            }, indent=2)
+        
+        if not test_url:
+            test_url = "http://httpbin.org/ip"
+        
+        result = {
+            "proxy_list": proxy_list,
+            "test_url": test_url,
+            "results": []
+        }
+        
+        # 각 프록시를 개별적으로 테스트
+        for i, proxy_url in enumerate(proxy_list):
+            proxy_result = {
+                "index": i + 1,
+                "proxy_url": proxy_url
+            }
+            
+            proxies = self._parse_proxy(proxy_url)
+            if not proxies:
+                proxy_result["success"] = False
+                proxy_result["error"] = "Invalid proxy format"
+                result["results"].append(proxy_result)
+                continue
+            
+            try:
+                response = requests.get(test_url, proxies=proxies, timeout=timeout)
+                proxy_result["success"] = True
+                proxy_result["status_code"] = response.status_code
+                if response.status_code == 200:
+                    proxy_result["ip"] = response.json().get("origin", "unknown")
+            except Exception as e:
+                proxy_result["success"] = False
+                proxy_result["error"] = str(e)
+            
+            result["results"].append(proxy_result)
+        
+        # 성공한 프록시 개수
+        successful_proxies = [r for r in result["results"] if r.get("success")]
+        result["successful_count"] = len(successful_proxies)
+        result["total_count"] = len(proxy_list)
+        
+        return json.dumps(result, indent=2, ensure_ascii=False)
 
 
 # ========== LangChain 도구로 변환하는 함수들 ==========
@@ -587,6 +810,7 @@ def create_web_tools(url: Optional[str] = None) -> List[BaseTool]:
                     'data': Optional[str],
                     'params': Optional[Dict[str, str]],
                     'cookies': Optional[Dict[str, str]],
+                    'proxy': Optional[str],
                     'timeout': int
                 },
                 'url': Field(default=None, description="URL to request (optional, can use URL set during initialization)"),
@@ -595,6 +819,7 @@ def create_web_tools(url: Optional[str] = None) -> List[BaseTool]:
                 'data': Field(default=None, description="Request body data (for POST/PUT, optional)"),
                 'params': Field(default=None, description="URL query parameters (optional)"),
                 'cookies': Field(default=None, description="Cookies dictionary (optional)"),
+                'proxy': Field(default=None, description="Proxy URL (e.g., 'http://proxy.example.com:8080' or 'socks5://proxy.example.com:1080')"),
                 'timeout': Field(default=10, description="Timeout in seconds")
             })
         ),
@@ -668,6 +893,36 @@ def create_web_tools(url: Optional[str] = None) -> List[BaseTool]:
                 'level': Field(default=1, description="Scan level (1-5, default: 1)"),
                 'risk': Field(default=1, description="Risk level (1-3, default: 1)"),
                 'timeout': Field(default=60, description="Timeout in seconds")
+            })
+        ),
+        StructuredTool.from_function(
+            func=tool_instance.proxy_test,
+            name="proxy_test",
+            description="Tests a proxy server to verify if it's working correctly. Checks connectivity and IP address changes.",
+            args_schema=type('ProxyTestArgs', (BaseModel,), {
+                '__annotations__': {
+                    'proxy_url': str,
+                    'test_url': Optional[str],
+                    'timeout': int
+                },
+                'proxy_url': Field(description="Proxy URL to test (e.g., 'http://proxy.example.com:8080' or 'socks5://proxy.example.com:1080')"),
+                'test_url': Field(default=None, description="Test URL to access through proxy (default: 'http://httpbin.org/ip')"),
+                'timeout': Field(default=10, description="Timeout in seconds")
+            })
+        ),
+        StructuredTool.from_function(
+            func=tool_instance.proxy_chain_test,
+            name="proxy_chain_test",
+            description="Tests multiple proxies in a list. Verifies each proxy individually. Note: Actual proxy chaining requires support from proxy servers.",
+            args_schema=type('ProxyChainTestArgs', (BaseModel,), {
+                '__annotations__': {
+                    'proxy_list': List[str],
+                    'test_url': Optional[str],
+                    'timeout': int
+                },
+                'proxy_list': Field(description="List of proxy URLs to test (e.g., ['http://proxy1.com:8080', 'http://proxy2.com:8080'])"),
+                'test_url': Field(default=None, description="Test URL to access through proxies (default: 'http://httpbin.org/ip')"),
+                'timeout': Field(default=10, description="Timeout in seconds")
             })
         ),
     ]

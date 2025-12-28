@@ -4,9 +4,9 @@ import re
 from rich.console import Console
 
 try:
-    from langgraph.state import PlanningState as State, get_state_for_cot, get_state_for_cal, get_state_for_instruction, get_state_for_parsing, get_state_for_feedback
+    from langgraph.state import PlanningState as State, get_state_for_cot, get_state_for_cal, get_state_for_instruction, get_state_for_parsing, get_state_for_feedback, is_shell_acquired
 except ImportError:
-    from state import PlanningState as State, get_state_for_cot, get_state_for_cal, get_state_for_instruction, get_state_for_parsing, get_state_for_feedback
+    from state import PlanningState as State, get_state_for_cot, get_state_for_cal, get_state_for_instruction, get_state_for_parsing, get_state_for_feedback, is_shell_acquired
 
 # 전역 console 객체
 console = Console()
@@ -34,7 +34,12 @@ def CoT_node(state: State) -> State:
     console.print("=== Planning Agent ===", style='bold magenta')
 
     # 사용자 입력 수집 (시나리오 노드 기능 통합)
-    if not state.get("user_input") and not state.get("binary_path"):
+    # --discuss 옵션은 항상 새로운 입력을 받아야 함
+    if option == "--discuss":
+        console.print("Ask questions or describe your intended approach.", style="blue")
+        planning_discuss = core.multi_line_input()
+        state["user_input"] = planning_discuss
+    elif not state.get("user_input") and not state.get("binary_path"):
         if option == "--file":
             console.print("Paste the challenge's source code. Type <<<END>>> on a new line to finish.", style="blue")
             planning_code = core.multi_line_input()
@@ -52,11 +57,6 @@ def CoT_node(state: State) -> State:
             except Exception as e:
                 console.print(f"Error running Ghidra: {e}", style="bold red")
                 console.print("Continuing without decompilation...", style="yellow")
-        
-        elif option == "--discuss":
-            console.print("Ask questions or describe your intended approach.", style="blue")
-            planning_discuss = core.multi_line_input()
-            state["user_input"] = planning_discuss
 
     console.print("=== CoT Run ===", style='bold green')
     
@@ -252,7 +252,7 @@ def tool_selection_node(state: State) -> State:
         
         elif any(keyword in vuln for keyword in ["reverse", "decompile", "disassemble", "ghidra", "angr", "symbolic"]):
             tool_category = "reversing"
-            selected_toolset = create_reversing_tools(binary_path=binary_path if binary_path else None)
+            selected_toolset = create_reversing_tools(binary_path=binary_path if binary_path else None, challenge_info=challenge)
             console.print(f"  {track_id}: Selected reversing_tool (vuln: {cot_candidate.get('vuln')})", style="cyan")
         
         else:
@@ -266,7 +266,7 @@ def tool_selection_node(state: State) -> State:
                 selected_toolset = create_web_tools(url=url if url else None)
             elif challenge_category == "reversing" or challenge_category == "rev":
                 tool_category = "reversing"
-                selected_toolset = create_reversing_tools(binary_path=binary_path if binary_path else None)
+                selected_toolset = create_reversing_tools(binary_path=binary_path if binary_path else None, challenge_info=challenge)
             else:
                 # 기본값: pwnable
                 tool_category = "pwnable"
@@ -419,6 +419,7 @@ def multi_instruction_node(state: State) -> State:
                 option="--instruction_fallback",
                 CoT={"candidates": [cot_candidate]},
                 Cal={"results": [candidate]},
+                state=state,  # state 전달 (command_cache, failed_commands 포함)
                 available_tools=available_tools,
                 tool_category=tool_category,
                 fallback_mode="alternative"
@@ -430,6 +431,7 @@ def multi_instruction_node(state: State) -> State:
                 option="--instruction_fallback",
                 CoT={"candidates": [cot_candidate]},
                 Cal={"results": [candidate]},
+                state=state,  # state 전달 (command_cache, failed_commands 포함)
                 available_tools=available_tools,
                 tool_category=tool_category,
                 fallback_mode="simple"
@@ -440,6 +442,7 @@ def multi_instruction_node(state: State) -> State:
                 option="--instruction",
                 CoT={"candidates": [cot_candidate]},  # 해당 candidate만
                 Cal={"results": [candidate]},  # 해당 result만
+                state=state,  # state 전달 (command_cache, failed_commands 포함)
                 available_tools=available_tools,  # 사용 가능한 도구 목록
                 tool_category=tool_category  # 도구 카테고리
             )
@@ -486,9 +489,11 @@ def multi_instruction_node(state: State) -> State:
 def execution_node(state: State) -> State:
     """
     multi_instructions의 각 트랙에 대해 명령을 자동으로 실행
+    실패한 명령어는 캐시에 저장하여 반복 실행 방지
     """
     import subprocess
     from datetime import datetime
+    import hashlib
     
     ctx = state["ctx"]
     core = ctx.core
@@ -500,6 +505,33 @@ def execution_node(state: State) -> State:
     if not multi_instructions:
         console.print("No instructions to execute.", style="yellow")
         return state
+    
+    # 명령어 캐시 초기화 (없으면 생성)
+    if "command_cache" not in state:
+        state["command_cache"] = {}  # {command_hash: {cmd, result, success, timestamp}}
+    if "failed_commands" not in state:
+        state["failed_commands"] = {}  # {command_hash: {cmd, error, timestamp, attempt_count}}
+    if "seen_cmd_hashes" not in state:
+        state["seen_cmd_hashes"] = []  # 실행한 모든 명령어 해시 목록
+
+    command_cache = state["command_cache"]
+    failed_commands = state["failed_commands"]
+    seen_cmd_hashes = state["seen_cmd_hashes"]
+    
+    def normalize_command(cmd: str) -> str:
+        """명령어를 정규화하여 캐시 키 생성"""
+        if not cmd:
+            return ""
+        # 공백 정규화
+        normalized = " ".join(cmd.split())
+        # 따옴표 정규화
+        normalized = normalized.replace("'", '"')
+        return normalized.strip()
+    
+    def get_command_hash(cmd: str) -> str:
+        """명령어의 해시값 생성"""
+        normalized = normalize_command(cmd)
+        return hashlib.md5(normalized.encode('utf-8')).hexdigest()
     
     execution_results = {}
     all_outputs = []
@@ -526,8 +558,53 @@ def execution_node(state: State) -> State:
             if not cmd:
                 continue
             
+            # 명령어 캐시 확인
+            cmd_hash = get_command_hash(cmd)
+            
+            # 실패한 명령어 확인
+            if cmd_hash in failed_commands:
+                failed_info = failed_commands[cmd_hash]
+                attempt_count = failed_info.get("attempt_count", 0)
+                
+                console.print(f"  ⚠️  Skipping previously failed command: {name}", style="yellow")
+                console.print(f"  Command: {cmd}", style="dim")
+                console.print(f"  Previous error: {failed_info.get('error', 'Unknown error')[:100]}...", style="dim")
+                console.print(f"  Failed {attempt_count} time(s) before", style="dim")
+                
+                # 실패한 명령어의 캐시된 결과 사용
+                track_output.append({
+                    "name": name,
+                    "cmd": cmd,
+                    "success": False,
+                    "error": f"Previously failed command (attempted {attempt_count} times): {failed_info.get('error', 'Unknown error')}",
+                    "cached": True,
+                    "timestamp": datetime.now().isoformat()
+                })
+                continue
+            
+            # 성공한 명령어 캐시 확인 (성공한 명령어도 재실행 방지)
+            if cmd_hash in command_cache:
+                cached_result = command_cache[cmd_hash]
+                if cached_result.get("success", False):
+                    console.print(f"  ✓ Using cached successful result for: {name}", style="green")
+                    track_output.append({
+                        "name": name,
+                        "cmd": cmd,
+                        "success": True,
+                        "stdout": cached_result.get("result", ""),
+                        "stderr": "",
+                        "returncode": 0,
+                        "cached": True,
+                        "timestamp": datetime.now().isoformat()
+                    })
+                    continue
+            
             console.print(f"  Executing: {name}", style="cyan")
             console.print(f"  Command: {cmd}", style="dim")
+
+            # seen_cmd_hashes에 추가 (중복 방지를 위해)
+            if cmd_hash not in seen_cmd_hashes:
+                seen_cmd_hashes.append(cmd_hash)
             
             # 도구 호출인지 확인
             track_tools = state.get("track_tools", {})
@@ -788,22 +865,77 @@ def execution_node(state: State) -> State:
                     status_style = "green" if result.returncode == 0 else "red"
                     console.print(f"    {name} (returncode: {result.returncode})", style=status_style)
                 
+                # 명령어 실행 결과 캐시에 저장
+                # 성공한 명령어는 캐시에 저장 (선택사항)
+                if result.returncode == 0 or has_shell_output:
+                    command_cache[cmd_hash] = {
+                        "cmd": normalize_command(cmd),
+                        "result": stdout_text[:1000],  # 결과 일부만 저장
+                        "success": True,
+                        "timestamp": datetime.now().isoformat()
+                    }
+                # 실패한 명령어는 failed_commands에 저장
+                elif result.returncode != 0:
+                    if cmd_hash not in failed_commands:
+                        failed_commands[cmd_hash] = {
+                            "cmd": normalize_command(cmd),
+                            "error": stderr_text[:500] if stderr_text else f"Return code: {result.returncode}",
+                            "timestamp": datetime.now().isoformat(),
+                            "attempt_count": 1
+                        }
+                    else:
+                        # 이미 실패한 적이 있으면 attempt_count 증가
+                        failed_commands[cmd_hash]["attempt_count"] += 1
+                        failed_commands[cmd_hash]["timestamp"] = datetime.now().isoformat()
+                    
+                    console.print(f"    ⚠️  Command failed - cached to prevent retry", style="yellow")
+                
             except subprocess.TimeoutExpired:
                 console.print(f"    {name} (timeout)", style="red")
+                error_msg = "Timeout after 60 seconds"
+                
+                # 타임아웃도 실패한 명령어로 캐시
+                cmd_hash = get_command_hash(cmd)
+                if cmd_hash not in failed_commands:
+                    failed_commands[cmd_hash] = {
+                        "cmd": normalize_command(cmd),
+                        "error": error_msg,
+                        "timestamp": datetime.now().isoformat(),
+                        "attempt_count": 1
+                    }
+                else:
+                    failed_commands[cmd_hash]["attempt_count"] += 1
+                    failed_commands[cmd_hash]["timestamp"] = datetime.now().isoformat()
+                
                 track_output.append({
                     "name": name,
                     "cmd": cmd,
                     "success": False,
-                    "error": "Timeout after 60 seconds",
+                    "error": error_msg,
                     "timestamp": datetime.now().isoformat()
                 })
             except Exception as e:
                 console.print(f"    {name} (error: {e})", style="red")
+                error_msg = str(e)
+                
+                # 예외도 실패한 명령어로 캐시
+                cmd_hash = get_command_hash(cmd)
+                if cmd_hash not in failed_commands:
+                    failed_commands[cmd_hash] = {
+                        "cmd": normalize_command(cmd),
+                        "error": error_msg[:500],
+                        "timestamp": datetime.now().isoformat(),
+                        "attempt_count": 1
+                    }
+                else:
+                    failed_commands[cmd_hash]["attempt_count"] += 1
+                    failed_commands[cmd_hash]["timestamp"] = datetime.now().isoformat()
+                
                 track_output.append({
                     "name": name,
                     "cmd": cmd,
                     "success": False,
-                    "error": str(e),
+                    "error": error_msg,
                     "timestamp": datetime.now().isoformat()
                 })
         
@@ -828,6 +960,13 @@ def execution_node(state: State) -> State:
     # State 업데이트
     state["execution_results"] = execution_results
     state["execution_output"] = "\n".join(all_outputs) if all_outputs else ""
+    state["command_cache"] = command_cache
+    state["failed_commands"] = failed_commands
+    state["seen_cmd_hashes"] = seen_cmd_hashes
+    
+    # 실행 상태 요약 출력
+    if failed_commands:
+        console.print(f"\n  ⚠️  Failed commands cached: {len(failed_commands)}", style="yellow")
     
     # execution_status가 아직 설정되지 않았으면 기본값 설정
     if "execution_status" not in state or state.get("execution_status") == "":
@@ -1110,7 +1249,25 @@ def parsing_node(state: State) -> State:
 
     # 플래그 형식 정보 가져오기
     challenge_info = state.get("challenge", [])
-    flag_format = challenge_info[0].get("flag format", "") if challenge_info else ""
+    challenge = challenge_info[0] if challenge_info else {}
+    flag_format = challenge.get("flag format", "") if challenge_info else ""
+    challenge_description = challenge.get("description", "").lower() if challenge else ""
+
+    # Challenge description에서 입력값 관련 힌트 확인
+    is_input_value_challenge = any(keyword in challenge_description for keyword in [
+        "입력값", "입력", "input", "correct를 출력", "correct 출력", "올바른 입력", "올바른 값을 찾",
+        "찾으세요", "입력값을 찾아", "입력값을 찾아서", "dh{} 포맷에 넣어", "포맷에 넣어",
+        "검증하여", "문자열 입력", "정해진 방법", "인증해주세요"
+    ])
+
+    # Challenge description을 state에 저장 (없으면 user_input에서 가져오기)
+    if not challenge_description:
+        user_input = state.get("user_input", "").lower()
+        is_input_value_challenge = any(keyword in user_input for keyword in [
+            "입력값", "입력", "input", "correct를 출력", "correct 출력", "올바른 입력", "올바른 값을 찾",
+            "찾으세요", "입력값을 찾아", "입력값을 찾아서", "dh{} 포맷에 넣어", "포맷에 넣어",
+            "검증하여", "문자열 입력", "정해진 방법", "인증해주세요"
+        ])
 
     if flag_signals:
         # 실행 결과에서 플래그가 감지되었는지 확인
@@ -1138,6 +1295,54 @@ def parsing_node(state: State) -> State:
             # 플래그가 prefix{...}suffix 패턴인지 확인
             pattern = re.escape(prefix) + r".+" + re.escape(suffix)
             return bool(re.match(pattern, flag_value, re.IGNORECASE))
+        
+        # 입력값인지 확인하는 함수 (challenge description 기반)
+        def could_be_input_value(value: str, output_text: str) -> bool:
+            """발견된 값이 입력값일 가능성이 있는지 확인"""
+            if not value or not output_text:
+                return False
+
+            value_lower = value.lower()
+            output_lower = output_text.lower()
+
+            # 1. execution output에서 "correct" 또는 "정답" 키워드와 함께 발견
+            if any(keyword in output_lower for keyword in ["correct", "정답", "success"]) and value in output_text:
+                return True
+
+            # 2. 명령어 라인에서 입력으로 사용된 경우 (echo, <<<, printf 등)
+            # 예: echo "Apple_Banana" | ./binary
+            if any(pattern in output_text for pattern in [
+                f'echo "{value}"', f"echo '{value}'", f'echo {value}',
+                f'<<< "{value}"', f"<<< '{value}'", f'<<< {value}',
+                f'printf "{value}"', f"printf '{value}'"
+            ]):
+                return True
+
+            # 3. "wrong" 또는 "fail"과 함께 발견 (반대 의미지만 입력값일 가능성)
+            if any(word in output_lower for word in ["wrong", "fail", "error", "incorrect"]) and value in output_text:
+                return True
+
+            # 4. 실행 결과에서 직접 출력된 문자열 (코드 분석이 아닌)
+            # 코드 분석 패턴 제외
+            analysis_patterns = [
+                "decompiled_code", "assembly_code", "disassembly", "std::string",
+                "char", "wanted =", "expected =", "target =", "correct =", "if (",
+                "for (", "void ", "int main", "def ", "class ", "const ", "#include",
+                "→"  # Read 도구의 라인 번호 마커
+            ]
+
+            value_index = output_lower.find(value_lower)
+            if value_index >= 0:
+                # 주변 컨텍스트 확인
+                start = max(0, value_index - 200)
+                end = min(len(output_text), value_index + len(value) + 200)
+                context = output_text[start:end].lower()
+
+                # 코드 분석 패턴이 없으면 실제 출력일 가능성
+                if not any(pattern in context for pattern in analysis_patterns):
+                    return True
+
+            return False
 
         # 실행 결과에서 플래그 패턴 확인
         def is_flag_in_execution_output(flag_value: str, output_text: str) -> bool:
@@ -1203,15 +1408,27 @@ def parsing_node(state: State) -> State:
         
         # 실행 결과에서 실제로 플래그가 출력되었는지 확인
         valid_flags = []
+        potential_input_values = []  # 플래그 형식은 아니지만 입력값일 가능성이 있는 값들
+        
         for flag_signal in flag_signals:
             flag_value = flag_signal.get("value", "")
             if not flag_value:
                 continue
 
+            # 플래그 형식이 맞는지 확인
+            format_matches = matches_flag_format(flag_value, flag_format) if flag_format else True
+            
             # execution_output에서 확인
-            if execution_output and is_flag_in_execution_output(flag_value, execution_output):
-                valid_flags.append(flag_value)
-                continue
+            found_in_output = False
+            if execution_output:
+                if is_flag_in_execution_output(flag_value, execution_output):
+                    valid_flags.append(flag_value)
+                    found_in_output = True
+                    continue
+                elif not format_matches and could_be_input_value(flag_value, execution_output):
+                    # 플래그 형식은 아니지만 입력값일 가능성
+                    potential_input_values.append(flag_value)
+                    found_in_output = True
 
             # execution_results에서 확인 (각 트랙별 결과)
             found_in_results = False
@@ -1225,10 +1442,54 @@ def parsing_node(state: State) -> State:
                     valid_flags.append(flag_value)
                     found_in_results = True
                     break
+                elif not format_matches and could_be_input_value(flag_value, result_text):
+                    potential_input_values.append(flag_value)
+                    found_in_results = True
+                    break
 
-            if not found_in_results:
+            if not found_in_results and not found_in_output:
                 console.print(f"⚠️  Flag pattern found but not in execution output (ignoring): {flag_value[:50]}...", style="yellow")
                 console.print("   This might be a hardcoded string in source code, not an actual flag.", style="dim")
+        
+        # 입력값 후보들을 플래그 형식으로 변환
+        if potential_input_values and is_input_value_challenge and flag_format:
+            console.print(f"💡 Found potential input values that need to be wrapped in flag format: {len(potential_input_values)}", style="cyan")
+            
+            # execution output에서 "correct" 키워드 확인
+            has_correct_in_output = False
+            if execution_output:
+                has_correct_in_output = "correct" in execution_output.lower()
+            
+            for result_text in execution_results.values():
+                if "correct" in result_text.lower():
+                    has_correct_in_output = True
+                    break
+            
+            if has_correct_in_output:
+                console.print("  ✓ 'correct' keyword found in execution output - high confidence for input values", style="green")
+            
+            for input_value in potential_input_values:
+                # 플래그 형식 추출 (예: "DH{}" -> "DH{" + input_value + "}")
+                if "{}" in flag_format:
+                    prefix = flag_format.split("{}")[0]
+                    formatted_flag = f"{prefix}{{{input_value}}}"
+                    console.print(f"  ✓ Converting input value to flag format: {formatted_flag}", style="bold green")
+                    valid_flags.append(formatted_flag)
+                elif "{" in flag_format:
+                    # "DH{" 같은 형식
+                    formatted_flag = flag_format + input_value + "}"
+                    console.print(f"  ✓ Converting input value to flag format: {formatted_flag}", style="bold green")
+                    valid_flags.append(formatted_flag)
+                else:
+                    # 형식이 명확하지 않으면 그냥 추가
+                    console.print(f"  Using input value as-is (flag format unclear): {input_value}", style="yellow")
+                    valid_flags.append(input_value)
+        
+        # 입력값 후보가 있지만 flag_format이 없는 경우도 처리
+        elif potential_input_values and is_input_value_challenge:
+            console.print(f"⚠️  Found potential input values but flag format is not specified: {potential_input_values}", style="yellow")
+            console.print("   Adding as potential flags anyway.", style="dim")
+            valid_flags.extend(potential_input_values)
         
         # 유효한 플래그가 있으면 처리
         if valid_flags:
@@ -1242,6 +1503,73 @@ def parsing_node(state: State) -> State:
         else:
             console.print("⚠️  Flag patterns found in analysis but not in execution output. Continuing workflow.", style="yellow")
     
+    # 입력값 감지 추가 로직: LLM이 놓친 경우를 대비하여 직접 "correct" 키워드 검사
+    if is_input_value_challenge and flag_format:
+        console.print("💡 Input value challenge detected. Scanning for 'correct' output...", style="cyan")
+
+        # execution output에서 "correct" 검사 (대소문자 무시)
+        execution_output = state.get("execution_output", "")
+        execution_results = state.get("execution_results", {})
+
+        # "correct" 출력이 있는 명령어 찾기
+        correct_found_in = []
+        for track_id, result_text in execution_results.items():
+            result_lower = result_text.lower()
+            # "correct" 또는 "정답" 찾기 (코드 분석 결과는 제외)
+            if ("correct" in result_lower or "정답" in result_lower) and "decompiled_code" not in result_lower:
+                # 코드 분석이 아닌 실제 실행 결과인지 확인
+                if not any(pattern in result_lower for pattern in ["std::string", "char ", "wanted =", "if (", "void "]):
+                    correct_found_in.append((track_id, result_text))
+                    console.print(f"  ✓ 'correct' output found in {track_id}", style="green")
+
+        # "correct"가 발견되면 실행 결과에서 입력값 추출 시도 (flag_signals 유무와 관계없이)
+        if correct_found_in:
+            console.print("  Attempting to extract input value from execution output...", style="cyan")
+
+            # 명령어에서 입력으로 사용된 값 찾기
+            # 예: echo "Apple_Banana" | ./binary 또는 ./binary <<< "Apple_Banana"
+            for track_id, result_text in correct_found_in:
+                # 명령어 라인 찾기
+                lines = result_text.split("\n")
+                for i, line in enumerate(lines):
+                    # "Command:" 라인 찾기
+                    if "Command:" in line and i + 1 < len(lines):
+                        cmd_line = lines[i + 1] if i + 1 < len(lines) else line
+
+                        # echo "..." | ./binary 패턴
+                        echo_pattern = r'echo\s+["\']([^"\']+)["\']'
+                        match = re.search(echo_pattern, cmd_line)
+                        if match:
+                            input_value = match.group(1)
+                            formatted_flag = f"{flag_format.replace('{}', '')}{{{input_value}}}"
+                            console.print(f"  ✓ Extracted input value from echo command: {input_value}", style="bold green")
+                            console.print(f"  ✓ Formatted flag: {formatted_flag}", style="bold green")
+
+                            state["detected_flag"] = formatted_flag
+                            state["all_detected_flags"] = [formatted_flag]
+                            state["flag_detected"] = True
+                            console.print(f"🚩 FLAG DETECTED (from correct output): {formatted_flag}", style="bold green")
+                            console.print("Stopping workflow to generate PoC code", style="bold yellow")
+                            state["execution_status"] = "flag_detected"
+                            return state
+
+                        # printf/cat/here-string 패턴도 추가 가능
+                        heredoc_pattern = r'<<<\s*["\']([^"\']+)["\']'
+                        match = re.search(heredoc_pattern, cmd_line)
+                        if match:
+                            input_value = match.group(1)
+                            formatted_flag = f"{flag_format.replace('{}', '')}{{{input_value}}}"
+                            console.print(f"  ✓ Extracted input value from here-string: {input_value}", style="bold green")
+                            console.print(f"  ✓ Formatted flag: {formatted_flag}", style="bold green")
+
+                            state["detected_flag"] = formatted_flag
+                            state["all_detected_flags"] = [formatted_flag]
+                            state["flag_detected"] = True
+                            console.print(f"🚩 FLAG DETECTED (from correct output): {formatted_flag}", style="bold green")
+                            console.print("Stopping workflow to generate PoC code", style="bold yellow")
+                            state["execution_status"] = "flag_detected"
+                            return state
+
     # 관리자 권한 획득 감지 확인 (Flag 다음 우선순위)
     privilege_signals = [s for s in signals if s.get("type") == "privilege"]
     if privilege_signals:
@@ -1564,24 +1892,53 @@ def approval_node(state: State) -> State:
 
 def help_node(state: State) -> State:
     has_cot_result = bool(state.get("cot_result"))
-    
+
+    # 카테고리 확인
+    challenge = state.get("challenge", [])
+    category = ""
+    if challenge and len(challenge) > 0:
+        category = challenge[0].get("category", "").lower()
+
     if not has_cot_result:
-        console.print("=== Available Commands (Initial) ===", style='bold yellow')
-        console.print("--help : Display the available commands.", style="bold yellow")
-        console.print("--file : Paste the challenge source code to locate potential vulnerabilities.", style="bold yellow")
-        console.print("--ghidra : Generate a plan based on decompiled and disassembled results.", style="bold yellow")
-        console.print("--discuss : Discuss the approach with the LLM to set a clear direction.", style="bold yellow")
-        console.print("--quit : Exit the program.", style="bold yellow")
+        # 초기 상태: 카테고리별 옵션
+        if category == "web":
+            console.print("=== Available Commands (Web Category - Initial) ===", style='bold yellow')
+            console.print("--help : Display the available commands.", style="bold yellow")
+            console.print("--file : Analyze the source code to locate potential vulnerabilities.", style="bold yellow")
+            console.print("--discuss : Discuss the approach with the LLM to set a clear direction.", style="bold yellow")
+            console.print("--quit : Exit the program.", style="bold yellow")
+        elif category in ["pwnable", "reversing"]:
+            console.print(f"=== Available Commands ({category.capitalize()} Category - Initial) ===", style='bold yellow')
+            console.print("--help : Display the available commands.", style="bold yellow")
+            console.print("--file : Paste the challenge source code to locate potential vulnerabilities.", style="bold yellow")
+            console.print("--ghidra : Generate a plan based on decompiled and disassembled results.", style="bold yellow")
+            console.print("--discuss : Discuss the approach with the LLM to set a clear direction.", style="bold yellow")
+            console.print("--quit : Exit the program.", style="bold yellow")
+        else:
+            console.print("=== Available Commands (Initial) ===", style='bold yellow')
+            console.print("--help : Display the available commands.", style="bold yellow")
+            console.print("--file : Paste the challenge source code to locate potential vulnerabilities.", style="bold yellow")
+            console.print("--discuss : Discuss the approach with the LLM to set a clear direction.", style="bold yellow")
+            console.print("--quit : Exit the program.", style="bold yellow")
     else:
-        console.print("=== Available Commands (After Initial Setup) ===", style='bold yellow')
-        console.print("--help : Display the available commands.", style="bold yellow")
-        console.print("--discuss : Discuss the approach with the LLM to set a clear direction.", style="bold yellow")
-        console.print("--continue : Continue using LLM with the latest feedback and proceed to the next step.", style="bold yellow")
-        console.print("--exploit : Receive an exploit script or detailed exploitation steps.", style="bold yellow")
-        console.print("--quit : Exit the program.", style="bold yellow")
-    
-    console.print("")  
-    
+        # CoT 결과 있음: 후속 옵션
+        if category == "web":
+            console.print("=== Available Commands (Web Category - After Analysis) ===", style='bold yellow')
+            console.print("--help : Display the available commands.", style="bold yellow")
+            console.print("--discuss : Discuss the approach with the LLM to set a clear direction.", style="bold yellow")
+            console.print("--continue : Continue using LLM with the latest feedback and proceed to the next step.", style="bold yellow")
+            console.print("--exploit : Receive an exploit script or detailed exploitation steps.", style="bold yellow")
+            console.print("--quit : Exit the program.", style="bold yellow")
+        else:
+            console.print("=== Available Commands (After Initial Setup) ===", style='bold yellow')
+            console.print("--help : Display the available commands.", style="bold yellow")
+            console.print("--discuss : Discuss the approach with the LLM to set a clear direction.", style="bold yellow")
+            console.print("--continue : Continue using LLM with the latest feedback and proceed to the next step.", style="bold yellow")
+            console.print("--exploit : Receive an exploit script or detailed exploitation steps.", style="bold yellow")
+            console.print("--quit : Exit the program.", style="bold yellow")
+
+    console.print("")
+
     return state
 
 def option_input_node(state: State) -> State:
@@ -1589,7 +1946,13 @@ def option_input_node(state: State) -> State:
     workflow_step_count = state.get("workflow_step_count", 0)
     workflow_step_count += 1
     state["workflow_step_count"] = workflow_step_count
-    
+
+    # 카테고리 확인
+    challenge = state.get("challenge", [])
+    category = ""
+    if challenge and len(challenge) > 0:
+        category = challenge[0].get("category", "").lower()
+
     # Recursion limit 체크 (50에 가까워지면 경고)
     RECURSION_LIMIT = 50
     if workflow_step_count >= RECURSION_LIMIT - 5:
@@ -1597,15 +1960,22 @@ def option_input_node(state: State) -> State:
         if workflow_step_count >= RECURSION_LIMIT:
             console.print(f"Recursion limit ({RECURSION_LIMIT}) reached. Please choose an option.", style="bold yellow")
             console.print("  Consider using --continue to reset or --quit to exit.", style="cyan")
-    
+
     console.print("Please choose which option you want to choose.", style="blue")
     option = input("> ").strip()
+
+    # 카테고리별 옵션 유효성 검사
+    if option == "--ghidra" and category not in ["pwnable", "reversing"]:
+        console.print(f"--ghidra option is not available for '{category}' category.", style="bold red")
+        console.print("Available options: --file, --discuss", style="yellow")
+        option = ""  # 옵션 초기화하여 다시 입력받도록
+
     state["option"] = option
-    
+
     # --continue 옵션 선택 시 반복 횟수 및 step count 리셋
     if option == "--continue":
         state["iteration_count"] = 0
         state["workflow_step_count"] = 0
         console.print("Iteration count and workflow step count reset. Starting fresh cycle.", style="bold green")
-    
+
     return state

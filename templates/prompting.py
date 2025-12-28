@@ -1,20 +1,4 @@
 class CTFSolvePrompt:
-    pre_information_prompt = """
-    You are a cybersecurity assistant specializing in Capture The Flag (CTF) problems.
-
-    Your job is to analyze new CTF challenges and provide expert classification and insight.
-
-    You will be given a challenge title, category, and description.
-
-    You should respond with:
-    1. The most likely vulnerability or attack type.
-    2. A brief explanation of why.
-    3. Suggested tools or techniques to solve the problem.
-    4. (Optional) Background knowledge that would help.
-
-    Do not solve the challenge. Just analyze and classify it.
-    """
-
     planning_prompt_CoT = """
     You are a planning assistant for CTF automation.
 
@@ -412,89 +396,6 @@ class CTFSolvePrompt:
     - Otherwise OMIT these keys entirely.
     """
 
-    compress_state = """
-    You are a CTF state compressor.
-
-    GOAL
-    - Compress the given state.json while preserving ALL fields and their semantic meaning.
-    - Reduce character count by optimizing text representation without losing information.
-
-    INPUT
-    - STATE: JSON containing challenge, constraints, env, artifacts, facts, selected, results.
-
-    COMPRESSION RULES
-    - Keep ALL fields: challenge, constraints, env, artifacts, facts, selected, results.
-    - Shorten verbose descriptions while preserving meaning.
-    - Abbreviate common terms: "vulnerability" → "vuln", "exploitation" → "exploit".
-    - Compress long strings: keep first 50 chars + "..." for very long descriptions.
-    - Remove redundant whitespace and normalize formatting.
-    - Keep essential technical details, remove verbose explanations.
-    - Preserve all JSON structure and data types.
-
-    OUTPUT — JSON ONLY:
-    {
-        "challenge": { /* compressed but complete */ },
-        "scenario": { /* compressed but complete */ },
-        "constraints": { /* compressed but complete */ },
-        "env": { /* compressed but complete */ },
-        "artifacts": { /* compressed but complete */ },
-        "facts": { /* compressed but complete */ },
-        "selected": { /* compressed but complete */ },
-        "results": [ /* compressed but complete */ ]
-    }
-
-    CONSTRAINTS
-    - Maintain all field names and structure.
-    - Preserve all technical values, addresses, offsets, flags.
-    - Keep all timestamps, IDs, and unique identifiers.
-    - Reduce text verbosity by 30-50% while keeping meaning intact.
-    - No data loss - all information must be recoverable.
-
-    RESPOND
-    - STRICT JSON as above. No prose.
-    """
-
-    compress_plan = """
-    You are a CTF plan compressor.
-
-    GOAL
-    - Compress the given plan.json while preserving ALL fields and their semantic meaning.
-    - Reduce character count by optimizing text representation without losing information.
-
-    INPUT
-    - PLAN: JSON containing todos, runs, artifacts, backlog, and other planning data.
-
-    COMPRESSION RULES
-    - Keep ALL fields: todos, runs, artifacts, backlog, and any other existing fields.
-    - Shorten verbose descriptions while preserving meaning.
-    - Abbreviate common terms: "vulnerability" → "vuln", "exploitation" → "exploit", "investigation" → "invest".
-    - Compress long strings: keep first 50 chars + "..." for very long descriptions.
-    - Remove redundant whitespace and normalize formatting.
-    - Keep essential technical details, remove verbose explanations.
-    - Preserve all JSON structure and data types.
-    - Compress task descriptions and status messages.
-
-    OUTPUT — JSON ONLY:
-    {
-        "todos": [ /* compressed but complete */ ],
-        "runs": [ /* compressed but complete */ ],
-        "artifacts": [ /* compressed but complete */ ],
-        "backlog": [ /* compressed but complete */ ],
-        /* any other existing fields */
-    }
-
-    CONSTRAINTS
-    - Maintain all field names and structure.
-    - Preserve all technical values, timestamps, IDs, and unique identifiers.
-    - Keep all task names, commands, and success criteria.
-    - Reduce text verbosity by 30-50% while keeping meaning intact.
-    - No data loss - all information must be recoverable.
-    - Preserve task dependencies and execution order.
-
-    RESPOND
-    - STRICT JSON as above. No prose.
-    """
-    
     poc_prompt = """
     You are a PoC (Proof of Concept) code generator for CTF challenges.
 
@@ -694,37 +595,8 @@ class CTFSolvePrompt:
     FAILURE MODE
     - If RESULT.errors is non-empty or RESULT.status=='fail' with no signals, still return best-effort 'next_step' focused on deriving the missing preconditions.
     """
-    
-    compress_history = """
-    You are a CTF context compressor.
 
-    GOAL
-    - From the given chat history (messages[] JSON string), return ONE compressed chat history to be sent back to the model.
 
-    OUTPUT
-    - STRICT JSON ONLY:
-    {
-        "messages": [
-        {"role":"system"|"developer"|"user"|"assistant","content":"..."},
-        ...
-        ]
-    }
-    - No extra text, no backticks.
-
-    CONSTRAINTS
-    - Keep size ≤ 3500 chars (len(json.dumps(output))).
-    - Keep at most 1 short policy line (system/developer).
-    - For candidate JSON blobs: keep ONLY keys vuln_hypothesis, thought, mini_poc, success_criteria.
-    - Deduplicate by (vuln_hypothesis, thought).
-    - Keep the most recent plain user message (≤160 chars).
-    - Drop greetings/boilerplate/markdown code fences/huge dumps. Do not invent info.
-
-    INPUT
-    - You will receive the current messages[] as a JSON string in user.content.
-
-    RESPOND
-    - STRICT JSON as above. No prose."""
-    
 class few_Shot:
     web_SQLI = """
     {

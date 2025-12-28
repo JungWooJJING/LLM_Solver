@@ -50,7 +50,7 @@ def test_API_KEY():
             if choice == '1':
                 console.print("OpenAI API key will be used.", style='bold green')
                 api_key = openai_api_key
-                model = "gpt-5.2"
+                model = "gpt-4o"
                 break
             elif choice == '2':
                 console.print("Gemini API key will be used.", style='bold green')
@@ -64,7 +64,7 @@ def test_API_KEY():
     elif openai_api_key:
         console.print("Using OpenAI API key.", style='bold green')
         api_key = openai_api_key
-        model = "gpt-5.2"
+        model = "gpt-4o"
     # Gemini만 있으면 Gemini 사용
     elif gemini_api_key:
         console.print("Using Gemini API key.", style='bold green')
@@ -123,30 +123,82 @@ def main():
     console.print("Enter the challenge description (Press <<<END>>> to finish):", style="blue")
     description = core.multi_line_input()
 
-    console.print("Enter the challenge category:", style="blue")
+    console.print("Enter the challenge category (web/pwnable/reversing/forensics/crypto/misc):", style="blue")
     category = input("> ")
-    
+
     category = category.lower()
-    
+
     challenge_info = []
-    if(category == "pwnable"):
-        console.print("Enter the binary checksec:", style="blue")
-        checksec = core.multi_line_input()
-                
+    binary_path = ""
+    url = ""
+
+    # 카테고리별 입력 분기
+    if category == "web":
+        # Web 카테고리: URL과 파일 위치 입력
+        console.print("Enter the target URL:", style="blue")
+        url = input("> ")
+
+        console.print("Enter the source file/directory path (optional, press Enter to skip):", style="blue")
+        file_path = input("> ")
+
         console.print("Enter the challenge flag format:", style="blue")
         format = input("> ")
 
         challenge_info = [{
             "category": category,
+            "title": title,
+            "description": description,
             "flag format": format,
-            "checksec": checksec
+            "url": url,
+            "source_path": file_path if file_path else ""
         }]
-    else: 
+        binary_path = file_path  # source_path를 binary_path로도 저장
+
+    elif category == "pwnable":
+        # Pwnable 카테고리: 기존 방식 유지
+        console.print("Enter the binary file path:", style="blue")
+        binary_path = input("> ")
+
+        console.print("Enter the binary checksec:", style="blue")
+        checksec = core.multi_line_input()
+
         console.print("Enter the challenge flag format:", style="blue")
         format = input("> ")
-        
+
         challenge_info = [{
             "category": category,
+            "title": title,
+            "description": description,
+            "flag format": format,
+            "checksec": checksec,
+            "binary_path": binary_path
+        }]
+
+    elif category == "reversing":
+        # Reversing 카테고리: 바이너리 경로 입력
+        console.print("Enter the binary file path:", style="blue")
+        binary_path = input("> ")
+
+        console.print("Enter the challenge flag format:", style="blue")
+        format = input("> ")
+
+        challenge_info = [{
+            "category": category,
+            "title": title,
+            "description": description,
+            "flag format": format,
+            "binary_path": binary_path
+        }]
+
+    else:
+        # 기타 카테고리 (forensics, crypto, misc 등)
+        console.print("Enter the challenge flag format:", style="blue")
+        format = input("> ")
+
+        challenge_info = [{
+            "category": category,
+            "title": title,
+            "description": description,
             "flag format": format
         }]
     
@@ -178,8 +230,8 @@ def main():
         
         # State: 타겟 정보 및 실행 결과
         "challenge": challenge_info,
-        "binary_path": "",
-        "url": "",
+        "binary_path": binary_path,
+        "url": url,
         "target_info": {},
         "protections": {},
         "mitigations": [],
