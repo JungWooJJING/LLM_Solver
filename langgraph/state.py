@@ -97,6 +97,17 @@ class State(TypedDict):
     iteration_count: int  # 워크플로우 반복 횟수 (--continue 시 리셋)
     workflow_step_count: int  # Workflow step count (recursion_limit 체크용)
 
+    # 명령어 캐싱 (중복 실행 방지)
+    command_cache: Dict[str, Dict[str, Any]]  # {cmd_hash: {cmd, result, success, timestamp}}
+    failed_commands: Dict[str, Dict[str, Any]]  # {cmd_hash: {cmd, error, timestamp, attempt_count}}
+    all_track_outputs: Dict[str, List[Dict[str, Any]]]  # {track_id: [{cmd, success, stdout, ...}]}
+
+    # 자동 분석 결과
+    auto_analysis: Dict[str, Any]  # 카테고리별 자동 분석 결과
+
+    # Exploit Readiness (Feedback에서 계산)
+    exploit_readiness: Dict[str, Any]  # {score: 0.0-1.0, components: {...}, recommend_exploit: bool, ...}
+
 
 class Context(TypedDict):
     """
@@ -331,10 +342,11 @@ def get_state_for_instruction(state: PlanningState) -> Dict[str, Any]:
         "seen_cmd_hashes": state.get("seen_cmd_hashes", []),
         "command_cache": state.get("command_cache", {}),
         "failed_commands": state.get("failed_commands", {}),
+        "all_track_outputs": state.get("all_track_outputs", {}),  # 실행된 명령어 리스트
 
-        # 이전 실행 결과 (참고용)
+        # 이전 실행 결과 (중복 방지용 - 전체 결과 전달)
         "execution_results": state.get("execution_results", {}),
-        "results": state.get("results", [])[-5:] if state.get("results") else [],  # 최근 5개만
+        "results": state.get("results", []),  # 전체 결과 전달 (중복 명령어 추출용)
     }
 
 

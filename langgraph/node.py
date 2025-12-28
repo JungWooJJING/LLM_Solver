@@ -494,10 +494,17 @@ def execution_node(state: State) -> State:
     import subprocess
     from datetime import datetime
     import hashlib
-    
+
+    # 명령어 중복 체크 유틸리티 import
+    try:
+        from utility.command_cache import check_command_before_execution, add_command_to_cache
+        has_command_cache = True
+    except ImportError:
+        has_command_cache = False
+
     ctx = state["ctx"]
     core = ctx.core
-    
+
     console.print("=== Execution Node ===", style='bold magenta')
     
     multi_instructions = state.get("multi_instructions", [])
@@ -535,7 +542,8 @@ def execution_node(state: State) -> State:
     
     execution_results = {}
     all_outputs = []
-    
+    all_track_outputs = {}  # 각 트랙의 실행된 명령어 리스트 저장 (중복 방지용)
+
     # 각 트랙의 instruction 실행
     for inst_data in multi_instructions:
         track_id = inst_data.get("track_id", "unknown")
@@ -601,6 +609,24 @@ def execution_node(state: State) -> State:
             
             console.print(f"  Executing: {name}", style="cyan")
             console.print(f"  Command: {cmd}", style="dim")
+
+            # 강화된 중복 체크 (무한 루프 방지)
+            if has_command_cache:
+                should_exec, reason, cached = check_command_before_execution(cmd, state)
+                if not should_exec:
+                    console.print(f"  [SKIP] {reason}", style="yellow")
+                    if cached:
+                        track_output.append({
+                            "name": name,
+                            "cmd": cmd,
+                            "success": cached.get("ok", False),
+                            "stdout": cached.get("stdout", ""),
+                            "stderr": cached.get("stderr", ""),
+                            "cached": True,
+                            "skip_reason": reason,
+                            "timestamp": datetime.now().isoformat()
+                        })
+                    continue
 
             # seen_cmd_hashes에 추가 (중복 방지를 위해)
             if cmd_hash not in seen_cmd_hashes:
@@ -941,7 +967,10 @@ def execution_node(state: State) -> State:
         
         # 트랙별 결과 저장 및 쉘 획득 확인
         track_has_shell = any(step.get('shell_acquired', False) for step in track_output)
-        
+
+        # track_output을 all_track_outputs에 저장 (중복 방지용)
+        all_track_outputs[track_id] = track_output
+
         execution_results[track_id] = "\n".join([
             f"=== {step['name']} ===\n"
             f"Command: {step['cmd']}\n"
@@ -963,6 +992,7 @@ def execution_node(state: State) -> State:
     state["command_cache"] = command_cache
     state["failed_commands"] = failed_commands
     state["seen_cmd_hashes"] = seen_cmd_hashes
+    state["all_track_outputs"] = all_track_outputs  # 실행된 명령어 리스트 (중복 방지용)
     
     # 실행 상태 요약 출력
     if failed_commands:
@@ -1023,7 +1053,10 @@ def track_update_node(state: State) -> State:
         
         # 실행 결과를 results에 저장
         execution_output = execution_results.get(track_id, "")
-        if execution_output:
+        all_track_outputs = state.get("all_track_outputs", {})
+        track_outputs_list = all_track_outputs.get(track_id, [])
+
+        if execution_output or track_outputs_list:
             result_entry = {
                 "timestamp": datetime.now().isoformat(),
                 "track_id": track_id,
@@ -1032,7 +1065,9 @@ def track_update_node(state: State) -> State:
                 "parsing_result": track_parsing_json,
                 "signals": track_parsing_json.get("signals", []),
                 "artifacts": track_parsing_json.get("artifacts", []),
-                "errors": track_parsing_json.get("errors", [])
+                "errors": track_parsing_json.get("errors", []),
+                # 실행된 명령어 리스트 추가 (중복 방지용)
+                "track_outputs": track_outputs_list
             }
             if "results" not in state:
                 state["results"] = []
@@ -1153,6 +1188,7 @@ def parsing_node(state: State) -> State:
             console.print(f"\n=== LLM_translation for {track_id} ===", style='bold green')
             # Parsing Agent에 필요한 정보만 필터링
             filtered_state = get_state_for_parsing(state)
+            # Rate limit은 _generate_with_retry에서 자동으로 처리됨
             LLM_translation = ctx.parsing.LLM_translation_run(prompt_query=result_output, state=filtered_state)
             parsed_results[track_id] = LLM_translation
         
@@ -1176,11 +1212,28 @@ def parsing_node(state: State) -> State:
         state["parsing_result"] = LLM_translation
     
     # 파싱 결과에서 성공/실패 판단
-    parsing_json = core.safe_json_loads(state.get("parsing_result", "{}"))
+    # Multi-Track 모드인지 확인
+    multi_parsing_results = state.get("multi_parsing_results", {})
+    is_multi_track = len(multi_parsing_results) > 1
     
-    # 성공 조건 확인
-    signals = parsing_json.get("signals", [])
-    errors = parsing_json.get("errors", [])
+    if is_multi_track:
+        # Multi-Track 모드: 모든 트랙의 signals 수집
+        all_signals = []
+        all_errors = []
+        for track_id, track_parsing_result in multi_parsing_results.items():
+            track_parsing_json = core.safe_json_loads(track_parsing_result)
+            all_signals.extend(track_parsing_json.get("signals", []))
+            all_errors.extend(track_parsing_json.get("errors", []))
+        signals = all_signals
+        errors = all_errors
+        # 기본 parsing_json은 첫 번째 트랙 결과 사용 (하위 호환성)
+        parsing_json = core.safe_json_loads(state.get("parsing_result", "{}"))
+    else:
+        # 단일 모드: 기존 로직
+        parsing_json = core.safe_json_loads(state.get("parsing_result", "{}"))
+        signals = parsing_json.get("signals", [])
+        errors = parsing_json.get("errors", [])
+    
     summary = parsing_json.get("summary", "")
     
     # 실행 결과에서 직접 쉘 출력 확인 (parsing이 놓쳤을 수 있음)
@@ -1644,6 +1697,48 @@ def feedback_node(state: State) -> State:
             state["facts"] = {}
         state["facts"].update(feedback_json["promote_facts"])
         console.print(f"  Promoted {len(feedback_json['promote_facts'])} fact(s) to stable knowledge", style="cyan")
+
+    # Exploit Readiness 처리
+    if "exploit_readiness" in feedback_json:
+        exploit_readiness = feedback_json["exploit_readiness"]
+        state["exploit_readiness"] = exploit_readiness
+
+        score = exploit_readiness.get("score", 0.0)
+        recommend_exploit = exploit_readiness.get("recommend_exploit", False)
+        priority = exploit_readiness.get("exploit_priority", "low")
+
+        # Exploit Readiness 정보 출력
+        if score >= 0.6:
+            console.print(f"  🎯 Exploit Readiness: {score:.0%} (Priority: {priority})", style="bold green")
+        elif score >= 0.4:
+            console.print(f"  ⚡ Exploit Readiness: {score:.0%} (Building up...)", style="yellow")
+        else:
+            console.print(f"  📊 Exploit Readiness: {score:.0%}", style="dim")
+
+        if recommend_exploit:
+            console.print("  ✅ RECOMMENDATION: Ready to exploit! Switch to exploitation phase.", style="bold green")
+
+            # 부족한 항목 출력
+            missing = exploit_readiness.get("missing_for_exploit", [])
+            if missing:
+                console.print(f"  📝 Still helpful to have: {', '.join(missing[:3])}", style="dim")
+        else:
+            # 부족한 항목 출력
+            missing = exploit_readiness.get("missing_for_exploit", [])
+            if missing:
+                console.print(f"  📝 Missing for exploit: {', '.join(missing[:3])}", style="yellow")
+
+    # 진전도 체크 및 전략 변경 제안
+    try:
+        from utility.progress_tracker import should_change_strategy, format_stuck_message
+        is_stuck, reason = should_change_strategy(state)
+        if is_stuck:
+            console.print(format_stuck_message(state), style="bold yellow")
+            # 막힘 상태를 state에 기록
+            state["is_stuck"] = True
+            state["stuck_reason"] = reason
+    except ImportError:
+        pass  # progress_tracker가 없으면 무시
 
     return state
 

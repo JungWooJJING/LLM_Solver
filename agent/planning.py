@@ -27,10 +27,11 @@ try:
 except ImportError:
     genai = None
 
-from templates.prompting import CTFSolvePrompt, few_Shot
+from templates.prompting import CTFSolvePrompt
 from rich.console import Console
 from utility.build_query import build_query
 from utility.core_utility import Core
+from utility.fewshot_selector import select_fewshots, build_fewshot_messages, get_category_hints
 
 # Ghidra API (선택적)
 try:
@@ -41,7 +42,6 @@ except (ImportError, ModuleNotFoundError):
 
 console = Console()
 core = Core()
-FEWSHOT = few_Shot()
 
 DEFAULT_STATE = {
     "challenge": [],
@@ -60,23 +60,40 @@ DEFAULT_PLAN = {
     "backlog": []
 }
 
-prompt_CoT = [
-    {"role": "developer", "content": CTFSolvePrompt.planning_prompt_CoT},
-    {"role": "user", "content": FEWSHOT.web_SQLI},
-    {"role": "user", "content": FEWSHOT.web_SSTI},
-    {"role": "user", "content": FEWSHOT.forensics_PCAP},
-    {"role": "user", "content": FEWSHOT.stack_BOF},
-    {"role": "user", "content": FEWSHOT.rev_CheckMapping},
-]
 
-plan_CoT = [
-    {"role": "developer", "content": CTFSolvePrompt.plan_CoT},
-    {"role": "user", "content": FEWSHOT.web_SQLI},
-    {"role": "user", "content": FEWSHOT.web_SSTI},
-    {"role": "user", "content": FEWSHOT.forensics_PCAP},
-    {"role": "user", "content": FEWSHOT.stack_BOF},
-    {"role": "user", "content": FEWSHOT.rev_CheckMapping},
-]
+def build_dynamic_prompt_CoT(category: str, description: str = "", signals: list = None):
+    """카테고리와 컨텍스트에 맞는 동적 프롬프트를 생성합니다."""
+    # 기본 시스템 프롬프트
+    base_prompt = CTFSolvePrompt.planning_prompt_CoT
+
+    # 카테고리별 힌트 추가
+    category_hints = get_category_hints(category)
+    if category_hints:
+        base_prompt = base_prompt + "\n" + category_hints
+
+    messages = [{"role": "developer", "content": base_prompt}]
+
+    # 동적으로 선택된 few-shot 추가
+    fewshot_messages = build_fewshot_messages(category, description, signals, max_examples=3)
+    messages.extend(fewshot_messages)
+
+    return messages
+
+
+def build_dynamic_plan_CoT(category: str, description: str = "", signals: list = None):
+    """카테고리와 컨텍스트에 맞는 동적 plan 프롬프트를 생성합니다."""
+    base_prompt = CTFSolvePrompt.plan_CoT
+
+    category_hints = get_category_hints(category)
+    if category_hints:
+        base_prompt = base_prompt + "\n" + category_hints
+
+    messages = [{"role": "developer", "content": base_prompt}]
+
+    fewshot_messages = build_fewshot_messages(category, description, signals, max_examples=3)
+    messages.extend(fewshot_messages)
+
+    return messages
 
 class PlanningAgent:
     def __init__(self, api_key: str, model: str):
@@ -97,18 +114,23 @@ class PlanningAgent:
         
         
     def run_CoT(self, prompt_query: str, ctx, state: dict = None):
-        global prompt_CoT
-
-        if not isinstance(globals().get("prompt_CoT"), list):
-            prompt_CoT = []
-
         # state가 제공되면 사용, 없으면 state.json에서 로드
         if state is None:
             state = core.load_json("state.json", default="")
-        else:
-            # 필터링된 state가 전달된 경우 그대로 사용
-            pass
-        
+
+        # 카테고리와 설명 추출
+        category = "misc"
+        description = ""
+        signals = state.get("signals", [])
+
+        if state.get("challenge") and len(state["challenge"]) > 0:
+            challenge = state["challenge"][0]
+            category = challenge.get("category", "misc").lower()
+            description = challenge.get("description", "")
+
+        # 동적으로 프롬프트 생성 (카테고리별 few-shot 선택)
+        prompt_CoT = build_dynamic_prompt_CoT(category, description, signals)
+
         state_msg = {"role": "developer", "content": "[STATE]\n" + json.dumps(state, ensure_ascii=False)}
         user_msg = {"role": "user", "content": prompt_query}
 
@@ -162,7 +184,7 @@ class PlanningAgent:
             console.print(f"Error in CoT API call: {e}", style="bold red")
             raise
 
-        plan_CoT.extend([user_msg, {"role": "assistant", "content": content}])
+        # 대화 히스토리는 state.results에 저장되므로 별도 관리 불필요
         return content
     
     def _convert_messages_to_prompt(self, messages):

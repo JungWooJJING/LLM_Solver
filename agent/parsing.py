@@ -1,4 +1,5 @@
 import json
+import time
 
 from templates.prompting import CTFSolvePrompt
 from openai import OpenAI
@@ -8,8 +9,10 @@ warnings.filterwarnings("ignore", category=FutureWarning, message=".*google.gene
 
 try:
     import google.generativeai as genai
+    from google.api_core import exceptions as google_exceptions
 except ImportError:
     genai = None
+    google_exceptions = None
 
 class ParserAgent:
     def __init__(self, api_key: str, model: str = "gpt-4o"):
@@ -27,6 +30,34 @@ class ParserAgent:
             self.is_gemini = True
         else:
             raise ValueError(f"Invalid model: {model}. Supported: gpt-4o, gemini-1.5-flash, gemini-1.5-flash-latest, gemini-3-flash-preview")
+    
+    def _generate_with_retry(self, generate_func, max_retries=3):
+        """Rate limit 오류 발생 시 재시도하는 헬퍼 함수"""
+        for attempt in range(max_retries):
+            try:
+                return generate_func()
+            except Exception as e:
+                if google_exceptions and isinstance(e, google_exceptions.ResourceExhausted):
+                    # Rate limit 오류인 경우
+                    error_str = str(e)
+                    # retry_delay 추출 시도
+                    retry_delay = 40  # 기본값 40초
+                    if "retry in" in error_str.lower() or "retry_delay" in error_str.lower():
+                        import re
+                        delay_match = re.search(r'retry.*?(\d+\.?\d*)\s*s', error_str, re.IGNORECASE)
+                        if delay_match:
+                            retry_delay = float(delay_match.group(1)) + 5  # 여유 5초 추가
+                    
+                    if attempt < max_retries - 1:
+                        print(f"Rate limit exceeded. Waiting {retry_delay}s before retry (attempt {attempt + 1}/{max_retries})...")
+                        time.sleep(retry_delay)
+                        continue
+                    else:
+                        raise
+                else:
+                    # 다른 오류는 즉시 전파
+                    raise
+        raise Exception("Max retries exceeded")
     
     def LLM_translation_run(self, prompt_query:str = "", state: str= ""):
         LLM_translation_prompt = [
@@ -62,15 +93,21 @@ class ParserAgent:
             
             if system_instruction:
                 try:
-                    res = self.client.generate_content(
-                        user_content,
-                        system_instruction=system_instruction
+                    res = self._generate_with_retry(
+                        lambda: self.client.generate_content(
+                            user_content,
+                            system_instruction=system_instruction
+                        )
                     )
                 except TypeError:
                     full_prompt = f"{system_instruction}\n\n---\n\n{user_content}"
-                    res = self.client.generate_content(full_prompt)
+                    res = self._generate_with_retry(
+                        lambda: self.client.generate_content(full_prompt)
+                    )
             else:
-                res = self.client.generate_content(user_content)
+                res = self._generate_with_retry(
+                    lambda: self.client.generate_content(user_content)
+                )
             return res.text
         else:
             res = self.client.chat.completions.create(model=self.model, messages=call_msgs)
@@ -103,15 +140,21 @@ class ParserAgent:
             
             if system_instruction:
                 try:
-                    res = self.client.generate_content(
-                        user_content,
-                        system_instruction=system_instruction
+                    res = self._generate_with_retry(
+                        lambda: self.client.generate_content(
+                            user_content,
+                            system_instruction=system_instruction
+                        )
                     )
                 except TypeError:
                     full_prompt = f"{system_instruction}\n\n---\n\n{user_content}"
-                    res = self.client.generate_content(full_prompt)
+                    res = self._generate_with_retry(
+                        lambda: self.client.generate_content(full_prompt)
+                    )
             else:
-                res = self.client.generate_content(user_content)
+                res = self._generate_with_retry(
+                    lambda: self.client.generate_content(user_content)
+                )
             return res.text
         else:
             res = self.client.chat.completions.create(model=self.model, messages=call_msgs)
@@ -152,15 +195,21 @@ class ParserAgent:
             
             if system_instruction:
                 try:
-                    res = self.client.generate_content(
-                        user_content,
-                        system_instruction=system_instruction
+                    res = self._generate_with_retry(
+                        lambda: self.client.generate_content(
+                            user_content,
+                            system_instruction=system_instruction
+                        )
                     )
                 except TypeError:
                     full_prompt = f"{system_instruction}\n\n---\n\n{user_content}"
-                    res = self.client.generate_content(full_prompt)
+                    res = self._generate_with_retry(
+                        lambda: self.client.generate_content(full_prompt)
+                    )
             else:
-                res = self.client.generate_content(user_content)
+                res = self._generate_with_retry(
+                    lambda: self.client.generate_content(user_content)
+                )
             return res.text
         else:
             res = self.client.chat.completions.create(model=self.model, messages=call_msgs)

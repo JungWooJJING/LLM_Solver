@@ -115,27 +115,84 @@ def build_query(option: str, code: str = "", state = None, CoT = None, Cal = Non
         if state and isinstance(state, dict):
             command_cache = state.get("command_cache", {})
             failed_commands = state.get("failed_commands", {})
-            execution_results = state.get("execution_results", {})
+            results = state.get("results", [])
+            all_track_outputs = state.get("all_track_outputs", {})
 
-            if command_cache or failed_commands:
-                executed_list = []
-                # 성공한 명령어
-                for cmd_hash, cmd_info in command_cache.items():
-                    executed_list.append(f"✓ {cmd_info.get('cmd', 'unknown')}")
-                # 실패한 명령어
-                for cmd_hash, cmd_info in failed_commands.items():
-                    executed_list.append(f"✗ {cmd_info.get('cmd', 'unknown')} (failed)")
+            executed_list = []
+            seen_cmds = set()
 
-                if executed_list:
-                    executed_commands_info = (
-                        "\n### ALREADY EXECUTED COMMANDS (DO NOT REPEAT):\n"
-                        "The following commands have already been executed in previous iterations:\n"
-                        "{executed_list}\n\n"
-                        "CRITICAL: You MUST NOT repeat these commands. Generate NEW and DIFFERENT commands.\n"
-                        "- If you need similar functionality, use different tools or different parameters.\n"
-                        "- Focus on UNEXPLORED approaches and NEW techniques.\n"
-                        "- Consider using different tools from the available toolset.\n\n"
-                    ).format(executed_list="\n".join(executed_list[:20]))  # 최대 20개만 표시
+            # 1. command_cache에서 성공한 명령어 추출
+            for cmd_hash, cmd_info in command_cache.items():
+                cmd = cmd_info.get('cmd', '')
+                if cmd and cmd not in seen_cmds:
+                    executed_list.append(f"✓ {cmd}")
+                    seen_cmds.add(cmd)
+
+            # 2. failed_commands에서 실패한 명령어 추출
+            for cmd_hash, cmd_info in failed_commands.items():
+                cmd = cmd_info.get('cmd', '')
+                if cmd and cmd not in seen_cmds:
+                    executed_list.append(f"✗ {cmd} (FAILED)")
+                    seen_cmds.add(cmd)
+
+            # 3. all_track_outputs에서 실행된 명령어 추출 (최신 실행 결과)
+            for track_id, outputs in all_track_outputs.items():
+                if isinstance(outputs, list):
+                    for output in outputs:
+                        cmd = output.get("cmd", "")
+                        if cmd and cmd not in seen_cmds:
+                            if output.get("success", False):
+                                executed_list.append(f"✓ {cmd}")
+                            else:
+                                executed_list.append(f"✗ {cmd} (FAILED)")
+                            seen_cmds.add(cmd)
+
+            # 4. results 배열에서 실행된 명령어 추출 (이전 실행 이력)
+            for result in results:
+                # 각 result의 track_outputs 확인 (리스트 형식)
+                track_outputs = result.get("track_outputs", [])
+                if isinstance(track_outputs, list):
+                    for output in track_outputs:
+                        cmd = output.get("cmd", "")
+                        if cmd and cmd not in seen_cmds:
+                            if output.get("success", False):
+                                executed_list.append(f"✓ {cmd}")
+                            else:
+                                executed_list.append(f"✗ {cmd} (FAILED)")
+                            seen_cmds.add(cmd)
+                elif isinstance(track_outputs, dict):
+                    # 딕셔너리 형식인 경우 (하위 호환성)
+                    for track_id, outputs in track_outputs.items():
+                        if isinstance(outputs, list):
+                            for output in outputs:
+                                cmd = output.get("cmd", "")
+                                if cmd and cmd not in seen_cmds:
+                                    if output.get("success", False):
+                                        executed_list.append(f"✓ {cmd}")
+                                    else:
+                                        executed_list.append(f"✗ {cmd} (FAILED)")
+                                    seen_cmds.add(cmd)
+
+                # 직접 cmd 필드가 있는 경우
+                cmd = result.get("cmd", "")
+                if cmd and cmd not in seen_cmds:
+                    if result.get("ok", False) or result.get("success", False):
+                        executed_list.append(f"✓ {cmd}")
+                    else:
+                        executed_list.append(f"✗ {cmd} (FAILED)")
+                    seen_cmds.add(cmd)
+
+            if executed_list:
+                executed_commands_info = (
+                    "\n### ALREADY EXECUTED COMMANDS (DO NOT REPEAT):\n"
+                    "The following commands have already been executed in previous iterations:\n"
+                    "{executed_list}\n\n"
+                    "CRITICAL: You MUST NOT repeat these commands. Generate NEW and DIFFERENT commands.\n"
+                    "- If you need similar functionality, use different tools or different parameters.\n"
+                    "- Focus on UNEXPLORED approaches and NEW techniques.\n"
+                    "- Consider using different tools from the available toolset.\n"
+                    "- If a command failed, do NOT retry it - use a completely different approach.\n\n"
+                ).format(executed_list="\n".join(executed_list[-30:]))  # 최근 30개만 표시
         
         prompt = (
             "### CoT:\n{cot}\n\n"
@@ -165,9 +222,16 @@ def build_query(option: str, code: str = "", state = None, CoT = None, Cal = Non
             "- If available tools are provided, prefer using structured tool functions over raw shell commands.\n"
             "- Always include exactly one primary step first; add more only if strictly required.\n"
             "- Every step MUST include cmd; if a helper is needed, put full script in steps[i].code.\n"
-            "- Prefer read-only, low-cost probes; keep commands reproducible.\n"
             "- CRITICAL: Do NOT repeat commands from the ALREADY EXECUTED COMMANDS list above.\n"
-            "- Generate NEW commands that explore DIFFERENT aspects or use DIFFERENT tools.\n"
+            "- Generate NEW commands that explore DIFFERENT aspects or use DIFFERENT tools.\n\n"
+            "### EXPLOITATION PRIORITY:\n"
+            "- If STATE.facts contains offsets/addresses/leaks, PRIORITIZE exploitation over more probing.\n"
+            "- When vulnerability is confirmed (XSS, SQLi, BOF, etc.), generate ACTUAL EXPLOIT payloads.\n"
+            "- For XSS: Generate payloads that trigger alert/document.cookie/fetch to exfiltrate data.\n"
+            "- For SQLi: Generate payloads to extract data (UNION SELECT, blind injection, etc.).\n"
+            "- For BOF: Generate ROP chains, ret2libc payloads, or shellcode injections.\n"
+            "- STOP passive reconnaissance if vulnerability is already confirmed - EXPLOIT IT.\n"
+            "- The GOAL is to GET THE FLAG, not just to find vulnerabilities.\n"
         ).format(cot=CoT, cal=Cal, tools_info=tools_info, executed_commands_info=executed_commands_info)  
     
         return prompt

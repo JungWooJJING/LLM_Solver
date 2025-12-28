@@ -13,6 +13,7 @@ from agent.feedback import FeedbackAgent
 from agent.exploit import ExploitAgent
 
 from utility.core_utility import Core
+from utility.auto_analysis import auto_analyze, format_analysis_summary
 
 from langgraph.workflow import create_main_workflow
 from langgraph.state import PlanningState
@@ -20,6 +21,38 @@ from langgraph.state import PlanningState
 
 core = Core()
 console = Console()
+
+
+def run_auto_analysis(category: str, state: dict) -> dict:
+    """카테고리별 자동 분석을 수행하고 결과를 state에 추가합니다."""
+    console.print("\n[Auto-Analysis] Running initial analysis...", style="cyan")
+
+    try:
+        analysis = auto_analyze(category, state)
+
+        if analysis:
+            summary = format_analysis_summary(analysis, category)
+            if summary and "No significant findings" not in summary:
+                console.print(summary, style="dim")
+
+            # state에 분석 결과 추가
+            state["auto_analysis"] = analysis
+
+            # 제안된 취약점이 있으면 facts에 추가
+            suggested_vulns = analysis.get("suggested_vuln", []) or analysis.get("potential_vulns", [])
+            if suggested_vulns:
+                state["facts"]["auto_detected_vulns"] = [
+                    f"{v['type']} ({v['confidence']}): {v['evidence']}"
+                    for v in suggested_vulns
+                ]
+                console.print(f"\n[Auto-Analysis] Detected {len(suggested_vulns)} potential vulnerability types", style="yellow")
+
+        console.print("[Auto-Analysis] Done\n", style="cyan")
+
+    except Exception as e:
+        console.print(f"[Auto-Analysis] Error: {e}", style="dim red")
+
+    return state
 
 # === API Key Check ===
 def test_API_KEY():
@@ -258,7 +291,12 @@ def main():
         "instruction_retry_count": 0,
         "iteration_count": 0,
         "workflow_step_count": 0,  # Workflow step count (recursion_limit 체크용)
-        
+
+        # 명령어 캐싱 (중복 실행 방지)
+        "command_cache": {},  # {cmd_hash: {cmd, result, success, timestamp}}
+        "failed_commands": {},  # {cmd_hash: {cmd, error, timestamp, attempt_count}}
+        "all_track_outputs": {},  # {track_id: [{cmd, success, stdout, ...}]}
+
         # Context: 컨텍스트 및 제어 정보
         "user_input": "",
         "option": "",
@@ -271,8 +309,30 @@ def main():
         "ctx": ctx,
         "API_KEY": ctx.api_key,
         "scenario": {},
+        "auto_analysis": {},
+
+        # Exploit Readiness (Feedback에서 계산)
+        "exploit_readiness": {
+            "score": 0.0,
+            "components": {
+                "vuln_confirmed": False,
+                "offset_known": False,
+                "leak_obtained": False,
+                "target_identified": False,
+                "protections_known": False,
+                "crash_confirmed": False,
+                "payload_understood": False
+            },
+            "recommend_exploit": False,
+            "exploit_priority": "low",
+            "missing_for_exploit": []
+        },
     }
-    
+
+    # 카테고리별 자동 초기 분석 수행
+    if category in ["pwnable", "web", "reversing", "forensics"]:
+        initial_state = run_auto_analysis(category, initial_state)
+
     workflow = create_main_workflow()
 
     console.print("\n=== Starting LangGraph Workflow ===", style="bold green")
@@ -282,119 +342,115 @@ def main():
     consecutive_failures = 0
     MAX_CONSECUTIVE_FAILURES = 3
 
-    try:
-        # 재귀 제한 설정 (무한 루프 방지)
-        config = {
-            "recursion_limit": 50,
-            "max_failed_retries": 3,
-            "enable_fallback": True
-        }
+    # 재귀 제한 설정
+    config = {
+        "recursion_limit": 50,
+        "max_failed_retries": 3,
+        "enable_fallback": True
+    }
 
-        # Workflow 실행 전 후크: 연속 실패 감지
-        original_invoke = workflow.invoke
+    # 현재 state 추적 (recursion error 복구용)
+    current_state = initial_state.copy()
 
-        def monitored_invoke(state, config):
-            nonlocal consecutive_failures
+    # Workflow 실행 전 후크: 연속 실패 감지 (루프 밖에서 한 번만 설정)
+    original_invoke = workflow.invoke
 
-            # 실행
-            result_state = original_invoke(state, config)
+    def monitored_invoke(state, config):
+        nonlocal consecutive_failures, current_state
 
-            # 실행 상태 확인
-            execution_status = result_state.get("execution_status", "")
+        # 실행 (original_invoke 사용 - 재귀 방지)
+        result_state = original_invoke(state, config)
 
-            if execution_status == "fail":
-                consecutive_failures += 1
-                console.print(f"\nConsecutive failures: {consecutive_failures}/{MAX_CONSECUTIVE_FAILURES}", style="yellow")
+        # 현재 state 업데이트 (복구용)
+        current_state = result_state.copy()
 
-                if consecutive_failures >= MAX_CONSECUTIVE_FAILURES:
-                    console.print(f"\nToo many consecutive failures ({consecutive_failures}). Stopping workflow.", style="bold red")
-                    console.print("Suggestion: Review the challenge requirements or try a different approach.", style="yellow")
-                    raise RuntimeError("Max consecutive failures reached")
-            else:
-                # 성공하면 카운터 리셋
-                if execution_status in ["success", "partial"]:
-                    consecutive_failures = 0
+        # 실행 상태 확인
+        execution_status = result_state.get("execution_status", "")
 
-            return result_state
+        if execution_status == "fail":
+            consecutive_failures += 1
+            console.print(f"\nConsecutive failures: {consecutive_failures}/{MAX_CONSECUTIVE_FAILURES}", style="yellow")
 
-        # Monkey patch
-        workflow.invoke = monitored_invoke
-
-        final_state = workflow.invoke(initial_state, config=config)
-
-        console.print("\n=== Workflow Completed ===", style="bold green")
-
-    except KeyboardInterrupt:
-        console.print("\n\nWorkflow interrupted by user.", style="bold yellow")
-    except RuntimeError as e:
-        if "Max consecutive failures" in str(e):
-            console.print("\n\n=== Workflow stopped due to repeated failures ===", style="bold red")
+            if consecutive_failures >= MAX_CONSECUTIVE_FAILURES:
+                console.print(f"\nToo many consecutive failures ({consecutive_failures}). Returning to option selection.", style="bold yellow")
+                consecutive_failures = 0  # 리셋
+                raise RuntimeError("Max consecutive failures reached - returning to options")
         else:
-            console.print(f"\nRuntime error in workflow: {e}", style="bold red")
-            import traceback
-            traceback.print_exc()
-    except Exception as e:
-        # GraphRecursionError 체크
+            # 성공하면 카운터 리셋
+            if execution_status in ["success", "partial"]:
+                consecutive_failures = 0
+
+        return result_state
+
+    # Monkey patch (한 번만 설정)
+    workflow.invoke = monitored_invoke
+
+    # 메인 워크플로우 루프 - recursion limit 도달해도 계속 실행
+    while True:
         try:
-            from langgraph.errors import GraphRecursionError
-            is_recursion_error = isinstance(e, GraphRecursionError)
-        except ImportError:
+            final_state = workflow.invoke(current_state, config=config)
+
+            console.print("\n=== Workflow Completed ===", style="bold green")
+            break  # 정상 종료
+
+        except KeyboardInterrupt:
+            console.print("\n\nWorkflow interrupted by user.", style="bold yellow")
+            break  # 사용자 중단
+
+        except RuntimeError as e:
+            # GraphRecursionError는 RuntimeError를 상속하므로 먼저 체크
+            error_str = str(e).lower()
+            error_type = type(e).__name__
+
+            # 1. GraphRecursionError 체크 (먼저!)
             is_recursion_error = False
-        
-        if is_recursion_error or "recursion_limit" in str(e).lower() or "GraphRecursionError" in str(type(e).__name__):
-            console.print(f"\nRecursion limit (50) reached. Returning to option selection.", style="bold yellow")
-            console.print("You can continue with --continue (resets counters) or try a different approach.", style="cyan")
-            
-            # workflow를 다시 실행하여 option_input으로 돌아가기
-            console.print("\n=== Returning to option selection ===", style="bold magenta")
-            
             try:
-                # 현재 state를 최대한 보존하면서 workflow_step_count만 리셋
-                # initial_state를 복사하되, 기존 state의 중요한 정보는 유지
-                retry_state = initial_state.copy()
-                
-                # 기존 state에서 중요한 정보 유지 (challenge, binary_path, url 등)
-                if "challenge" in initial_state:
-                    retry_state["challenge"] = initial_state["challenge"]
-                if "binary_path" in initial_state:
-                    retry_state["binary_path"] = initial_state.get("binary_path", "")
-                if "url" in initial_state:
-                    retry_state["url"] = initial_state.get("url", "")
-                if "ctx" in initial_state:
-                    retry_state["ctx"] = initial_state["ctx"]
-                if "API_KEY" in initial_state:
-                    retry_state["API_KEY"] = initial_state["API_KEY"]
-                
-                # 옵션과 카운터 리셋
-                retry_state["option"] = ""  # 옵션을 비워서 다시 입력받도록
-                retry_state["workflow_step_count"] = 0  # step count 리셋
-                retry_state["iteration_count"] = 0  # iteration count도 리셋
-                
-                # 새로운 config로 workflow 재실행 (recursion_limit을 약간 늘려서 재시도)
-                retry_config = {
-                    "recursion_limit": 50,  # 다시 50으로 설정
-                    "max_failed_retries": 3,
-                    "enable_fallback": True
-                }
-                
-                # workflow를 다시 invoke
-                final_state = workflow.invoke(retry_state, config=retry_config)
-                console.print("\n=== Workflow Completed ===", style="bold green")
-                
-            except Exception as inner_e:
-                # 재귀 에러가 다시 발생하면 그냥 종료
-                inner_error_type = str(type(inner_e).__name__)
-                if "recursion_limit" in str(inner_e).lower() or "GraphRecursionError" in inner_error_type:
-                    console.print("\nRecursion limit reached again. Please restart the workflow manually.", style="bold red")
-                    console.print("  Tip: Consider using --continue earlier or breaking down the task into smaller steps.", style="yellow")
-                else:
-                    console.print(f"Error handling recursion limit: {inner_e}", style="bold red")
-                    import traceback
-                    traceback.print_exc()
-        else:
+                from langgraph.errors import GraphRecursionError
+                is_recursion_error = isinstance(e, GraphRecursionError)
+            except ImportError:
+                pass
+
+            if is_recursion_error or "recursion_limit" in error_str or "graphrecursionerror" in error_type.lower():
+                console.print(f"\n[!] Recursion limit (50) reached.", style="bold yellow")
+                console.print("Automatically continuing with --continue...\n", style="cyan")
+
+                # state 보존하면서 카운터만 리셋, --continue로 자동 계속 진행
+                current_state["option"] = "--continue"
+                current_state["workflow_step_count"] = 0
+                current_state["iteration_count"] = 0
+                consecutive_failures = 0
+
+                # 중요 정보 보존 확인
+                if "ctx" not in current_state or current_state["ctx"] is None:
+                    current_state["ctx"] = initial_state["ctx"]
+                if "API_KEY" not in current_state:
+                    current_state["API_KEY"] = initial_state["API_KEY"]
+
+                continue  # 루프 계속 - --continue로 자동 진행
+
+            # 2. Max consecutive failures 체크
+            elif "max consecutive failures" in error_str or "returning to options" in error_str:
+                console.print("\n=== Max failures reached. Continuing with --continue... ===", style="bold magenta")
+                # --continue로 자동 계속 진행
+                current_state["option"] = "--continue"
+                current_state["workflow_step_count"] = 0
+                current_state["iteration_count"] = 0
+                consecutive_failures = 0
+                continue  # 루프 계속
+
+            # 3. 그 외 RuntimeError
+            else:
+                console.print(f"\nRuntime error in workflow: {e}", style="bold red")
+                import traceback
+                traceback.print_exc()
+                break
+
+        except Exception as e:
+            # 그 외 모든 예외
             console.print(f"\nError in workflow: {e}", style="bold red")
             import traceback
             traceback.print_exc()
+            break
         
 if __name__ == "__main__":
     main()
