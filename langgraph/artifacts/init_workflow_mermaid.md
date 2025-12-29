@@ -7,7 +7,7 @@ config:
     curve: linear
 ---
 graph TD;
-	__start__([<p>__start__</p>]):::first
+	__start__(<p>__start__</p>)
 	CoT(CoT)
 	Cal(Cal)
 	tool_selection(tool_selection)
@@ -16,8 +16,9 @@ graph TD;
 	parsing(parsing)
 	track_update(track_update)
 	feedback(feedback)
+	exploit(exploit)
 	poc(poc)
-	__end__([<p>__end__</p>]):::last
+	__end__(<p>__end__</p>)
 	Cal --> tool_selection;
 	CoT --> Cal;
 	__start__ --> CoT;
@@ -25,6 +26,7 @@ graph TD;
 	feedback -. &nbsp;continue_planning&nbsp; .-> CoT;
 	feedback -. &nbsp;end&nbsp; .-> __end__;
 	multi_instruction --> execution;
+	parsing -. &nbsp;max_retries_reached&nbsp; .-> __end__;
 	parsing -. &nbsp;retry_instruction&nbsp; .-> multi_instruction;
 	parsing -. &nbsp;flag_detected&nbsp; .-> poc;
 	parsing -. &nbsp;success_continue&nbsp; .-> track_update;

@@ -31,22 +31,37 @@ def route_by_option(state: PlanningState) -> str:
     option = state.get("option", "")
     has_cot_result = bool(state.get("cot_result"))
 
+    # 이미 작업이 진행된 상태인지 확인
+    # cot_result가 있어야 실제 분석이 시작된 것 (auto_analysis의 facts는 초기 분석일 뿐)
+    has_progress = has_cot_result
+
     # 카테고리 확인
     challenge = state.get("challenge", [])
     category = ""
     if challenge and len(challenge) > 0:
         category = challenge[0].get("category", "").lower()
 
-    if not has_cot_result:
-        # 초기 실행: CoT가 아직 실행되지 않음
-        if option == "--help":
-            return "help"
-        elif option == "--ghidra":
-            # --ghidra는 pwnable/reversing에서만 허용
-            if category in ["pwnable", "reversing"]:
+    # --ghidra는 pwnable/reversing에서 초기에만 허용
+    if option == "--ghidra":
+        if category in ["pwnable", "reversing"]:
+            if not has_progress:
                 return "first_workflow"
             else:
-                return "invalid_category"
+                return "invalid_loop"  # 이미 진행 중이면 사용 불가
+        else:
+            return "invalid_category"
+
+    # --auto 모드: 자동으로 분석하고 해결 (초기에만 가능)
+    if option == "--auto":
+        if not has_progress:
+            return "auto_workflow"
+        else:
+            return "invalid_loop"  # 이미 진행 중이면 --continue 사용
+
+    if not has_progress:
+        # 초기 실행: 아직 아무 작업도 진행되지 않음
+        if option == "--help":
+            return "help"
         elif option == "--file" or option == "--discuss":
             return "first_workflow"
         elif option == "--quit":
@@ -59,30 +74,14 @@ def route_by_option(state: PlanningState) -> str:
         # 루프 실행: CoT가 이미 실행됨
         if option == "--help":
             return "help"
-        elif option in ["--discuss", "--continue"]:
+        elif option in ["--discuss", "--continue", "--file"]:
             return "loop_workflow"
         elif option == "--exploit":
             return "exploit_flow"
         elif option == "--quit":
             return "end"
-        elif option in ["--file", "--ghidra"]:
-            return "invalid_loop"
         else:
             return "invalid"
-
-def route_loop_option(state: PlanningState) -> str:
-    option = state.get("option", "")
-    
-    if option == "--help":
-        return "help"
-    elif option in ["--discuss", "--continue"]:
-        return "loop_workflow"
-    elif option == "--exploit":
-        return "exploit_flow"
-    elif option == "--quit":
-        return "end"
-    else:
-        return "invalid"
 
 def route_after_parsing(state: PlanningState) -> str:
     """
@@ -158,37 +157,11 @@ def route_after_parsing(state: PlanningState) -> str:
     has_errors = len(errors) > 0
 
     # === Exploit 자동 트리거 조건 체크 ===
-    # 충분한 증거가 모이면 자동으로 exploit 단계로 진행
-    exploit_trigger_types = {"offset", "leak", "crash", "oracle", "symbol", "proof"}
-    collected_signal_types = set()
-    for signal in signals:
-        signal_type = signal.get("type", "")
-        if signal_type in exploit_trigger_types:
-            collected_signal_types.add(signal_type)
-
-    # facts에서도 확인 (이미 검증된 사실들)
-    facts = state.get("facts", {})
-    if facts.get("rip_offset") or facts.get("ret_offset") or facts.get("buffer_offset"):
-        collected_signal_types.add("offset")
-    if facts.get("libc_base") or facts.get("pie_base") or facts.get("canary"):
-        collected_signal_types.add("leak")
-
-    # 3개 이상의 다른 증거 유형 수집 시 exploit 자동 트리거
-    EXPLOIT_TRIGGER_THRESHOLD = 3
-    iteration_count = state.get("iteration_count", 0)
-
-    if len(collected_signal_types) >= EXPLOIT_TRIGGER_THRESHOLD:
-        console.print(f"[Exploit Trigger] Sufficient evidence collected: {collected_signal_types}", style="bold magenta")
-        console.print("Automatically triggering exploit phase!", style="bold green")
-        state["option"] = "--exploit"  # exploit 모드로 전환
-        return "exploit_trigger"
-
-    # 반복 횟수가 5회 이상이고 최소 2개 증거가 있으면 exploit 시도
-    if iteration_count >= 5 and len(collected_signal_types) >= 2:
-        console.print(f"[Exploit Trigger] {iteration_count} iterations with {len(collected_signal_types)} signal types", style="bold magenta")
-        console.print("Attempting exploit due to iteration threshold!", style="bold yellow")
-        state["option"] = "--exploit"
-        return "exploit_trigger"
+    # 자동 exploit 트리거 비활성화 - 사용자가 명시적으로 --exploit 선택 필요
+    # exploit_trigger_types = {"offset", "leak", "crash", "oracle", "symbol", "proof"}
+    # collected_signal_types = set()
+    # ...
+    # 자동 트리거 로직 비활성화됨
 
     # execution_output에서 직접 쉘 출력 확인 (is_shell_acquired 함수 사용)
     execution_output = state.get("execution_output", "")
@@ -275,20 +248,12 @@ def route_after_feedback(state: PlanningState) -> str:
         return "end"
     
     # === Exploit Readiness 기반 자동 Exploit 트리거 ===
-    exploit_readiness = state.get("exploit_readiness", {})
-    exploit_score = exploit_readiness.get("score", 0.0)
-    recommend_exploit = exploit_readiness.get("recommend_exploit", False)
-
-    if recommend_exploit:
-        console.print(f"🎯 Exploit Readiness: {exploit_score:.0%} - Triggering exploitation phase!", style="bold green")
-        state["option"] = "--exploit"
-        return "exploit"
-
-    # 반복 횟수가 많고 점수가 어느 정도 되면 강제 exploit 시도
-    if iteration_count >= 5 and exploit_score >= 0.4:
-        console.print(f"⚡ Iteration {iteration_count} with {exploit_score:.0%} readiness - Forcing exploitation attempt!", style="bold yellow")
-        state["option"] = "--exploit"
-        return "exploit"
+    # 자동 exploit 트리거를 비활성화하고 사용자가 --exploit 옵션을 직접 선택하도록 함
+    # exploit_readiness = state.get("exploit_readiness", {})
+    # exploit_score = exploit_readiness.get("score", 0.0)
+    # recommend_exploit = exploit_readiness.get("recommend_exploit", False)
+    #
+    # 자동 exploit 트리거는 비활성화됨 - 사용자가 명시적으로 --exploit 선택 필요
 
     # 성공 조건 확인
     status = feedback_json.get("status", "")
@@ -348,71 +313,52 @@ def route_after_feedback(state: PlanningState) -> str:
     console.print("  Choose --continue to continue exploration, or try a different option.", style="cyan")
     return "end"
 
-def create_init_workflow():
-    graph = StateGraph(PlanningState)
+def route_after_exploit(state: PlanningState) -> str:
+    """
+    Exploit 실행 후 다음 단계 결정:
+    - 성공 (쉘 획득/플래그 감지): PoC 코드 생성으로 이동
+    - 실패: Planning으로 돌아가서 재시도
+    - 최대 재시도 도달: 종료
+    """
+    from rich.console import Console
+    console = Console()
 
-    graph.add_node("CoT", CoT_node)
-    graph.add_node("Cal", Cal_node)
-    graph.add_node("tool_selection", tool_selection_node)
-    graph.add_node("multi_instruction", multi_instruction_node)
-    graph.add_node("execution", execution_node)
-    graph.add_node("parsing", parsing_node)
-    graph.add_node("track_update", track_update_node)
-    graph.add_node("feedback", feedback_node)
-    graph.add_node("exploit", exploit_node)  # Exploit 노드 추가
-    graph.add_node("poc", poc_node)
+    execution_status = state.get("execution_status", "unknown")
+    flag_detected = state.get("flag_detected", False)
+    privilege_escalated = state.get("privilege_escalated", False)
 
-    graph.set_entry_point("CoT")
-    graph.add_edge("CoT", "Cal")
-    graph.add_edge("Cal", "tool_selection")
-    graph.add_edge("tool_selection", "multi_instruction")
-    graph.add_edge("multi_instruction", "execution")
-    graph.add_edge("execution", "parsing")
+    # 쉘 획득 확인
+    execution_output = state.get("execution_output", "")
+    has_shell = is_shell_acquired(execution_output)
 
-    # Parsing 결과에 따라 다음 단계 결정
-    graph.add_conditional_edges(
-        "parsing",
-        route_after_parsing,
-        {
-            "flag_detected": "poc",  # Flag 감지: PoC 코드 생성
-            "shell_acquired": "poc",  # 쉘 획득: PoC 코드 생성
-            "exploit_trigger": "exploit",  # 충분한 증거 수집: Exploit 자동 실행
-            "success_continue": "track_update",  # 성공: 결과 저장하고 Planning으로
-            "retry_instruction": "multi_instruction",  # 실패: Instruction 재설정
-            "max_retries_reached": END  # 최대 재시도 횟수 도달: 종료
-        }
-    )
+    # FLAG 감지 또는 쉘 획득 시 PoC 생성
+    if flag_detected or privilege_escalated or has_shell:
+        console.print("🎉 Exploit successful! Generating PoC code.", style="bold green")
+        return "poc"
 
-    # PoC 생성 후 종료
-    graph.add_edge("poc", END)
+    # 성공 상태이면 PoC 생성
+    if execution_status == "success":
+        console.print("✅ Exploit execution successful! Generating PoC code.", style="bold green")
+        return "poc"
 
-    graph.add_edge("track_update", "feedback")
+    # 재시도 횟수 확인
+    exploit_retry_count = state.get("exploit_retry_count", 0)
+    MAX_EXPLOIT_RETRIES = 3
 
-    # Feedback 후 Planning으로 돌아가거나, Exploit으로 전환하거나, 종료
-    graph.add_conditional_edges(
-        "feedback",
-        route_after_feedback,
-        {
-            "continue_planning": "CoT",  # Planning으로 돌아가서 더 깊이 파거나 새로운 방법 찾기
-            "exploit": "exploit",  # Exploit readiness가 충분하면 Exploit 페이즈로 전환
-            "end": END
-        }
-    )
+    if exploit_retry_count >= MAX_EXPLOIT_RETRIES:
+        console.print(f"❌ Maximum exploit retries ({MAX_EXPLOIT_RETRIES}) reached. Ending.", style="bold red")
+        return "end"
 
-    # Exploit 후 라우팅
-    graph.add_conditional_edges(
-        "exploit",
-        route_after_exploit,
-        {
-            "poc": "poc",
-            "retry": "CoT",
-            "end": END
-        }
-    )
+    # 재시도 횟수 증가
+    state["exploit_retry_count"] = exploit_retry_count + 1
+    console.print(f"⚠️ Exploit failed. Retrying (attempt {exploit_retry_count + 1}/{MAX_EXPLOIT_RETRIES}).", style="yellow")
+    return "retry"
 
-    return graph.compile()
-
-def create_loop_workflow():
+def _create_analysis_workflow():
+    """
+    분석 워크플로우 생성 (init_workflow와 loop_workflow에서 공통으로 사용)
+    CoT -> Cal -> tool_selection -> multi_instruction -> execution -> parsing -> ...
+    """
     graph = StateGraph(PlanningState)
 
     graph.add_node("CoT", CoT_node)
@@ -432,7 +378,7 @@ def create_loop_workflow():
     graph.add_edge("tool_selection", "multi_instruction")
     graph.add_edge("multi_instruction", "execution")
     graph.add_edge("execution", "parsing")
-    
+
     # Parsing 결과에 따라 다음 단계 결정
     graph.add_conditional_edges(
         "parsing",
@@ -440,7 +386,6 @@ def create_loop_workflow():
         {
             "flag_detected": "poc",  # Flag 감지: PoC 코드 생성
             "shell_acquired": "poc",  # 쉘 획득: PoC 코드 생성
-            "exploit_trigger": "exploit",  # 충분한 증거 수집: Exploit 자동 실행
             "success_continue": "track_update",  # 성공: 결과 저장하고 Planning으로
             "retry_instruction": "multi_instruction",  # 실패: Instruction 재설정
             "max_retries_reached": END  # 최대 재시도 횟수 도달: 종료
@@ -452,13 +397,12 @@ def create_loop_workflow():
 
     graph.add_edge("track_update", "feedback")
 
-    # Feedback 후 Planning으로 돌아가거나, Exploit으로 전환하거나, 종료
+    # Feedback 후 Planning으로 돌아가거나 종료
     graph.add_conditional_edges(
         "feedback",
         route_after_feedback,
         {
             "continue_planning": "CoT",  # Planning으로 돌아가서 더 깊이 파거나 새로운 방법 찾기
-            "exploit": "exploit",  # Exploit readiness가 충분하면 Exploit 페이즈로 전환
             "end": END
         }
     )
@@ -476,28 +420,98 @@ def create_loop_workflow():
 
     return graph.compile()
 
+# 하위 호환성을 위한 별칭
+def create_init_workflow():
+    return _create_analysis_workflow()
+
+def create_loop_workflow():
+    return _create_analysis_workflow()
+
+def _create_auto_workflow():
+    """
+    자동 워크플로우 생성 - LLM이 알아서 분석하고 해결
+    사용자 개입 없이 flag 획득 또는 max iteration까지 자동 진행
+    """
+    graph = StateGraph(PlanningState)
+
+    graph.add_node("CoT", CoT_node)
+    graph.add_node("Cal", Cal_node)
+    graph.add_node("tool_selection", tool_selection_node)
+    graph.add_node("multi_instruction", multi_instruction_node)
+    graph.add_node("execution", execution_node)
+    graph.add_node("parsing", parsing_node)
+    graph.add_node("track_update", track_update_node)
+    graph.add_node("feedback", feedback_node)
+    graph.add_node("exploit", exploit_node)
+    graph.add_node("poc", poc_node)
+
+    graph.set_entry_point("CoT")
+    graph.add_edge("CoT", "Cal")
+    graph.add_edge("Cal", "tool_selection")
+    graph.add_edge("tool_selection", "multi_instruction")
+    graph.add_edge("multi_instruction", "execution")
+    graph.add_edge("execution", "parsing")
+
+    # Parsing 결과에 따라 다음 단계 결정
+    graph.add_conditional_edges(
+        "parsing",
+        route_after_parsing,
+        {
+            "flag_detected": "poc",
+            "shell_acquired": "poc",
+            "success_continue": "track_update",
+            "retry_instruction": "multi_instruction",
+            "max_retries_reached": END
+        }
+    )
+
+    graph.add_edge("poc", END)
+    graph.add_edge("track_update", "feedback")
+
+    # Auto 모드: feedback 후 자동으로 계속 진행 (종료 조건까지)
+    graph.add_conditional_edges(
+        "feedback",
+        route_after_feedback,
+        {
+            "continue_planning": "CoT",
+            "end": END
+        }
+    )
+
+    graph.add_conditional_edges(
+        "exploit",
+        route_after_exploit,
+        {
+            "poc": "poc",
+            "retry": "CoT",
+            "end": END
+        }
+    )
+
+    return graph.compile()
+
 def create_main_workflow():
     workflow = StateGraph(PlanningState)
 
-    init_graph = create_init_workflow()
-    loop_graph = create_loop_workflow()
+    # init_workflow와 loop_workflow는 동일한 워크플로우 사용
+    analysis_graph = _create_analysis_workflow()
+    auto_graph = _create_auto_workflow()
 
-    workflow.add_node("init_workflow", init_graph)
-    workflow.add_node("loop_workflow", loop_graph)
+    workflow.add_node("init_workflow", analysis_graph)
+    workflow.add_node("loop_workflow", analysis_graph)
+    workflow.add_node("auto_workflow", auto_graph)
     workflow.add_node("help", help_node)
     workflow.add_node("option_input", option_input_node)
     workflow.add_node("exploit", exploit_node)
 
     workflow.set_entry_point("option_input")
-    
+
     workflow.add_edge("help", "option_input")
-    
     workflow.add_edge("init_workflow", "option_input")
-    
     workflow.add_edge("loop_workflow", "option_input")
-    
+    workflow.add_edge("auto_workflow", "option_input")
     workflow.add_edge("exploit", "option_input")
-    
+
     workflow.add_conditional_edges(
         "option_input",
         route_by_option,
@@ -505,6 +519,7 @@ def create_main_workflow():
             "help": "help",
             "first_workflow": "init_workflow",
             "loop_workflow": "loop_workflow",
+            "auto_workflow": "auto_workflow",
             "exploit_flow": "exploit",
             "end": END,
             "invalid": "help",
@@ -513,5 +528,5 @@ def create_main_workflow():
             "invalid_category": "help"
         }
     )
-    
+
     return workflow.compile()

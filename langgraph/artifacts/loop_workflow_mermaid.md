@@ -26,6 +26,7 @@ graph TD;
 	feedback -. &nbsp;continue_planning&nbsp; .-> CoT;
 	feedback -. &nbsp;end&nbsp; .-> __end__;
 	multi_instruction --> execution;
+	parsing -. &nbsp;max_retries_reached&nbsp; .-> __end__;
 	parsing -. &nbsp;retry_instruction&nbsp; .-> multi_instruction;
 	parsing -. &nbsp;flag_detected&nbsp; .-> poc;
 	parsing -. &nbsp;success_continue&nbsp; .-> track_update;

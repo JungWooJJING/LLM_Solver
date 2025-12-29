@@ -94,6 +94,19 @@ def CoT_node(state: State) -> State:
     elif option == "--discuss" or option == "--continue":
         user_input = state.get("user_input", "")
         CoT_query = build_query(option = option, code = user_input, state = state, plan = state.get("plan", {}), planning_context = planning_context)
+
+    elif option == "--auto":
+        # Auto 모드: 자동으로 분석 시작 (--file과 유사하게 처리)
+        user_input = state.get("user_input", "") or state.get("binary_path", "")
+        if tracks or facts or artifacts:
+            CoT_query = build_query(option = "--file", code = user_input, state = state, planning_context = planning_context)
+        else:
+            CoT_query = build_query(option = "--file", code = user_input, state = state)
+
+    else:
+        # 기본값: --continue로 처리
+        user_input = state.get("user_input", "")
+        CoT_query = build_query(option = "--continue", code = user_input, state = state, plan = state.get("plan", {}), planning_context = planning_context)
     
     # CoT Agent에 필요한 정보만 필터링
     filtered_state = get_state_for_cot(state)
@@ -1123,40 +1136,6 @@ def track_update_node(state: State) -> State:
     state["vulnerability_tracks"] = tracks
     
     console.print(f"=== Track Update Complete: {len(active_tracks)} active track(s) ===", style="bold green")
-    
-    return state
-
-def human_node(state: State) -> State:
-    ctx = state["ctx"]
-    core = ctx.core
-
-    # Multi-Track 모드인지 확인
-    multi_instructions = state.get("multi_instructions", [])
-    
-    if multi_instructions and len(multi_instructions) > 1:
-        # Multi-Track 모드: 여러 instruction 표시
-        console.print("=== Human Translation (Multi-Track) ===", style='bold green')
-        
-        for inst_data in multi_instructions:
-            track_id = inst_data["track_id"]
-            instruction_result = inst_data["instruction_result"]
-            
-            console.print(f"\n--- Track: {track_id} ---", style="bold cyan")
-            human_query = build_query(option="--human", Instruction=instruction_result)
-            human_return = ctx.parsing.Human__translation_run(prompt_query=human_query)
-            console.print(f"{human_return}", style='bold yellow')
-    else:
-        # 단일 instruction 모드
-        human_query = build_query(option="--human", Instruction=state.get("instruction_result", ""))
-
-        console.print("=== Human Translation ===", style='bold green')
-
-        human_return = ctx.parsing.Human__translation_run(prompt_query=human_query)
-
-        console.print(f"{human_return}", style='bold yellow')
-
-    console.print("\nShould we proceed like this? ", style="blue")
-    console.print("ex) yes, y || no, n ", style="blue", end="")
 
     return state
 
@@ -1709,24 +1688,24 @@ def feedback_node(state: State) -> State:
 
         # Exploit Readiness 정보 출력
         if score >= 0.6:
-            console.print(f"  🎯 Exploit Readiness: {score:.0%} (Priority: {priority})", style="bold green")
+            console.print(f" Exploit Readiness: {score:.0%} (Priority: {priority})", style="bold green")
         elif score >= 0.4:
-            console.print(f"  ⚡ Exploit Readiness: {score:.0%} (Building up...)", style="yellow")
+            console.print(f" Exploit Readiness: {score:.0%} (Building up...)", style="yellow")
         else:
-            console.print(f"  📊 Exploit Readiness: {score:.0%}", style="dim")
+            console.print(f" Exploit Readiness: {score:.0%}", style="dim")
 
         if recommend_exploit:
-            console.print("  ✅ RECOMMENDATION: Ready to exploit! Switch to exploitation phase.", style="bold green")
+            console.print(" RECOMMENDATION: Ready to exploit! Switch to exploitation phase.", style="bold green")
 
             # 부족한 항목 출력
             missing = exploit_readiness.get("missing_for_exploit", [])
             if missing:
-                console.print(f"  📝 Still helpful to have: {', '.join(missing[:3])}", style="dim")
+                console.print(f" Still helpful to have: {', '.join(missing[:3])}", style="dim")
         else:
             # 부족한 항목 출력
             missing = exploit_readiness.get("missing_for_exploit", [])
             if missing:
-                console.print(f"  📝 Missing for exploit: {', '.join(missing[:3])}", style="yellow")
+                console.print(f" Missing for exploit: {', '.join(missing[:3])}", style="yellow")
 
     # 진전도 체크 및 전략 변경 제안
     try:
@@ -1790,7 +1769,7 @@ def poc_node(state: State) -> State:
     
     # PoC 생성 이유 표시
     if privilege_escalated:
-        console.print(f"🔐 Privilege escalation detected: {privilege_evidence}", style="cyan")
+        console.print(f"Privilege escalation detected: {privilege_evidence}", style="cyan")
     elif detected_flag:
         console.print(f"Flag detected: {detected_flag}", style="cyan")
     
@@ -1957,36 +1936,12 @@ def exploit_node(state: State) -> State:
 
     return state
 
-def approval_node(state: State) -> State:
-    ctx = state["ctx"]
-    core = ctx.core
-
-    console.print("How would you like to proceed?", style="blue")
-    console.print("1) continue - Proceed with feedback", style="yellow")
-    console.print("2) restart - Start from the beginning", style="yellow")
-    console.print("3) end - Exit the program", style="yellow")
-    console.print("Enter your choice (1/2/3 or continue/restart/end): ", style="blue", end="")
-
-    select = input().strip().lower()
-
-    if select in ["1", "continue", "c", "yes", "y"]:
-        state["approval_choice"] = "continue"
-        state["user_approval"] = True
-    elif select in ["2", "restart", "r", "no", "n"]:
-        state["approval_choice"] = "restart"
-        state["user_approval"] = False
-    elif select in ["3", "end", "e", "quit", "q"]:
-        state["approval_choice"] = "end"
-        state["user_approval"] = False
-    else:
-        console.print("Invalid choice. Defaulting to continue.", style="yellow")
-        state["approval_choice"] = "continue"
-        state["user_approval"] = True
-
-    return state
-
 def help_node(state: State) -> State:
     has_cot_result = bool(state.get("cot_result"))
+
+    # 이미 작업이 진행된 상태인지 확인 (workflow.py의 has_progress와 동일한 조건)
+    # cot_result가 있어야 실제 분석이 시작된 것
+    has_progress = has_cot_result
 
     # 카테고리 확인
     challenge = state.get("challenge", [])
@@ -1994,17 +1949,19 @@ def help_node(state: State) -> State:
     if challenge and len(challenge) > 0:
         category = challenge[0].get("category", "").lower()
 
-    if not has_cot_result:
+    if not has_progress:
         # 초기 상태: 카테고리별 옵션
         if category == "web":
             console.print("=== Available Commands (Web Category - Initial) ===", style='bold yellow')
             console.print("--help : Display the available commands.", style="bold yellow")
+            console.print("--auto : Let LLM automatically analyze and solve the challenge.", style="bold green")
             console.print("--file : Analyze the source code to locate potential vulnerabilities.", style="bold yellow")
             console.print("--discuss : Discuss the approach with the LLM to set a clear direction.", style="bold yellow")
             console.print("--quit : Exit the program.", style="bold yellow")
         elif category in ["pwnable", "reversing"]:
             console.print(f"=== Available Commands ({category.capitalize()} Category - Initial) ===", style='bold yellow')
             console.print("--help : Display the available commands.", style="bold yellow")
+            console.print("--auto : Let LLM automatically analyze and solve the challenge.", style="bold green")
             console.print("--file : Paste the challenge source code to locate potential vulnerabilities.", style="bold yellow")
             console.print("--ghidra : Generate a plan based on decompiled and disassembled results.", style="bold yellow")
             console.print("--discuss : Discuss the approach with the LLM to set a clear direction.", style="bold yellow")
@@ -2012,25 +1969,25 @@ def help_node(state: State) -> State:
         else:
             console.print("=== Available Commands (Initial) ===", style='bold yellow')
             console.print("--help : Display the available commands.", style="bold yellow")
+            console.print("--auto : Let LLM automatically analyze and solve the challenge.", style="bold green")
             console.print("--file : Paste the challenge source code to locate potential vulnerabilities.", style="bold yellow")
             console.print("--discuss : Discuss the approach with the LLM to set a clear direction.", style="bold yellow")
             console.print("--quit : Exit the program.", style="bold yellow")
     else:
-        # CoT 결과 있음: 후속 옵션
+        # CoT 결과 있음: 후속 옵션 (--ghidra는 초기에만 가능)
         if category == "web":
             console.print("=== Available Commands (Web Category - After Analysis) ===", style='bold yellow')
-            console.print("--help : Display the available commands.", style="bold yellow")
-            console.print("--discuss : Discuss the approach with the LLM to set a clear direction.", style="bold yellow")
-            console.print("--continue : Continue using LLM with the latest feedback and proceed to the next step.", style="bold yellow")
-            console.print("--exploit : Receive an exploit script or detailed exploitation steps.", style="bold yellow")
-            console.print("--quit : Exit the program.", style="bold yellow")
+        elif category in ["pwnable", "reversing"]:
+            console.print(f"=== Available Commands ({category.capitalize()} Category - After Analysis) ===", style='bold yellow')
         else:
             console.print("=== Available Commands (After Initial Setup) ===", style='bold yellow')
-            console.print("--help : Display the available commands.", style="bold yellow")
-            console.print("--discuss : Discuss the approach with the LLM to set a clear direction.", style="bold yellow")
-            console.print("--continue : Continue using LLM with the latest feedback and proceed to the next step.", style="bold yellow")
-            console.print("--exploit : Receive an exploit script or detailed exploitation steps.", style="bold yellow")
-            console.print("--quit : Exit the program.", style="bold yellow")
+
+        console.print("--help : Display the available commands.", style="bold yellow")
+        console.print("--file : Analyze additional source code.", style="bold yellow")
+        console.print("--discuss : Discuss the approach with the LLM to set a clear direction.", style="bold yellow")
+        console.print("--continue : Continue using LLM with the latest feedback and proceed to the next step.", style="bold yellow")
+        console.print("--exploit : Receive an exploit script or detailed exploitation steps.", style="bold yellow")
+        console.print("--quit : Exit the program.", style="bold yellow")
 
     console.print("")
 
