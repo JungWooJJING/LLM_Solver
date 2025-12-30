@@ -87,7 +87,6 @@ class Core:
         pass
     
     def make_json_serializable(self, obj):
-        """직렬화 불가 객체를 제거하고 직렬화 가능한 형태로 변환"""
         import json
         
         if isinstance(obj, dict):
@@ -110,7 +109,6 @@ class Core:
                 return str(obj)
     
     def clean_state_for_json(self, state: Dict[str, Any]) -> Dict[str, Any]:
-        """State에서 JSON 직렬화 가능한 형태로 변환 (ctx 제외, track_tools 정리)"""
         # ctx 제외
         state_for_json = {k: v for k, v in state.items() if k != "ctx"}
         
@@ -132,9 +130,6 @@ class Core:
 
     
     def execute_instruction(self, instruction_json: dict) -> str:
-        """
-        Execute the instruction steps and return the results
-        """
         import subprocess
         from datetime import datetime
         from rich.console import Console
@@ -206,9 +201,6 @@ class Core:
         return json.dumps(results, ensure_ascii=False, indent=2)
     
     def update_state_with_parsing(self, state: dict, parsed_json: dict) -> dict:
-        """
-        Update state with parsed results
-        """
         from datetime import datetime
         
         # Update facts with new information
@@ -267,9 +259,6 @@ class Core:
         return state
     
     def check_milestone_completion(self, milestone: dict, parsed_json: dict) -> bool:
-        """
-        Check if a milestone's success criteria are met based on parsed results
-        """
         success_criteria = milestone.get("success_criteria", [])
         signals = parsed_json.get("signals", [])
         

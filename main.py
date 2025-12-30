@@ -7,10 +7,11 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from rich.console import Console
 
 from agent.planning import PlanningAgent
-from agent.instruction import InstructionAgent 
+from agent.instruction import InstructionAgent
 from agent.parsing import ParserAgent
 from agent.feedback import FeedbackAgent
 from agent.exploit import ExploitAgent
+from agent.detect import DetectAgent
 
 from utility.core_utility import Core
 from utility.auto_analysis import auto_analyze, format_analysis_summary
@@ -24,7 +25,6 @@ console = Console()
 
 
 def run_auto_analysis(category: str, state: dict) -> dict:
-    """카테고리별 자동 분석을 수행하고 결과를 state에 추가합니다."""
     console.print("\n[Auto-Analysis] Running initial analysis...", style="cyan")
 
     try:
@@ -83,7 +83,7 @@ def test_API_KEY():
             if choice == '1':
                 console.print("OpenAI API key will be used.", style='bold green')
                 api_key = openai_api_key
-                model = "gpt-4o"
+                model = "gpt-5.2"
                 break
             elif choice == '2':
                 console.print("Gemini API key will be used.", style='bold green')
@@ -97,7 +97,7 @@ def test_API_KEY():
     elif openai_api_key:
         console.print("Using OpenAI API key.", style='bold green')
         api_key = openai_api_key
-        model = "gpt-4o"
+        model = "gpt-5.2"
     # Gemini만 있으면 Gemini 사용
     elif gemini_api_key:
         console.print("Using Gemini API key.", style='bold green')
@@ -133,6 +133,7 @@ class AppContext:
         self.parsing = ParserAgent(api_key, model)
         self.feedback = FeedbackAgent(api_key, model)
         self.exploit = ExploitAgent(api_key, model)
+        self.detect = DetectAgent(api_key, model)
         self.core = core
 
 # === Setting: Initialize Context ===

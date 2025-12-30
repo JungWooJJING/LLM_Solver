@@ -26,13 +26,11 @@ except Exception as e:
 
 
 def find_entry_function(fm):
-    """첫 번째 진입점 함수를 찾습니다 (하위 호환성)"""
     entry_funcs = find_entry_functions(fm)
     return entry_funcs[0] if entry_funcs else None
 
 
 def find_entry_functions(fm):
-    """모든 진입점 함수들을 찾습니다 (main, entry, entry_point, _start 등)"""
     preferred = ["main", "entry", "entry_point", "_start"]
     funcs = list(fm.getFunctions(True))
     entry_funcs = []

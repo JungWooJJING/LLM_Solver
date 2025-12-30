@@ -12,7 +12,6 @@ console = Console()
 
 
 def hash_signals(signals: List[Dict]) -> str:
-    """signals 리스트를 해시로 변환"""
     if not signals:
         return "empty"
     signal_str = str(sorted([str(s) for s in signals]))
@@ -155,7 +154,6 @@ def get_alternative_strategies(category: str, current_vuln: str = "") -> List[st
 
 
 def format_stuck_message(state: Dict) -> str:
-    """막힘 상태일 때 표시할 메시지를 생성합니다."""
     progress = analyze_progress(state)
 
     if not progress["is_stuck"]:

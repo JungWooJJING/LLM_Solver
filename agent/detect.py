@@ -1,7 +1,6 @@
 import json
 
 from templates.prompting import CTFSolvePrompt
-from utility.core_utility import Core
 from openai import OpenAI
 import warnings
 warnings.filterwarnings("ignore", category=FutureWarning)
@@ -14,9 +13,7 @@ except ImportError:
     genai = None
     types = None
 
-core = Core()
-
-class ExploitAgent:
+class DetectAgent:
     def __init__(self, api_key: str, model: str = "gpt-5.2"):
         self.api_key = api_key
         self.model = model
@@ -34,6 +31,7 @@ class ExploitAgent:
             raise ValueError(f"Invalid model: {model}. Supported: gpt-5.2, gemini-1.5-flash, gemini-1.5-flash-latest, gemini-3-flash-preview")
 
     def _call_gemini(self, system_instruction: str, user_content: str):
+        """새로운 google-genai SDK를 사용한 Gemini API 호출"""
         from google.genai import types
 
         config = types.GenerateContentConfig(
@@ -47,50 +45,16 @@ class ExploitAgent:
         )
         return response.text
 
-    def exploit_run(self, prompt_query: str):
-        prompt_exploit = [
-            {"role": "developer", "content": CTFSolvePrompt.exploit_prompt},
-        ]
-
-        state = core.load_json("state.json", default="")
-
-        state_msg = {"role": "developer", "content": "[STATE]\n" + json.dumps(state, ensure_ascii=False)}
-        user_msg = {"role": "user", "content": prompt_query}
-
-        call_msgs = prompt_exploit + [state_msg, user_msg]
-
-        if self.is_gemini:
-            # 새로운 google-genai SDK 사용
-            system_parts = []
-            user_parts = []
-
-            for msg in call_msgs:
-                role = msg.get("role", "user")
-                content_text = msg.get("content", "")
-                if role == "developer" or role == "system":
-                    system_parts.append(content_text)
-                elif role == "user":
-                    user_parts.append(content_text)
-
-            system_instruction = "\n\n".join(system_parts) if system_parts else None
-            user_content = "\n\n".join(user_parts) if user_parts else ""
-
-            return self._call_gemini(system_instruction, user_content)
-        else:
-            res = self.client.chat.completions.create(model=self.model, messages=call_msgs)
-            return res.choices[0].message.content
-
-    def poc_run(self, prompt_query: str):
-        prompt_poc = [
-            {"role": "developer", "content": CTFSolvePrompt.poc_prompt},
+    def detect_run(self, prompt_query: str):
+        detect_prompt = [
+            {"role": "developer", "content": CTFSolvePrompt.detect_prompt},
         ]
 
         user_msg = {"role": "user", "content": prompt_query}
 
-        call_msgs = prompt_poc + [user_msg]
+        call_msgs = detect_prompt + [user_msg]
 
         if self.is_gemini:
-            # 새로운 google-genai SDK 사용
             system_parts = []
             user_parts = []
 

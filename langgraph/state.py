@@ -3,13 +3,6 @@ from typing import TypedDict, List, Dict, Any, Literal
 from typing_extensions import Annotated
 
 class Plan(TypedDict):
-    """
-    계획 저장 및 관리
-    - 계획 수립 결과 (CoT, Cal, Instruction)
-    - 이전 계획 이력
-    - 계획 성공 여부 및 진행도
-    - 트랙 관리
-    """
     # 현재 계획
     cot_result: str
     cot_json: Dict[str, Any]  # {"candidates": [...]}
@@ -44,12 +37,6 @@ class Plan(TypedDict):
 
 
 class State(TypedDict):
-    """
-    타겟에 대한 정보 및 실행 결과
-    - 타겟 정보 (challenge, binary, URL 등)
-    - 보호 기법 (checksec, mitigations 등)
-    - 실행해서 얻은 정보 (facts, artifacts, signals, results)
-    """
     # 타겟 정보
     challenge: List[Dict[str, Any]]  # Challenge 정보 (category, flag format 등)
     binary_path: str  # 바이너리 경로
@@ -110,13 +97,6 @@ class State(TypedDict):
 
 
 class Context(TypedDict):
-    """
-    컨텍스트 및 제어 정보
-    - 사용자 입력 및 옵션
-    - 환경 설정 및 제약
-    - 제어 플래그
-    - 시스템 컨텍스트
-    """
     # 사용자 입력
     user_input: str
     option: str  # "--file", "--ghidra", "--discuss", "--continue" 등
@@ -140,24 +120,13 @@ class Context(TypedDict):
 
 
 class PlanningState(Plan, State, Context):
-    """
-    통합 State: Plan + State + Context
-    
-    LangGraph의 StateGraph는 단일 TypedDict를 요구하므로,
-    Plan, State, Context를 다중 상속하여 통합 State를 구성합니다.
-    
-    TypedDict의 다중 상속은 모든 부모 클래스의 필드를 자동으로 합칩니다.
-    따라서 필드를 명시적으로 나열할 필요가 없습니다.
-    """
     # Plan의 모든 필드 + State의 모든 필드 + Context의 모든 필드
     # = 모든 필드가 자동으로 상속됨
+    pass
 
 
 # === State 접근 헬퍼 함수 ===
 def get_plan(state: PlanningState) -> Dict[str, Any]:
-    """
-    Plan 부분만 추출
-    """
     return {
         "cot_result": state.get("cot_result", ""),
         "cot_json": state.get("cot_json", {}),
@@ -185,9 +154,6 @@ def get_plan(state: PlanningState) -> Dict[str, Any]:
 
 
 def get_state(state: PlanningState) -> Dict[str, Any]:
-    """
-    State 부분만 추출
-    """
     return {
         "challenge": state.get("challenge", []),
         "binary_path": state.get("binary_path", ""),
@@ -220,9 +186,6 @@ def get_state(state: PlanningState) -> Dict[str, Any]:
 
 
 def get_context(state: PlanningState) -> Dict[str, Any]:
-    """
-    Context 부분만 추출
-    """
     return {
         "user_input": state.get("user_input", ""),
         "option": state.get("option", ""),
@@ -240,16 +203,6 @@ def get_context(state: PlanningState) -> Dict[str, Any]:
 
 # === Agent별 필요한 정보만 추출하는 함수 ===
 def get_state_for_cot(state: PlanningState) -> Dict[str, Any]:
-    """
-    CoT Agent에 필요한 정보만 추출
-    - 타겟 정보 (challenge, binary_path, url)
-    - 보호 기법 (protections, mitigations)
-    - 기존 트랙 요약 (vulnerability_tracks의 핵심 정보만)
-    - 발견된 사실 (facts)
-    - 생성된 아티팩트 (artifacts)
-    - 최근 실행 결과 (results의 최근 항목만)
-    - 제약 조건 (constraints)
-    """
     tracks = state.get("vulnerability_tracks", {})
     results = state.get("results", [])
     
@@ -287,12 +240,6 @@ def get_state_for_cot(state: PlanningState) -> Dict[str, Any]:
 
 
 def get_state_for_cal(state: PlanningState) -> Dict[str, Any]:
-    """
-    Cal Agent에 필요한 정보만 추출
-    - CoT 결과 (cot_result, cot_json)
-    - 타겟 정보 (challenge)
-    - 제약 조건 (constraints)
-    """
     return {
         "cot_result": state.get("cot_result", ""),
         "cot_json": state.get("cot_json", {}),
@@ -302,18 +249,6 @@ def get_state_for_cal(state: PlanningState) -> Dict[str, Any]:
 
 
 def get_state_for_instruction(state: PlanningState) -> Dict[str, Any]:
-    """
-    Instruction Agent에 필요한 정보만 추출
-    - CoT/Cal 결과 (cot_json, cal_json)
-    - 타겟 정보 (challenge, binary_path, url)
-    - 보호 기법 (protections, mitigations)
-    - 발견된 사실 (facts)
-    - 생성된 아티팩트 (artifacts)
-    - 제약 조건 (constraints)
-    - 현재 트랙 정보 (current_track, selected)
-    - 이미 실행한 명령어 (seen_cmd_hashes) - 중복 방지
-    - 실행 결과 (execution_results) - 이전 실행 내용 참고
-    """
     return {
         # 계획 결과
         "cot_json": state.get("cot_json", {}),
@@ -351,13 +286,6 @@ def get_state_for_instruction(state: PlanningState) -> Dict[str, Any]:
 
 
 def get_state_for_parsing(state: PlanningState) -> Dict[str, Any]:
-    """
-    Parsing Agent에 필요한 정보만 추출
-    - 실행 결과 (execution_results, execution_output, execution_status)
-    - 타겟 정보 (challenge, binary_path)
-    - 보호 기법 (protections)
-    - 기존 사실 (facts)
-    """
     return {
         "execution_results": state.get("execution_results", {}),
         "execution_output": state.get("execution_output", ""),
@@ -370,13 +298,6 @@ def get_state_for_parsing(state: PlanningState) -> Dict[str, Any]:
 
 
 def get_state_for_feedback(state: PlanningState) -> Dict[str, Any]:
-    """
-    Feedback Agent에 필요한 정보만 추출
-    - 실행 결과 (execution_results, execution_status, parsing_result)
-    - 계획 정보 (cot_json, cal_json, instruction_json)
-    - 발견된 정보 (facts, artifacts, signals)
-    - 타겟 정보 (challenge)
-    """
     return {
         "execution_results": state.get("execution_results", {}),
         "execution_status": state.get("execution_status", ""),
@@ -392,12 +313,28 @@ def get_state_for_feedback(state: PlanningState) -> Dict[str, Any]:
     }
 
 
+def get_state_for_detect(state: PlanningState) -> Dict[str, Any]:
+    return {
+        "feedback_result": state.get("feedback_result", ""),
+        "feedback_json": state.get("feedback_json", {}),
+        "exploit_result": state.get("exploit_result", ""),
+        "execution_results": state.get("execution_results", {}),
+        "execution_status": state.get("execution_status", ""),
+        "parsing_result": state.get("parsing_result", ""),
+        "signals": state.get("signals", []),
+        "facts": state.get("facts", {}),
+        "artifacts": state.get("artifacts", {}),
+        "vulnerability_tracks": state.get("vulnerability_tracks", {}),
+        "flag_detected": state.get("flag_detected", False),
+        "detected_flag": state.get("detected_flag", ""),
+        "privilege_escalated": state.get("privilege_escalated", False),
+        "challenge": state.get("challenge", []),
+        "exploit_readiness": state.get("exploit_readiness", {}),
+    }
+
+
 # === 공통 유틸리티 함수 ===
 def is_shell_acquired(text: str) -> bool:
-    """
-    쉘 획득 여부를 엄격하게 검증
-    여러 신호를 조합하여 false positive를 방지
-    """
     import re
 
     if not text:

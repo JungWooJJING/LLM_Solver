@@ -13,8 +13,6 @@ console = Console()
 
 
 class ParallelExplorer:
-    """병렬 취약점 탐색기"""
-
     def __init__(self, max_workers: int = 3, timeout: int = 60):
         """
         Args:
@@ -168,7 +166,6 @@ def select_best_candidate(
 
 
 def should_explore_parallel(cal_results: List[Dict]) -> bool:
-    """병렬 탐색이 유용한지 판단합니다."""
     if len(cal_results) < 2:
         return False
 

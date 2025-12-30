@@ -13,15 +13,25 @@ STATE_SPEC = (
 
 def build_query(option: str, code: str = "", state = None, CoT = None, Cal = None, plan = None, Instruction = None, planning_context = None, available_tools = None, tool_category = None, fallback_mode = None):
     if option == "--file":
+        import json
+        tools_info = ""
+        if available_tools:
+            tools_info = (
+                "\n### AVAILABLE_TOOLS:\n{tools}\n\n"
+                "Select tools from this list for your recommended_tools field.\n"
+            ).format(tools=json.dumps(available_tools, indent=2, ensure_ascii=False) if isinstance(available_tools, list) else available_tools)
+
         prompt = (
             "You are a planning assistant for CTF automation.\n\n"
             "You will be given the content of a file related to a CTF challenge "
             "(e.g., source code, binary disassembly, script, or captured data).\n"
             "Do NOT solve or exploit. Propose several DISTINCT next-step investigative/preparatory actions for the very next cycle.\n\n"
             "[File Content]\n{code}\n\n"
+            "{tools_info}"
             "Generate {expand_k} distinct candidates.\n"
             "For each candidate:\n"
             "- Provide a short Chain-of-Thought (3–5 sentences) explaining WHY this step is useful, HOW to attempt it, and WHAT evidence/artifacts it may produce.\n"
+            "- Select recommended_tools from AVAILABLE_TOOLS that you will need for this approach.\n"
             "- Extract a one-line actionable 'thought' (imperative, deterministic).\n"
             "- List expected artifacts, required tools/permissions, a brief risk note, and estimated cost.\n"
             "- Avoid trivial variations and duplicates.\n\n"
@@ -33,24 +43,35 @@ def build_query(option: str, code: str = "", state = None, CoT = None, Cal = Non
             '      "vuln": "Stack BOF | SQLi | SSTI ...",\n'
             '      "why": "concrete evidence ≤120 chars",\n'
             '      "cot_now": "2–4 sentences on immediate plan & rationale",\n'
+            '      "recommended_tools": ["tool1", "tool2"],\n'
             '      "tasks": [{{"name":"short label","cmd":"exact terminal command","success":"substring or re:<regex>","artifact":"- or filename"}}],\n'
             '      "expected_signals": [{{"type":"leak|crash|offset|mitigation|other","name":"e.g., canary|libc_base|rip_offset","hint":"existence/value/format"}}]\n'
             "    }}\n"
             "  ]\n"
             "}}\n"
-        ).format(code=code, expand_k=expand_k)
+        ).format(code=code, expand_k=expand_k, tools_info=tools_info)
         return prompt
 
     elif option == "--ghidra":
+        import json
+        tools_info = ""
+        if available_tools:
+            tools_info = (
+                "\n### AVAILABLE_TOOLS:\n{tools}\n\n"
+                "Select tools from this list for your recommended_tools field.\n"
+            ).format(tools=json.dumps(available_tools, indent=2, ensure_ascii=False) if isinstance(available_tools, list) else available_tools)
+
         prompt = (
             "You are a planning assistant for CTF automation using Ghidra outputs.\n\n"
             "You will be given per-function artifacts from Ghidra (function name, decompiled C, disassembly, xrefs, strings).\n"
             "Do NOT solve or exploit. Propose several DISTINCT next-step investigative/preparatory actions for the very next cycle.\n\n"
             "[Ghidra Functions]\n{code}\n\n"
+            "{tools_info}"
             "Generate {expand_k} distinct candidates.\n"
             "For each candidate:\n"
             "- Read BOTH decompiled C and assembly. Cite concrete code terms (API names, addresses, stack var sizes, strcpy/gets/printf, malloc/free, read/write, format usage, bounds, canary save/check).\n"
             "- Provide a short Chain-of-Thought (3–5 sentences) explaining WHY this step is useful, HOW to attempt it, and WHAT evidence/artifacts it may produce.\n"
+            "- Select recommended_tools from AVAILABLE_TOOLS that you will need for this approach.\n"
             "- Extract a one-line actionable 'thought' (imperative, deterministic).\n"
             "- Prefer safe, low-cost probes. Avoid trivial variations and duplicates.\n\n"
             "Return ONLY valid JSON (no markdown, no code fences, no prose). If invalid, return {{\"error\":\"BAD_OUTPUT\"}}.\n"
@@ -62,51 +83,48 @@ def build_query(option: str, code: str = "", state = None, CoT = None, Cal = Non
             '      "vuln": "Stack BOF | FmtStr | UAF | OOB | …",\n'
             '      "why": "e.g., \\"strcpy@plt 0x40123a\\", \\"[rbp-0x40] buf\\", \\"no length check before read()\\"",\n'
             '      "cot_now": "2–4 sentences on immediate plan & rationale",\n'
+            '      "recommended_tools": ["tool1", "tool2"],\n'
             '      "tasks": [{{"name":"short label","cmd":"exact terminal command","success":"substring or re:<regex>","artifact":"- or filename"}}],\n'
             '      "expected_signals": [{{"type":"leak|crash|offset|mitigation|symbol|other","name":"e.g., canary|rip_offset|libc_base","hint":"existence/value/format"}}]\n'
             "    }}\n"
             "  ]\n"
             "}}\n"
-        ).format(code=code, expand_k=expand_k)
+        ).format(code=code, expand_k=expand_k, tools_info=tools_info)
         return prompt
 
     elif option == "--Cal":
+        import json
+        tools_info = ""
+        if available_tools:
+            tools_info = (
+                "\n### AVAILABLE_TOOLS:\n{tools}\n\n"
+            ).format(tools=json.dumps(available_tools, indent=2, ensure_ascii=False) if isinstance(available_tools, list) else available_tools)
+
         prompt = (
             "### STATE SPEC:\n{state_spec}\n\n"
             "### STATE:\n{state}\n\n"
+            "{tools_info}"
             "### CoT:\n{CoT}"
-        ).format(state_spec=STATE_SPEC, state=state, CoT=CoT)
+        ).format(state_spec=STATE_SPEC, state=state, CoT=CoT, tools_info=tools_info)
         return prompt
     
     elif option == "--instruction" or option == "--instruction_fallback":
         import json
 
-        # 도구 정보 추가
+        # 도구 정보 추가 (새로운 방식: available_tools만 있으면 됨)
         tools_info = ""
-        if available_tools and tool_category:
+        if available_tools:
             tools_info = (
-                "\n### AVAILABLE TOOLS (MUST USE):\n"
-                "Tool Category: {tool_category}\n"
-                "Available Tool Functions: {tool_names}\n\n"
-                "CRITICAL INSTRUCTIONS FOR TOOL USAGE:\n"
-                "- You MUST use the available tool functions from {tool_category}_tool when generating commands.\n"
-                "- ALL available tools should be considered and used when appropriate for the task.\n"
-                "- Tool functions are structured and provide better results than raw shell commands.\n"
-                "- If a tool function is available for your task, you MUST use it instead of raw commands.\n"
-                "- Review ALL tool functions and use multiple tools if needed to complete the task comprehensively.\n"
-                "- Do NOT skip available tools - use them to gather maximum information.\n"
-                "- Tool function names: {tool_names}\n\n"
+                "\n### AVAILABLE_TOOLS:\n{tool_names}\n\n"
+                "TOOL SELECTION:\n"
+                "- Review the CoT candidate's recommended_tools\n"
+                "- Select only the tools needed for THIS step from AVAILABLE_TOOLS\n"
+                "- Include selected tools in 'use_tools' field in output\n\n"
                 "TOOL CALL FORMAT:\n"
-                "- When using a tool function, use Python function call syntax in the 'cmd' field:\n"
-                "  Example: ghidra_decompile(binary_path='/path/to/binary', function_address='0x4019a6')\n"
-                "  Example: checksec_analysis(binary_path='/path/to/binary')\n"
-                "  Example: rop_gadget_search(binary_path='/path/to/binary', search_pattern='pop rdi')\n"
-                "- DO NOT use shell command format like 'ghidra_decompile /path/to/binary 0x4019a6'\n"
-                "- DO NOT use command-line flags like 'ghidra_decompile --binary /path/to/binary --address 0x4019a6'\n"
-                "- Use keyword arguments with proper parameter names from the tool schema.\n"
-                "- For regular shell commands (not tool functions), use normal POSIX shell format.\n\n"
+                "- When using a tool, set 'tool' field to the tool name\n"
+                "- Use Python function call syntax in 'cmd': tool_name(param1='value1')\n"
+                "- For shell commands, set 'tool' to 'shell' and use normal bash syntax\n\n"
             ).format(
-                tool_category=tool_category,
                 tool_names=json.dumps(available_tools, indent=2, ensure_ascii=False)
             )
 
@@ -237,11 +255,20 @@ def build_query(option: str, code: str = "", state = None, CoT = None, Cal = Non
         return prompt
 
     elif option == "--plan":
+        import json
+        tools_info = ""
+        if available_tools:
+            tools_info = (
+                "\n### AVAILABLE_TOOLS:\n{tools}\n\n"
+                "Select tools from this list for your recommended_tools field.\n"
+            ).format(tools=json.dumps(available_tools, indent=2, ensure_ascii=False) if isinstance(available_tools, list) else available_tools)
+
         prompt = (
         "You are a planning assistant for CTF automation using Ghidra outputs and run-state context.\n\n"
         "Inputs:\n"
         "[plan.json]\n{plan}\n\n"
         "[state.json]\n{state}\n\n"
+        "{tools_info}"
         "Role:\n"
         "- Do NOT solve or exploit.\n"
         "- Propose DISTINCT next-step investigative/preparatory actions for the NEXT cycle only.\n"
@@ -251,6 +278,7 @@ def build_query(option: str, code: str = "", state = None, CoT = None, Cal = Non
         "- Generate {expand_k} distinct candidates.\n"
         "- For each candidate, read BOTH decompiled C and assembly. Cite concrete terms: exact APIs, addresses, stack var sizes, strcpy/gets/printf, malloc/free, read/write, format usage, bounds, canary save/check.\n"
         "- Provide a short Chain-of-Thought (3–5 sentences) explaining WHY this step is useful, HOW to attempt it, and WHAT evidence/artifacts it may produce; reference prior signals/results from state.json where relevant.\n"
+        "- Select recommended_tools from AVAILABLE_TOOLS for each approach.\n"
         "- Extract a one-line actionable 'thought' (imperative, deterministic) aligned with constraints.\n"
         "- Prefer safe, low-cost probes. Avoid trivial variations and duplicates. If two ideas overlap, keep the higher information gain.\n\n"
         "Output:\n"
@@ -263,12 +291,13 @@ def build_query(option: str, code: str = "", state = None, CoT = None, Cal = Non
         '      "vuln": "Stack BOF | FmtStr | UAF | OOB | …",\n'
         '      "why": "e.g., \\"strcpy@plt 0x40123a\\", \\"[rbp-0x40] buf\\", \\"no length check before read()\\"",\n'
         '      "cot_now": "2–4 sentences on immediate plan & rationale",\n'
+        '      "recommended_tools": ["tool1", "tool2"],\n'
         '      "tasks": [{{"name":"short label","cmd":"exact terminal command","success":"substring or re:<regex>","artifact":"- or filename"}}],\n'
         '      "expected_signals": [{{"type":"leak|crash|offset|mitigation|symbol|other","name":"e.g., canary|rip_offset|libc_base","hint":"existence/value/format"}}]\n'
         "    }}\n"
         "  ]\n"
         "}}\n"
-        ).format(code=code, plan=plan, state=state, expand_k=expand_k)
+        ).format(code=code, plan=plan, state=state, expand_k=expand_k, tools_info=tools_info)
         return prompt
         
     elif option == "--discuss" or option == "--continue":
@@ -293,7 +322,15 @@ def build_query(option: str, code: str = "", state = None, CoT = None, Cal = Non
                 generated_artifacts=json.dumps(planning_context.get("generated_artifacts", []), indent=2, ensure_ascii=False),
                 recent_results=json.dumps(planning_context.get("recent_results", []), indent=2, ensure_ascii=False)
             )
-        
+
+        # 도구 정보 추가
+        tools_info = ""
+        if available_tools:
+            tools_info = (
+                "\n### AVAILABLE_TOOLS:\n{tools}\n\n"
+                "Select tools from this list for your recommended_tools field.\n"
+            ).format(tools=json.dumps(available_tools, indent=2, ensure_ascii=False) if isinstance(available_tools, list) else available_tools)
+
         prompt = (
             "You are a planning assistant for CTF automation.\n\n"
             "You will be given free-form user input about a CTF target (symptoms, logs, code snippets, ideas).\n"
@@ -302,9 +339,11 @@ def build_query(option: str, code: str = "", state = None, CoT = None, Cal = Non
             "{plan_block}"
             "{state_block}"
             "{context_info}"
+            "{tools_info}"
             "Rules:\n"
             "- Ground every proposal in the provided input (and plan/state if present).\n"
             "- Respect constraints in state.json.constraints and avoid repeating steps in plan.json.runs.\n"
+            "- Select recommended_tools from AVAILABLE_TOOLS for each approach.\n"
             "- Prefer safe, low-cost probes; avoid trivial variations and duplicates.\n\n"
             "Generate {expand_k} distinct candidates.\n"
             "Return ONLY valid JSON (no markdown, no code fences, no prose). If invalid, return {{\"error\":\"BAD_OUTPUT\"}}.\n"
@@ -315,6 +354,7 @@ def build_query(option: str, code: str = "", state = None, CoT = None, Cal = Non
             '      "vuln": "Stack BOF | SQLi | SSTI | UAF | OOB | IDOR | …",\n'
             '      "why": "concrete evidence ≤120 chars",\n'
             '      "cot_now": "2–4 sentences on immediate plan & rationale",\n'
+            '      "recommended_tools": ["tool1", "tool2"],\n'
             '      "tasks": [{{"name":"short label","cmd":"exact terminal command","success":"substring or re:<regex>","artifact":"- or filename"}}],\n'
             '      "expected_signals": [{{"type":"leak|crash|offset|mitigation|symbol|other","name":"e.g., canary|libc_base|rip_offset","hint":"existence/value/format"}}]\n'
             "    }}\n"
@@ -329,6 +369,7 @@ def build_query(option: str, code: str = "", state = None, CoT = None, Cal = Non
             state_block=(
                 "[state.json]\n{state}\n\n".format(state=state) if state else ""
             ),
+            tools_info=tools_info,
             context_info=context_info
         )
         return prompt

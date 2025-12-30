@@ -101,7 +101,6 @@ def visualize_workflow(workflow, name="Workflow", output_format="mermaid"):
         console.print(traceback.format_exc(), style="dim")
 
 def main():
-    """메인 함수"""
     console.print("\n=== LangGraph Workflow Visualizer ===", style="bold magenta")
     
     # 출력 형식 선택

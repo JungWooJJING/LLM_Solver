@@ -19,13 +19,15 @@ except Exception as e:
 
 from openai import OpenAI
 import warnings
-# google.generativeai FutureWarning 억제
-warnings.filterwarnings("ignore", category=FutureWarning, message=".*google.generativeai.*")
+warnings.filterwarnings("ignore", category=FutureWarning)
 
+# 새로운 google-genai SDK 사용
 try:
-    import google.generativeai as genai
+    from google import genai
+    from google.genai import types
 except ImportError:
     genai = None
+    types = None
 
 from templates.prompting import CTFSolvePrompt
 from rich.console import Console
@@ -62,7 +64,6 @@ DEFAULT_PLAN = {
 
 
 def build_dynamic_prompt_CoT(category: str, description: str = "", signals: list = None):
-    """카테고리와 컨텍스트에 맞는 동적 프롬프트를 생성합니다."""
     # 기본 시스템 프롬프트
     base_prompt = CTFSolvePrompt.planning_prompt_CoT
 
@@ -81,7 +82,6 @@ def build_dynamic_prompt_CoT(category: str, description: str = "", signals: list
 
 
 def build_dynamic_plan_CoT(category: str, description: str = "", signals: list = None):
-    """카테고리와 컨텍스트에 맞는 동적 plan 프롬프트를 생성합니다."""
     base_prompt = CTFSolvePrompt.plan_CoT
 
     category_hints = get_category_hints(category)
@@ -99,18 +99,32 @@ class PlanningAgent:
     def __init__(self, api_key: str, model: str):
         self.api_key = api_key
         self.model = model
-        
-        if model == "gpt-4o":
+
+        if model == "gpt-5.2":
             self.client = OpenAI(api_key=api_key)
             self.is_gemini = False
-        elif model == "gemini-1.5-flash" or model == "gemini-1.5-flash-latest" or model == "gemini-3-flash-preview":
+        elif model in ["gemini-1.5-flash", "gemini-1.5-flash-latest", "gemini-3-flash-preview"]:
             if genai is None:
-                raise ImportError("google-generativeai package is required for Gemini. Install with: pip install google-generativeai")
-            genai.configure(api_key=api_key)
-            self.client = genai.GenerativeModel(model)
+                raise ImportError("google-genai package is required for Gemini. Install with: pip install google-genai")
+            self.client = genai.Client(api_key=api_key)
+            self.gemini_model = model
             self.is_gemini = True
         else:
-            raise ValueError(f"Invalid model: {model}. Supported: gpt-4o, gemini-1.5-flash, gemini-1.5-flash-latest, gemini-3-flash-preview")
+            raise ValueError(f"Invalid model: {model}. Supported: gpt-5.2, gemini-1.5-flash, gemini-1.5-flash-latest, gemini-3-flash-preview")
+
+    def _call_gemini(self, system_instruction: str, user_content: str):
+        from google.genai import types
+
+        config = types.GenerateContentConfig(
+            system_instruction=system_instruction if system_instruction else None,
+        )
+
+        response = self.client.models.generate_content(
+            model=self.gemini_model,
+            contents=user_content,
+            config=config
+        )
+        return response.text
         
         
     def run_CoT(self, prompt_query: str, ctx, state: dict = None):
@@ -138,21 +152,21 @@ class PlanningAgent:
 
         try:
             if self.is_gemini:
-                # Gemini API 호출 - 시스템 프롬프트와 대화 분리
+                # 새로운 google-genai SDK 사용
                 system_parts = []
                 user_parts = []
                 assistant_parts = []
-                
+
                 for msg in call_msgs:
                     role = msg.get("role", "user")
-                    content = msg.get("content", "")
+                    content_text = msg.get("content", "")
                     if role == "developer" or role == "system":
-                        system_parts.append(content)
+                        system_parts.append(content_text)
                     elif role == "user":
-                        user_parts.append(content)
+                        user_parts.append(content_text)
                     elif role == "assistant":
-                        assistant_parts.append(content)
-                
+                        assistant_parts.append(content_text)
+
                 system_instruction = "\n\n".join(system_parts) if system_parts else None
                 # 대화 형식으로 변환 (few-shot 예제 포함)
                 conversation_text = ""
@@ -160,21 +174,9 @@ class PlanningAgent:
                     conversation_text += f"User: {user_content}\n"
                     if i < len(assistant_parts):
                         conversation_text += f"Model: {assistant_parts[i]}\n"
-                
-                if system_instruction:
-                    try:
-                        # system_instruction 파라미터 사용 (새로운 Gemini API)
-                        res = self.client.generate_content(
-                            conversation_text if conversation_text else user_parts[-1] if user_parts else "",
-                            system_instruction=system_instruction
-                        )
-                    except TypeError:
-                        # system_instruction을 지원하지 않으면 텍스트로 합침
-                        full_prompt = f"{system_instruction}\n\n---\n\n{conversation_text if conversation_text else user_parts[-1] if user_parts else ''}"
-                        res = self.client.generate_content(full_prompt)
-                else:
-                    res = self.client.generate_content(conversation_text if conversation_text else user_parts[-1] if user_parts else "")
-                content = res.text
+
+                user_content = conversation_text if conversation_text else (user_parts[-1] if user_parts else "")
+                content = self._call_gemini(system_instruction, user_content)
             else:
                 # OpenAI API 호출
                 res = self.client.chat.completions.create(model=self.model, messages=call_msgs)
@@ -240,43 +242,31 @@ class PlanningAgent:
         prompt_Cal = [
             {"role": "developer", "content": CTFSolvePrompt.planning_prompt_Cal},
         ]
-        
+
         # state가 제공되면 STATE 메시지에 추가
         if state is not None:
             state_msg = {"role": "developer", "content": "[STATE]\n" + json.dumps(state, ensure_ascii=False)}
             prompt_Cal.append(state_msg)
-        
+
         prompt_Cal.append({"role": "user", "content": prompt_query})
-        
+
         if self.is_gemini:
-            # Gemini API 호출 - 시스템 프롬프트와 대화 분리
+            # 새로운 google-genai SDK 사용
             system_parts = []
             user_parts = []
-            
+
             for msg in prompt_Cal:
                 role = msg.get("role", "user")
-                content = msg.get("content", "")
+                content_text = msg.get("content", "")
                 if role == "developer" or role == "system":
-                    system_parts.append(content)
+                    system_parts.append(content_text)
                 elif role == "user":
-                    user_parts.append(content)
-            
+                    user_parts.append(content_text)
+
             system_instruction = "\n\n".join(system_parts) if system_parts else None
             user_content = "\n\n".join(user_parts) if user_parts else ""
-            
-            if system_instruction:
-                try:
-                    res = self.client.generate_content(
-                        user_content,
-                        system_instruction=system_instruction
-                    )
-                except TypeError:
-                    # system_instruction을 지원하지 않으면 텍스트로 합침
-                    full_prompt = f"{system_instruction}\n\n---\n\n{user_content}"
-                    res = self.client.generate_content(full_prompt)
-            else:
-                res = self.client.generate_content(user_content)
-            return res.text
+
+            return self._call_gemini(system_instruction, user_content)
         else:
             res = self.client.chat.completions.create(model=self.model, messages=prompt_Cal)
             return res.choices[0].message.content

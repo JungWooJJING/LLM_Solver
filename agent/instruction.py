@@ -5,35 +5,50 @@ from utility.core_utility import Core
 
 from openai import OpenAI
 import warnings
-# google.generativeai FutureWarning 억제
-warnings.filterwarnings("ignore", category=FutureWarning, message=".*google.generativeai.*")
+warnings.filterwarnings("ignore", category=FutureWarning)
 
+# 새로운 google-genai SDK 사용
 try:
-    import google.generativeai as genai
+    from google import genai
+    from google.genai import types
 except ImportError:
     genai = None
+    types = None
 
 core = Core()
 
 class InstructionAgent:
-    def __init__(self, api_key: str, model: str = "gpt-4o"):
+    def __init__(self, api_key: str, model: str = "gpt-5.2"):
         self.api_key = api_key
         self.model = model
-        
-        if model == "gpt-4o":
+
+        if model == "gpt-5.2":
             self.client = OpenAI(api_key=api_key)
             self.is_gemini = False
-        elif model == "gemini-1.5-flash" or model == "gemini-1.5-flash-latest" or model == "gemini-3-flash-preview":
+        elif model in ["gemini-1.5-flash", "gemini-1.5-flash-latest", "gemini-3-flash-preview"]:
             if genai is None:
-                raise ImportError("google-generativeai package is required for Gemini. Install with: pip install google-generativeai")
-            genai.configure(api_key=api_key)
-            self.client = genai.GenerativeModel(model)
+                raise ImportError("google-genai package is required for Gemini. Install with: pip install google-genai")
+            self.client = genai.Client(api_key=api_key)
+            self.gemini_model = model
             self.is_gemini = True
         else:
-            raise ValueError(f"Invalid model: {model}. Supported: gpt-4o, gemini-1.5-flash, gemini-1.5-flash-latest, gemini-3-flash-preview")
+            raise ValueError(f"Invalid model: {model}. Supported: gpt-5.2, gemini-1.5-flash, gemini-1.5-flash-latest, gemini-3-flash-preview")
+
+    def _call_gemini(self, system_instruction: str, user_content: str):
+        from google.genai import types
+
+        config = types.GenerateContentConfig(
+            system_instruction=system_instruction if system_instruction else None,
+        )
+
+        response = self.client.models.generate_content(
+            model=self.gemini_model,
+            contents=user_content,
+            config=config
+        )
+        return response.text
     
     def _collect_failed_commands(self, state_dict):
-        """실패한 명령어들을 state에서 수집"""
         failed_commands = []
 
         # results에서 실패한 명령어 수집
@@ -65,7 +80,6 @@ class InstructionAgent:
         return failed_commands
 
     def _check_binary_constraints(self, state_dict):
-        """바이너리 실행 제약사항 체크 (OS, 아키텍처 등)"""
         import subprocess
         import re
 
@@ -91,8 +105,8 @@ class InstructionAgent:
 
             # FreeBSD 바이너리 감지
             if "freebsd" in file_output:
-                constraints.append("🚫 CRITICAL: This is a FreeBSD binary - CANNOT be executed on Linux!")
-                constraints.append("🚫 CRITICAL: Memory inspection (x/..., examine, etc.) requires EXECUTION - NOT POSSIBLE!")
+                constraints.append("CRITICAL: This is a FreeBSD binary - CANNOT be executed on Linux!")
+                constraints.append("CRITICAL: Memory inspection (x/..., examine, etc.) requires EXECUTION - NOT POSSIBLE!")
                 constraints.append("")
                 constraints.append("MANDATORY: Use STATIC ANALYSIS ONLY:")
                 constraints.append("   1. ghidra_decompile(function_address='0x...') - Get decompiled C code")
@@ -133,7 +147,6 @@ class InstructionAgent:
         return ""
 
     def _build_failure_context(self, failed_commands):
-        """실패 이력을 기반으로 컨텍스트 문자열 생성"""
         if not failed_commands:
             return ""
 
@@ -193,33 +206,22 @@ class InstructionAgent:
         call_msgs = prompt_instruction + [state_msg, user_msg]
         
         if self.is_gemini:
-            # Gemini API 호출 - 시스템 프롬프트와 대화 분리
+            # 새로운 google-genai SDK 사용
             system_parts = []
             user_parts = []
-            
+
             for msg in call_msgs:
                 role = msg.get("role", "user")
-                content = msg.get("content", "")
+                content_text = msg.get("content", "")
                 if role == "developer" or role == "system":
-                    system_parts.append(content)
+                    system_parts.append(content_text)
                 elif role == "user":
-                    user_parts.append(content)
-            
+                    user_parts.append(content_text)
+
             system_instruction = "\n\n".join(system_parts) if system_parts else None
             user_content = "\n\n".join(user_parts) if user_parts else ""
-            
-            if system_instruction:
-                try:
-                    res = self.client.generate_content(
-                        user_content,
-                        system_instruction=system_instruction
-                    )
-                except TypeError:
-                    full_prompt = f"{system_instruction}\n\n---\n\n{user_content}"
-                    res = self.client.generate_content(full_prompt)
-            else:
-                res = self.client.generate_content(user_content)
-            return res.text
+
+            return self._call_gemini(system_instruction, user_content)
         else:
             res = self.client.chat.completions.create(model=self.model, messages=call_msgs)
             return res.choices[0].message.content

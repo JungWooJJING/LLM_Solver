@@ -1,9 +1,3 @@
-"""
-Few-shot 동적 선택 모듈
-
-카테고리와 현재 signals를 기반으로 가장 관련성 높은 few-shot 예제를 선택합니다.
-"""
-
 from typing import List, Dict, Any, Optional
 from templates.prompting import few_Shot
 
@@ -94,18 +88,6 @@ def select_fewshots(
     signals: List[Dict] = None,
     max_examples: int = 3
 ) -> List[str]:
-    """
-    카테고리와 컨텍스트에 맞는 few-shot 예제를 선택합니다.
-
-    Args:
-        category: 문제 카테고리 (web, pwnable, reversing, forensics, crypto, misc)
-        description: 문제 설명
-        signals: 현재까지 감지된 signals 리스트
-        max_examples: 최대 반환할 예제 수
-
-    Returns:
-        선택된 few-shot 예제 문자열 리스트
-    """
     category = category.lower()
     signals = signals or []
     selected = []
@@ -152,21 +134,12 @@ def build_fewshot_messages(
     signals: List[Dict] = None,
     max_examples: int = 3
 ) -> List[Dict[str, str]]:
-    """
-    Few-shot 예제를 OpenAI messages 형식으로 반환합니다.
 
-    Returns:
-        [{"role": "user", "content": fewshot_json}, ...]
-    """
     fewshots = select_fewshots(category, description, signals, max_examples)
     return [{"role": "user", "content": fs} for fs in fewshots]
 
 
 def get_category_hints(category: str) -> str:
-    """
-    카테고리별 추가 힌트를 반환합니다.
-    CoT 프롬프트에 추가할 카테고리 특화 지침입니다.
-    """
     hints = {
         "web": """
 WEB-SPECIFIC HINTS:

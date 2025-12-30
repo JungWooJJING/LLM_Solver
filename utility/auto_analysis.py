@@ -1,9 +1,3 @@
-"""
-카테고리별 자동 초기 분석 모듈
-
-사용자가 옵션을 선택하기 전에 백그라운드로 기본 분석을 수행합니다.
-"""
-
 import os
 import subprocess
 import re
@@ -14,7 +8,6 @@ console = Console()
 
 
 def run_command(cmd: str, timeout: int = 30) -> tuple:
-    """명령어를 실행하고 결과를 반환합니다."""
     try:
         result = subprocess.run(
             cmd,
@@ -31,7 +24,6 @@ def run_command(cmd: str, timeout: int = 30) -> tuple:
 
 
 def analyze_pwnable(binary_path: str) -> Dict[str, Any]:
-    """Pwnable 바이너리 자동 분석"""
     analysis = {
         "checksec": {},
         "file_info": "",
@@ -120,7 +112,6 @@ def analyze_pwnable(binary_path: str) -> Dict[str, Any]:
 
 
 def analyze_web(url: str, source_path: str = "") -> Dict[str, Any]:
-    """Web 문제 자동 분석"""
     analysis = {
         "url_info": {},
         "source_files": [],
@@ -194,7 +185,6 @@ def analyze_web(url: str, source_path: str = "") -> Dict[str, Any]:
 
 
 def analyze_reversing(binary_path: str) -> Dict[str, Any]:
-    """Reversing 바이너리 자동 분석"""
     analysis = {
         "file_info": "",
         "entry_point": "",
@@ -246,7 +236,6 @@ def analyze_reversing(binary_path: str) -> Dict[str, Any]:
 
 
 def analyze_forensics(file_path: str) -> Dict[str, Any]:
-    """Forensics 파일 자동 분석"""
     analysis = {
         "file_type": "",
         "details": {}
@@ -323,7 +312,6 @@ def auto_analyze(category: str, state: Dict) -> Dict[str, Any]:
 
 
 def format_analysis_summary(analysis: Dict[str, Any], category: str) -> str:
-    """분석 결과를 사람이 읽기 쉬운 형태로 포맷합니다."""
     lines = []
 
     if category == "pwnable":

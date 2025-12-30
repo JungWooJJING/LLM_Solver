@@ -20,8 +20,6 @@ except ImportError:
 
 
 class PwnableTool:
-    """Pwnable CTF 도구 모음 클래스 - 모든 pwnable 관련 도구를 메서드로 제공"""
-    
     def __init__(self, binary_path: Optional[str] = None):
         """
         Args:
@@ -31,7 +29,6 @@ class PwnableTool:
         self._check_binary_exists()
     
     def set_binary_path(self, binary_path: str):
-        """바이너리 경로 설정"""
         self.binary_path = binary_path
         self._check_binary_exists()
     
@@ -40,7 +37,6 @@ class PwnableTool:
             raise FileNotFoundError(f"Binary not found: {self.binary_path}")
     
     def _run_command(self, cmd: List[str], timeout: int = 30) -> Dict[str, any]:
-        """명령어 실행 헬퍼 함수"""
         try:
             result = subprocess.run(
                 cmd,
@@ -102,7 +98,6 @@ class PwnableTool:
         }, indent=2, ensure_ascii=False)
     
     def _parse_checksec_output(self, output: str) -> Dict[str, any]:
-        """checksec 출력 파싱"""
         protections = {}
         lines = output.split('\n')
         
@@ -167,7 +162,6 @@ class PwnableTool:
         }, indent=2, ensure_ascii=False)
     
     def _parse_ropgadget_output(self, output: str) -> List[Dict[str, str]]:
-        """ROPgadget 출력 파싱"""
         gadgets = []
         lines = output.split('\n')
         
@@ -350,7 +344,6 @@ class PwnableTool:
         }, indent=2, ensure_ascii=False)
     
     def _parse_one_gadget_output(self, output: str) -> List[Dict[str, str]]:
-        """one_gadget 출력 파싱"""
         gadgets = []
         lines = output.split('\n')
         
@@ -373,7 +366,6 @@ class PwnableTool:
         return ansi_escape.sub('', text)
 
     def _validate_gdb_command(self, command: str, binary_path: str) -> Dict[str, any]:
-        """GDB 명령어 실행 전 검증"""
         # 1. 바이너리가 실행 가능한지 확인
         if not os.path.exists(binary_path):
             return {"valid": False, "error": f"Binary not found: {binary_path}"}
@@ -711,7 +703,6 @@ class PwnableTool:
             }, indent=2)
         
     def _find_function_by_address(self, fm, address_str: str) -> Optional:
-        """주소로 함수 찾기"""
         try:
             # 주소 문자열 정규화
             addr_str = address_str.replace("0x", "").replace("0X", "")
@@ -743,7 +734,6 @@ class PwnableTool:
     
     
     def _decompile_function(self, func, decomp, listing):
-        """함수 하나를 디컴파일하고 결과 반환"""
         try:
             func_name = func.getName()
             entry_point = func.getEntryPoint()

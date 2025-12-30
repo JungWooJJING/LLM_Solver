@@ -34,12 +34,10 @@ class WebTool:
         self._check_url_valid()
     
     def set_url(self, url: str):
-        """URL 설정"""
         self.url = url
         self._check_url_valid()
     
     def _check_url_valid(self):
-        """URL 유효성 검사"""
         if self.url and not (self.url.startswith("http://") or self.url.startswith("https://")):
             raise ValueError(f"Invalid URL format: {self.url}. Must start with http:// or https://")
     
@@ -77,7 +75,6 @@ class WebTool:
             }
     
     def _run_command(self, cmd: List[str], timeout: int = 30) -> Dict[str, any]:
-        """명령어 실행 헬퍼 함수"""
         try:
             result = subprocess.run(
                 cmd,

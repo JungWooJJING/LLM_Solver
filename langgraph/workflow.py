@@ -9,10 +9,10 @@ except ImportError:
     from state import PlanningState, is_shell_acquired
 
 try:
-    from langgraph.node import CoT_node, Cal_node, instruction_node, tool_selection_node, multi_instruction_node, execution_node, track_update_node, parsing_node, feedback_node, exploit_node, poc_node, help_node, option_input_node
+    from langgraph.node import CoT_node, Cal_node, instruction_node, tool_selection_node, multi_instruction_node, execution_node, track_update_node, parsing_node, feedback_node, exploit_node, poc_node, help_node, option_input_node, detect_node
 except ImportError:
     # 같은 디렉토리에서 실행하는 경우
-    from node import CoT_node, Cal_node, instruction_node, tool_selection_node, multi_instruction_node, execution_node, track_update_node, parsing_node, feedback_node, exploit_node, poc_node, help_node, option_input_node
+    from node import CoT_node, Cal_node, instruction_node, tool_selection_node, multi_instruction_node, execution_node, track_update_node, parsing_node, feedback_node, exploit_node, poc_node, help_node, option_input_node, detect_node
 
 def route_by_option(state: PlanningState) -> str:
     # Recursion limit 체크
@@ -84,13 +84,6 @@ def route_by_option(state: PlanningState) -> str:
             return "invalid"
 
 def route_after_parsing(state: PlanningState) -> str:
-    """
-    Parsing 결과에 따라 다음 단계 결정:
-    - Flag 감지: PoC 코드 작성으로 이동
-    - 관리자 권한 획득: PoC 코드 작성으로 이동
-    - 성공: 결과 저장하고 Planning으로 돌아가기
-    - 실패: Instruction 재설정
-    """
     from rich.console import Console
     console = Console()
     
@@ -207,11 +200,6 @@ def route_after_parsing(state: PlanningState) -> str:
         return "success_continue"
 
 def route_after_feedback(state: PlanningState) -> str:
-    """
-    Feedback 후 다음 단계 결정:
-    - 성공/진행 중이면 Planning으로 돌아가서 더 깊이 파거나 새로운 방법 찾기
-    - 실패/중단이면 종료
-    """
     from rich.console import Console
     console = Console()
     
@@ -314,68 +302,80 @@ def route_after_feedback(state: PlanningState) -> str:
     return "end"
 
 def route_after_exploit(state: PlanningState) -> str:
-    """
-    Exploit 실행 후 다음 단계 결정:
-    - 성공 (쉘 획득/플래그 감지): PoC 코드 생성으로 이동
-    - 실패: Planning으로 돌아가서 재시도
-    - 최대 재시도 도달: 종료
-    """
+    return "detect"
+
+
+def route_after_detect(state: PlanningState) -> str:
+
     from rich.console import Console
     console = Console()
 
-    execution_status = state.get("execution_status", "unknown")
-    flag_detected = state.get("flag_detected", False)
-    privilege_escalated = state.get("privilege_escalated", False)
+    decision = state.get("detect_decision", "continue")
+    confidence = state.get("detect_confidence", 0.5)
 
-    # 쉘 획득 확인
-    execution_output = state.get("execution_output", "")
-    has_shell = is_shell_acquired(execution_output)
-
-    # FLAG 감지 또는 쉘 획득 시 PoC 생성
-    if flag_detected or privilege_escalated or has_shell:
-        console.print("🎉 Exploit successful! Generating PoC code.", style="bold green")
+    # 성공 케이스: PoC 생성
+    if decision in ["flag_found", "shell_acquired", "privilege_escalated"]:
+        console.print(f"🎉 Success detected ({decision})! Generating PoC code.", style="bold green")
         return "poc"
 
-    # 성공 상태이면 PoC 생성
-    if execution_status == "success":
-        console.print("✅ Exploit execution successful! Generating PoC code.", style="bold green")
-        return "poc"
+    # Exploit 준비 완료: Exploit 실행
+    if decision == "exploit_ready":
+        console.print("⚡ Ready for exploitation. Launching exploit.", style="bold yellow")
+        return "exploit"
 
-    # 재시도 횟수 확인
-    exploit_retry_count = state.get("exploit_retry_count", 0)
-    MAX_EXPLOIT_RETRIES = 3
+    # 계속 분석
+    if decision == "continue":
+        # Workflow step count 추적
+        workflow_step_count = state.get("workflow_step_count", 0)
+        iteration_count = state.get("iteration_count", 0)
+        MAX_ITERATIONS = 10
+        RECURSION_LIMIT = 50
 
-    if exploit_retry_count >= MAX_EXPLOIT_RETRIES:
-        console.print(f"❌ Maximum exploit retries ({MAX_EXPLOIT_RETRIES}) reached. Ending.", style="bold red")
-        return "end"
+        if workflow_step_count >= RECURSION_LIMIT or iteration_count >= MAX_ITERATIONS:
+            console.print(f"Iteration limit reached. Ending workflow.", style="bold yellow")
+            return "end"
 
-    # 재시도 횟수 증가
-    state["exploit_retry_count"] = exploit_retry_count + 1
-    console.print(f"⚠️ Exploit failed. Retrying (attempt {exploit_retry_count + 1}/{MAX_EXPLOIT_RETRIES}).", style="yellow")
-    return "retry"
+        state["option"] = "--continue"
+        console.print(f"Continuing analysis (iteration {iteration_count + 1}/{MAX_ITERATIONS}).", style="cyan")
+        return "continue_planning"
+
+    # 재시도
+    if decision == "retry":
+        retry_count = state.get("detect_retry_count", 0)
+        MAX_RETRIES = 3
+
+        if retry_count >= MAX_RETRIES:
+            console.print(f"Maximum retries ({MAX_RETRIES}) reached. Ending.", style="bold red")
+            return "end"
+
+        state["detect_retry_count"] = retry_count + 1
+        console.print(f"Retrying current approach (attempt {retry_count + 1}/{MAX_RETRIES}).", style="yellow")
+        return "continue_planning"
+
+    # 종료
+    console.print("Ending workflow.", style="yellow")
+    return "end"
+
 
 def _create_analysis_workflow():
-    """
-    분석 워크플로우 생성 (init_workflow와 loop_workflow에서 공통으로 사용)
-    CoT -> Cal -> tool_selection -> multi_instruction -> execution -> parsing -> ...
-    """
     graph = StateGraph(PlanningState)
 
+    graph.add_node("tool_loading", tool_selection_node)  # 도구 로딩 (LLM 도구 선택 전)
     graph.add_node("CoT", CoT_node)
     graph.add_node("Cal", Cal_node)
-    graph.add_node("tool_selection", tool_selection_node)
     graph.add_node("multi_instruction", multi_instruction_node)
     graph.add_node("execution", execution_node)
     graph.add_node("parsing", parsing_node)
     graph.add_node("track_update", track_update_node)
     graph.add_node("feedback", feedback_node)
     graph.add_node("exploit", exploit_node)
+    graph.add_node("detect", detect_node)  # Detect: 최종 결정자
     graph.add_node("poc", poc_node)
 
-    graph.set_entry_point("CoT")
+    graph.set_entry_point("tool_loading")  # 도구 로딩부터 시작
+    graph.add_edge("tool_loading", "CoT")
     graph.add_edge("CoT", "Cal")
-    graph.add_edge("Cal", "tool_selection")
-    graph.add_edge("tool_selection", "multi_instruction")
+    graph.add_edge("Cal", "multi_instruction")
     graph.add_edge("multi_instruction", "execution")
     graph.add_edge("execution", "parsing")
 
@@ -397,24 +397,21 @@ def _create_analysis_workflow():
 
     graph.add_edge("track_update", "feedback")
 
-    # Feedback 후 Planning으로 돌아가거나 종료
-    graph.add_conditional_edges(
-        "feedback",
-        route_after_feedback,
-        {
-            "continue_planning": "CoT",  # Planning으로 돌아가서 더 깊이 파거나 새로운 방법 찾기
-            "end": END
-        }
-    )
+    # Feedback → Detect (최종 결정자)
+    graph.add_edge("feedback", "detect")
 
-    # Exploit 후 라우팅
+    # Exploit → Detect (최종 결정자)
+    graph.add_edge("exploit", "detect")
+
+    # Detect 결과에 따라 다음 단계 결정
     graph.add_conditional_edges(
-        "exploit",
-        route_after_exploit,
+        "detect",
+        route_after_detect,
         {
-            "poc": "poc",
-            "retry": "CoT",
-            "end": END
+            "poc": "poc",  # 성공: PoC 코드 생성
+            "exploit": "exploit",  # Exploit 준비 완료: Exploit 실행
+            "continue_planning": "CoT",  # 계속 분석
+            "end": END  # 종료
         }
     )
 
@@ -428,27 +425,24 @@ def create_loop_workflow():
     return _create_analysis_workflow()
 
 def _create_auto_workflow():
-    """
-    자동 워크플로우 생성 - LLM이 알아서 분석하고 해결
-    사용자 개입 없이 flag 획득 또는 max iteration까지 자동 진행
-    """
     graph = StateGraph(PlanningState)
 
+    graph.add_node("tool_loading", tool_selection_node)  # 도구 로딩 먼저
     graph.add_node("CoT", CoT_node)
     graph.add_node("Cal", Cal_node)
-    graph.add_node("tool_selection", tool_selection_node)
     graph.add_node("multi_instruction", multi_instruction_node)
     graph.add_node("execution", execution_node)
     graph.add_node("parsing", parsing_node)
     graph.add_node("track_update", track_update_node)
     graph.add_node("feedback", feedback_node)
     graph.add_node("exploit", exploit_node)
+    graph.add_node("detect", detect_node)  # Detect: 최종 결정자
     graph.add_node("poc", poc_node)
 
-    graph.set_entry_point("CoT")
+    graph.set_entry_point("tool_loading")  # 도구 로딩부터 시작
+    graph.add_edge("tool_loading", "CoT")
     graph.add_edge("CoT", "Cal")
-    graph.add_edge("Cal", "tool_selection")
-    graph.add_edge("tool_selection", "multi_instruction")
+    graph.add_edge("Cal", "multi_instruction")
     graph.add_edge("multi_instruction", "execution")
     graph.add_edge("execution", "parsing")
 
@@ -468,23 +462,21 @@ def _create_auto_workflow():
     graph.add_edge("poc", END)
     graph.add_edge("track_update", "feedback")
 
-    # Auto 모드: feedback 후 자동으로 계속 진행 (종료 조건까지)
-    graph.add_conditional_edges(
-        "feedback",
-        route_after_feedback,
-        {
-            "continue_planning": "CoT",
-            "end": END
-        }
-    )
+    # Feedback → Detect (최종 결정자)
+    graph.add_edge("feedback", "detect")
 
+    # Exploit → Detect (최종 결정자)
+    graph.add_edge("exploit", "detect")
+
+    # Auto 모드: Detect 결과에 따라 다음 단계 결정
     graph.add_conditional_edges(
-        "exploit",
-        route_after_exploit,
+        "detect",
+        route_after_detect,
         {
-            "poc": "poc",
-            "retry": "CoT",
-            "end": END
+            "poc": "poc",  # 성공: PoC 코드 생성
+            "exploit": "exploit",  # Exploit 준비 완료: Exploit 실행
+            "continue_planning": "CoT",  # 계속 분석
+            "end": END  # 종료
         }
     )
 

@@ -4,9 +4,9 @@ import re
 from rich.console import Console
 
 try:
-    from langgraph.state import PlanningState as State, get_state_for_cot, get_state_for_cal, get_state_for_instruction, get_state_for_parsing, get_state_for_feedback, is_shell_acquired
+    from langgraph.state import PlanningState as State, get_state_for_cot, get_state_for_cal, get_state_for_instruction, get_state_for_parsing, get_state_for_feedback, get_state_for_detect, is_shell_acquired
 except ImportError:
-    from state import PlanningState as State, get_state_for_cot, get_state_for_cal, get_state_for_instruction, get_state_for_parsing, get_state_for_feedback, is_shell_acquired
+    from state import PlanningState as State, get_state_for_cot, get_state_for_cal, get_state_for_instruction, get_state_for_parsing, get_state_for_feedback, get_state_for_detect, is_shell_acquired
 
 # 전역 console 객체
 console = Console()
@@ -83,30 +83,33 @@ def CoT_node(state: State) -> State:
         "recent_results": results[-5:] if results else []  # 최근 5개 결과만
     }
     
+    # available_tools 가져오기 (tool_selection_node에서 설정됨)
+    available_tools = state.get("available_tools", [])
+
     if option == "--file" or option == "--ghidra":
         user_input = state.get("user_input", "") or state.get("binary_path", "")
         # 초기 실행이면 planning_context 없음, 반복 실행이면 포함
         if tracks or facts or artifacts:
-            CoT_query = build_query(option = option, code = user_input, state = state, planning_context = planning_context)
+            CoT_query = build_query(option = option, code = user_input, state = state, planning_context = planning_context, available_tools = available_tools)
         else:
-            CoT_query = build_query(option = option, code = user_input, state = state)
+            CoT_query = build_query(option = option, code = user_input, state = state, available_tools = available_tools)
 
     elif option == "--discuss" or option == "--continue":
         user_input = state.get("user_input", "")
-        CoT_query = build_query(option = option, code = user_input, state = state, plan = state.get("plan", {}), planning_context = planning_context)
+        CoT_query = build_query(option = option, code = user_input, state = state, plan = state.get("plan", {}), planning_context = planning_context, available_tools = available_tools)
 
     elif option == "--auto":
         # Auto 모드: 자동으로 분석 시작 (--file과 유사하게 처리)
         user_input = state.get("user_input", "") or state.get("binary_path", "")
         if tracks or facts or artifacts:
-            CoT_query = build_query(option = "--file", code = user_input, state = state, planning_context = planning_context)
+            CoT_query = build_query(option = "--file", code = user_input, state = state, planning_context = planning_context, available_tools = available_tools)
         else:
-            CoT_query = build_query(option = "--file", code = user_input, state = state)
+            CoT_query = build_query(option = "--file", code = user_input, state = state, available_tools = available_tools)
 
     else:
         # 기본값: --continue로 처리
         user_input = state.get("user_input", "")
-        CoT_query = build_query(option = "--continue", code = user_input, state = state, plan = state.get("plan", {}), planning_context = planning_context)
+        CoT_query = build_query(option = "--continue", code = user_input, state = state, plan = state.get("plan", {}), planning_context = planning_context, available_tools = available_tools)
     
     # CoT Agent에 필요한 정보만 필터링
     filtered_state = get_state_for_cot(state)
@@ -130,7 +133,10 @@ def Cal_node(state: State) -> State:
     ctx = state["ctx"]
     core = ctx.core
 
-    Cal_query = build_query(option = "--Cal", state = state, CoT = state["cot_result"])
+    # available_tools 가져오기
+    available_tools = state.get("available_tools", [])
+
+    Cal_query = build_query(option = "--Cal", state = state, CoT = state["cot_result"], available_tools = available_tools)
 
     console.print("=== Cal Run ===", style='bold green')
 
@@ -155,13 +161,21 @@ def Cal_node(state: State) -> State:
     return state
 
 def instruction_node(state: State) -> State:
-    """기존 단일 instruction 노드 (하위 호환성)"""
     ctx = state["ctx"]
     core = ctx.core
 
     console.print("=== Instruction Agent ===", style='bold magenta')
 
-    instruction_query = build_query(option = "--instruction", CoT = state["cot_json"], Cal = state["cal_json"])
+    # available_tools 가져오기
+    available_tools = state.get("available_tools", [])
+
+    instruction_query = build_query(
+        option = "--instruction",
+        CoT = state["cot_json"],
+        Cal = state["cal_json"],
+        available_tools = available_tools,
+        state = state
+    )
 
     console.print("=== Instruction Run ===", style='bold green')
 
@@ -177,145 +191,71 @@ def instruction_node(state: State) -> State:
 
 def tool_selection_node(state: State) -> State:
     """
-    Cal 후, Instruction 전: 각 트랙에 적합한 도구 선택
+    모든 도구를 로드하고 AVAILABLE_TOOLS 목록을 state에 저장.
+    실제 도구 선택은 LLM이 CoT → Cal → Instruction 단계에서 수행.
     """
     from datetime import datetime
     from tool import create_pwnable_tools, create_reversing_tools, create_web_tools
 
-    console.print("=== Tool Selection Node ===", style='bold magenta')
+    console.print("=== Tool Loading Node ===", style='bold magenta')
 
-    cot_json = state.get("cot_json", {})
-    cal_json = state.get("cal_json", {})
-    tracks = state.get("vulnerability_tracks", {})
     binary_path = state.get("binary_path", "")
     challenge = state.get("challenge", [])
+    url = state.get("url", "")
 
-    # Challenge 카테고리 확인
-    challenge_category = challenge[0].get("category", "").lower() if challenge else ""
+    # 모든 도구 카테고리 로드
+    all_tools = {}
+    all_tool_names = []
 
-    # Cal 결과에서 상위 candidates 선택 (최대 3개)
-    cal_results = cal_json.get("results", [])
-    if not cal_results:
-        console.print("No Cal results available. Skipping tool selection.", style="yellow")
-        return state
+    # Pwnable tools
+    try:
+        pwn_tools = create_pwnable_tools(binary_path=binary_path if binary_path else None)
+        for tool in pwn_tools:
+            all_tools[tool.name] = {"tool": tool, "category": "pwnable"}
+            all_tool_names.append(tool.name)
+        console.print(f"  Loaded {len(pwn_tools)} pwnable tools", style="cyan")
+    except Exception as e:
+        console.print(f"  Failed to load pwnable tools: {e}", style="yellow")
 
-    # 실패율 기반 우선순위 조정
-    def calculate_failure_rate(track):
-        """트랙의 실패율 계산"""
-        attempts = track.get("attempts", 0)
-        consecutive_failures = track.get("consecutive_failures", 0)
-        if attempts == 0:
-            return 0.0
-        return consecutive_failures / max(attempts, 1)
+    # Web tools
+    try:
+        web_tools = create_web_tools(url=url if url else None)
+        for tool in web_tools:
+            all_tools[tool.name] = {"tool": tool, "category": "web"}
+            all_tool_names.append(tool.name)
+        console.print(f"  Loaded {len(web_tools)} web tools", style="cyan")
+    except Exception as e:
+        console.print(f"  Failed to load web tools: {e}", style="yellow")
 
-    # 기존 트랙의 실패율을 기반으로 우선순위 조정
-    for track_id, track in tracks.items():
-        failure_rate = calculate_failure_rate(track)
-        if failure_rate > 0.5:
-            # 실패율이 50% 이상이면 우선순위 반감
-            current_priority = track.get("priority", 1.0)
-            track["priority"] = current_priority * 0.5
-            console.print(f"  Adjusted priority for {track_id} (failure rate: {failure_rate:.1%}) -> {track['priority']:.2f}", style="yellow")
+    # Reversing tools
+    try:
+        rev_tools = create_reversing_tools(binary_path=binary_path if binary_path else None, challenge_info=challenge)
+        for tool in rev_tools:
+            all_tools[tool.name] = {"tool": tool, "category": "reversing"}
+            all_tool_names.append(tool.name)
+        console.print(f"  Loaded {len(rev_tools)} reversing tools", style="cyan")
+    except Exception as e:
+        console.print(f"  Failed to load reversing tools: {e}", style="yellow")
 
-    # 점수 순으로 정렬
-    sorted_results = sorted(cal_results, key=lambda x: x.get("final", 0), reverse=True)
-    
-    # 최대 3개 선택
-    MAX_TRACKS = 3
-    threshold = 0.6
-    selected_candidates = []
-    
-    for result in sorted_results:
-        if len(selected_candidates) >= MAX_TRACKS:
-            break
-        if result.get("final", 0) >= threshold:
-            selected_candidates.append(result)
-    
-    if not selected_candidates:
-        selected_candidates = sorted_results[:1]
-    
-    # 각 candidate에 대해 도구 선택
-    track_tools = {}
-    
-    for candidate in selected_candidates:
-        idx = candidate.get("idx", -1)
-        if idx < 0 or idx >= len(cot_json.get("candidates", [])):
-            continue
-        
-        cot_candidate = cot_json["candidates"][idx]
-        track_id = f"track_{idx:03d}"
-        vuln = cot_candidate.get("vuln", "").lower()
-        
-        # 취약점 유형에 따라 도구 선택
-        selected_toolset = None
-        tool_category = None
-        
-        # 취약점 키워드 기반 도구 선택
-        if any(keyword in vuln for keyword in ["stack", "heap", "rop", "ret2", "format", "uaf", "double free", "pwn", "bof"]):
-            tool_category = "pwnable"
-            selected_toolset = create_pwnable_tools(binary_path=binary_path if binary_path else None)
-            console.print(f"  {track_id}: Selected pwnable_tool (vuln: {cot_candidate.get('vuln')})", style="cyan")
-        
-        elif any(keyword in vuln for keyword in ["sql", "xss", "csrf", "ssrf", "ssti", "web", "http", "api"]):
-            tool_category = "web"
-            # URL은 state에서 가져오거나 기본값 사용
-            url = state.get("url", "")
-            selected_toolset = create_web_tools(url=url if url else None)
-            console.print(f"  {track_id}: Selected web_tool (vuln: {cot_candidate.get('vuln')})", style="cyan")
-        
-        elif any(keyword in vuln for keyword in ["reverse", "decompile", "disassemble", "ghidra", "angr", "symbolic"]):
-            tool_category = "reversing"
-            selected_toolset = create_reversing_tools(binary_path=binary_path if binary_path else None, challenge_info=challenge)
-            console.print(f"  {track_id}: Selected reversing_tool (vuln: {cot_candidate.get('vuln')})", style="cyan")
-        
-        else:
-            # Challenge 카테고리 기반 기본 도구 선택
-            if challenge_category == "pwnable" or challenge_category == "pwn":
-                tool_category = "pwnable"
-                selected_toolset = create_pwnable_tools(binary_path=binary_path if binary_path else None)
-            elif challenge_category == "web":
-                tool_category = "web"
-                url = state.get("url", "")
-                selected_toolset = create_web_tools(url=url if url else None)
-            elif challenge_category == "reversing" or challenge_category == "rev":
-                tool_category = "reversing"
-                selected_toolset = create_reversing_tools(binary_path=binary_path if binary_path else None, challenge_info=challenge)
-            else:
-                # 기본값: pwnable
-                tool_category = "pwnable"
-                selected_toolset = create_pwnable_tools(binary_path=binary_path if binary_path else None)
-            
-            console.print(f"  {track_id}: Selected {tool_category}_tool (based on challenge category)", style="cyan")
-        
-        # 트랙에 도구 정보 저장
-        if track_id not in tracks:
-            tracks[track_id] = {
-                "track_id": track_id,
-                "vuln": cot_candidate.get("vuln", "Unknown"),
-                "status": "pending",
-                "progress": 0.0,
-                "attempts": 0,
-                "consecutive_failures": 0,
-                "created_at": datetime.now().isoformat(),
-                "artifacts": {},
-                "signals": []
-            }
-        
-        tracks[track_id]["tool_category"] = tool_category
-        tracks[track_id]["available_tools"] = [tool.name for tool in selected_toolset]
-        tracks[track_id]["vuln"] = cot_candidate.get("vuln", tracks[track_id].get("vuln", "Unknown"))  # vuln 정보 보존
-        track_tools[track_id] = {
-            "toolset": selected_toolset,
-            "tool_category": tool_category,
-            "tool_names": [tool.name for tool in selected_toolset]
-        }
-    
-    # State에 도구 정보 저장
-    state["vulnerability_tracks"] = tracks
-    state["track_tools"] = track_tools
-    
-    console.print(f"\n=== Tool Selection Complete: {len(track_tools)} track(s) ===", style="bold green")
-    
+    # State에 저장
+    state["all_tools"] = all_tools  # {tool_name: {"tool": tool_obj, "category": str}}
+    state["available_tools"] = all_tool_names  # ["checksec", "gdb_run", ...]
+
+    # 도구 설명 생성 (LLM에게 전달할 용도)
+    tool_descriptions = []
+    for name, info in all_tools.items():
+        tool = info["tool"]
+        desc = getattr(tool, "description", "No description")
+        # 설명이 너무 길면 자르기
+        if len(desc) > 100:
+            desc = desc[:100] + "..."
+        tool_descriptions.append(f"- {name} [{info['category']}]: {desc}")
+
+    state["tool_descriptions"] = "\n".join(tool_descriptions)
+
+    console.print(f"\n=== Tool Loading Complete: {len(all_tools)} tools available ===", style="bold green")
+    console.print(f"  Tools: {', '.join(all_tool_names[:10])}{'...' if len(all_tool_names) > 10 else ''}", style="dim")
+
     return state
 
 
@@ -334,9 +274,11 @@ def multi_instruction_node(state: State) -> State:
     
     # 기존 트랙들 가져오기
     tracks = state.get("vulnerability_tracks", {})
-    track_tools = state.get("track_tools", {})
     cot_json = state.get("cot_json", {})
     cal_json = state.get("cal_json", {})
+
+    # tool_selection_node에서 설정한 available_tools 가져오기
+    global_available_tools = state.get("available_tools", [])
     
     # Cal 결과에서 상위 candidates 선택 (최대 3개)
     cal_results = cal_json.get("results", [])
@@ -415,10 +357,8 @@ def multi_instruction_node(state: State) -> State:
         # 기존 트랙이 있으면 다음 단계, 없으면 첫 단계
         track = tracks[track_id]
 
-        # 해당 트랙의 도구 정보 가져오기
-        track_tool_info = track_tools.get(track_id, {})
-        available_tools = track_tool_info.get("tool_names", [])
-        tool_category = track_tool_info.get("tool_category", "unknown")
+        # global available_tools 사용 (tool_selection_node에서 설정됨)
+        available_tools = global_available_tools
 
         # Fallback 전략: 실패 횟수에 따라 접근 방식 변경
         retry_count = state.get("instruction_retry_count", 0)
@@ -434,7 +374,6 @@ def multi_instruction_node(state: State) -> State:
                 Cal={"results": [candidate]},
                 state=state,  # state 전달 (command_cache, failed_commands 포함)
                 available_tools=available_tools,
-                tool_category=tool_category,
                 fallback_mode="alternative"
             )
         elif consecutive_failures >= 2:
@@ -446,7 +385,6 @@ def multi_instruction_node(state: State) -> State:
                 Cal={"results": [candidate]},
                 state=state,  # state 전달 (command_cache, failed_commands 포함)
                 available_tools=available_tools,
-                tool_category=tool_category,
                 fallback_mode="simple"
             )
         else:
@@ -456,8 +394,7 @@ def multi_instruction_node(state: State) -> State:
                 CoT={"candidates": [cot_candidate]},  # 해당 candidate만
                 Cal={"results": [candidate]},  # 해당 result만
                 state=state,  # state 전달 (command_cache, failed_commands 포함)
-                available_tools=available_tools,  # 사용 가능한 도구 목록
-                tool_category=tool_category  # 도구 카테고리
+                available_tools=available_tools  # 사용 가능한 도구 목록
             )
 
         # Instruction Agent에 필요한 정보만 필터링
@@ -466,7 +403,6 @@ def multi_instruction_node(state: State) -> State:
         filtered_state["current_track"] = track_id
         filtered_state["current_track_info"] = track
         filtered_state["available_tools"] = available_tools
-        filtered_state["tool_category"] = tool_category
         filtered_state["fallback_mode"] = "alternative" if consecutive_failures >= 3 else "simple" if consecutive_failures >= 2 else "normal"
 
         instruction_return = ctx.instruction.run_instruction(
@@ -539,7 +475,6 @@ def execution_node(state: State) -> State:
     seen_cmd_hashes = state["seen_cmd_hashes"]
     
     def normalize_command(cmd: str) -> str:
-        """명령어를 정규화하여 캐시 키 생성"""
         if not cmd:
             return ""
         # 공백 정규화
@@ -549,7 +484,6 @@ def execution_node(state: State) -> State:
         return normalized.strip()
     
     def get_command_hash(cmd: str) -> str:
-        """명령어의 해시값 생성"""
         normalized = normalize_command(cmd)
         return hashlib.md5(normalized.encode('utf-8')).hexdigest()
     
@@ -808,7 +742,6 @@ def execution_node(state: State) -> State:
                 # 쉘 획득 여부 직접 확인 (파이프 사용 시 출력 확인)
                 # 더 엄격한 검증: 여러 인디케이터를 조합해서 확인
                 def is_shell_acquired(text: str) -> bool:
-                    """쉘 획득 여부를 엄격하게 검증"""
                     if not text:
                         return False
                     
@@ -1221,7 +1154,6 @@ def parsing_node(state: State) -> State:
     
     # 쉘 출력 직접 확인 (엄격한 검증)
     def is_shell_acquired_strict(text: str) -> bool:
-        """쉘 획득 여부를 엄격하게 검증"""
         if not text:
             return False
         
@@ -1309,7 +1241,6 @@ def parsing_node(state: State) -> State:
         
         # 플래그 형식 검증 함수
         def matches_flag_format(flag_value: str, flag_format: str) -> bool:
-            """플래그가 지정된 형식과 일치하는지 확인"""
             if not flag_format or not flag_value:
                 return True  # 형식 정보가 없으면 패스
 
@@ -1330,7 +1261,6 @@ def parsing_node(state: State) -> State:
         
         # 입력값인지 확인하는 함수 (challenge description 기반)
         def could_be_input_value(value: str, output_text: str) -> bool:
-            """발견된 값이 입력값일 가능성이 있는지 확인"""
             if not value or not output_text:
                 return False
 
@@ -1378,7 +1308,6 @@ def parsing_node(state: State) -> State:
 
         # 실행 결과에서 플래그 패턴 확인
         def is_flag_in_execution_output(flag_value: str, output_text: str) -> bool:
-            """실행 결과에서 플래그가 실제로 출력되었는지 확인"""
             if not flag_value or not output_text:
                 return False
 
@@ -2029,5 +1958,92 @@ def option_input_node(state: State) -> State:
         state["iteration_count"] = 0
         state["workflow_step_count"] = 0
         console.print("Iteration count and workflow step count reset. Starting fresh cycle.", style="bold green")
+
+    return state
+
+
+def detect_node(state: State) -> State:
+    """
+    Detect Agent 노드: 최종 결정자
+    - Feedback 또는 Exploit 결과를 종합하여 다음 행동 결정
+    - flag 발견, 쉘 획득, 계속 진행, 종료 등 최종 판단
+    """
+    ctx = state["ctx"]
+    core = ctx.core
+
+    console.print("=== Detect Agent (Final Decision) ===", style='bold magenta')
+
+    # Detect Agent에 필요한 정보만 필터링
+    filtered_state = get_state_for_detect(state)
+
+    # 현재 상태에서 중요한 정보 수집
+    flag_detected = state.get("flag_detected", False)
+    privilege_escalated = state.get("privilege_escalated", False)
+    detected_flag = state.get("detected_flag", "")
+
+    # 이미 성공한 경우 빠르게 처리
+    if flag_detected and detected_flag:
+        console.print(f"🚩 Flag already detected: {detected_flag}", style="bold green")
+        state["detect_decision"] = "flag_found"
+        state["detect_result"] = f"Flag detected: {detected_flag}"
+        return state
+
+    if privilege_escalated:
+        console.print("🔐 Privilege escalation confirmed", style="bold green")
+        state["detect_decision"] = "privilege_escalated"
+        state["detect_result"] = "Privilege escalation successful"
+        return state
+
+    # 쉘 획득 확인
+    execution_output = state.get("execution_output", "")
+    if is_shell_acquired(execution_output):
+        console.print("🐚 Shell acquired!", style="bold green")
+        state["detect_decision"] = "shell_acquired"
+        state["detect_result"] = "Shell access obtained"
+        return state
+
+    console.print("=== Detect Run ===", style='bold green')
+
+    # 현재 분석 상태를 기반으로 질의 생성
+    import json
+    detect_query = json.dumps(filtered_state, ensure_ascii=False)
+
+    # Detect Agent 실행
+    detect_return = ctx.detect.detect_run(prompt_query=detect_query)
+
+    state["detect_result"] = detect_return
+
+    # 결과 파싱
+    detect_json = core.safe_json_loads(detect_return)
+    state["detect_json"] = detect_json
+
+    # 결정 추출
+    if isinstance(detect_json, dict):
+        decision = detect_json.get("decision", "continue")
+        confidence = detect_json.get("confidence", 0.5)
+        reasoning = detect_json.get("reasoning", "")
+
+        state["detect_decision"] = decision
+        state["detect_confidence"] = confidence
+
+        # 결정 출력
+        decision_style = {
+            "flag_found": "bold green",
+            "shell_acquired": "bold green",
+            "privilege_escalated": "bold green",
+            "exploit_ready": "bold yellow",
+            "continue": "cyan",
+            "retry": "yellow",
+            "end": "red"
+        }.get(decision, "white")
+
+        console.print(f"Decision: {decision} (confidence: {confidence:.0%})", style=decision_style)
+        if reasoning:
+            console.print(f"Reasoning: {reasoning[:200]}...", style="dim")
+    else:
+        # JSON 파싱 실패 시 기본값
+        state["detect_decision"] = "continue"
+        state["detect_confidence"] = 0.5
+        console.print("Decision: continue (default)", style="cyan")
 
     return state

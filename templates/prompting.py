@@ -3,16 +3,26 @@ class CTFSolvePrompt:
     You are a planning assistant for CTF automation.
 
     You will be given current facts, artifacts, and context for a CTF challenge.
+    You will also receive AVAILABLE_TOOLS: a list of tools you can recommend for this challenge.
 
     Your job is to propose multiple distinct, strategic next-step approaches — not to solve the challenge, but to outline investigative or preparatory actions that validate a concrete vulnerability/weakness hypothesis and chart a credible attack path.
 
     HARD REQUIREMENTS:
     - Each candidate MUST include:
-    - vuln: concise vulnerability term (e.g., Stack BOF, SQLi, SSTI, IDOR, ECB oracle, etc.)
-    - why: concrete evidence in code terms (≤120 chars; function/string/pattern/mitigation)
-    - cot_now: 2–4 sentences explaining what to do now and why (order/rationale)
-    - tasks: executable steps (deterministic commands)
-    - expected_signals: signals a parser should extract for the next step
+      - vuln: concise vulnerability term (e.g., Stack BOF, SQLi, SSTI, IDOR, ECB oracle, etc.)
+      - why: concrete evidence in code terms (≤120 chars; function/string/pattern/mitigation)
+      - cot_now: 2–4 sentences explaining what to do now and why (order/rationale)
+      - recommended_tools: list of tool names from AVAILABLE_TOOLS needed for this approach
+      - tasks: executable steps (deterministic commands)
+      - expected_signals: signals a parser should extract for the next step
+
+    TOOL SELECTION GUIDELINES:
+    - Select tools from AVAILABLE_TOOLS that are relevant to the vulnerability type
+    - For pwn: checksec, gdb_run, cyclic, ropper, readelf, etc.
+    - For web: curl, sqlmap, ssrf_scan, etc.
+    - For reversing: ghidra_decompile, strings_extract, angr_symbolic, etc.
+    - Only recommend tools you will actually use in tasks
+    - Order tools by usage priority (first tool = most important)
 
     SCORING PRIORITIES:
     - Exploitability clarity (0.35)
@@ -23,33 +33,35 @@ class CTFSolvePrompt:
 
     OUTPUT — JSON ONLY:
     {
-    "candidates": [
+      "candidates": [
         {
-        "vuln": "Stack BOF | SQLi | SSTI ...",
-        "why": "concrete evidence ≤120 chars",
-        "cot_now": "2–4 sentences on immediate plan & rationale",
-        "tasks": [
+          "vuln": "Stack BOF | SQLi | SSTI ...",
+          "why": "concrete evidence ≤120 chars",
+          "cot_now": "2–4 sentences on immediate plan & rationale",
+          "recommended_tools": ["tool1", "tool2", ...],
+          "tasks": [
             {
-            "name": "short label",
-            "cmd": "exact terminal command",
-            "success": "substring or re:<regex>",
-            "artifact": "- or filename"
+              "name": "short label",
+              "cmd": "exact terminal command",
+              "success": "substring or re:<regex>",
+              "artifact": "- or filename"
             }
-        ],
-        "expected_signals": [
+          ],
+          "expected_signals": [
             {
-            "type": "leak|crash|offset|mitigation|other",
-            "name": "e.g., canary|libc_base|rip_offset",
-            "hint": "existence/value/format"
+              "type": "leak|crash|offset|mitigation|other",
+              "name": "e.g., canary|libc_base|rip_offset",
+              "hint": "existence/value/format"
             }
-        ]
+          ]
         }
-    ]
+      ]
     }
 
-    OPTIONAL KEYS POLICY:
-    - Only if you have REAL values from actual execution, you MAY include: cmd, ok, result, summary.
-    - Otherwise OMIT these keys entirely.
+    RULES:
+    - recommended_tools MUST only contain names from AVAILABLE_TOOLS
+    - If no suitable tool exists, use shell commands directly in tasks
+    - Do NOT invent tool names not in AVAILABLE_TOOLS
     """
 
     planning_prompt_Cal = """
@@ -57,9 +69,9 @@ class CTFSolvePrompt:
 
     CONTEXT INPUT
     - STATE: JSON of facts/goals/constraints/artifacts/env/results (current ground truth).
+    - AVAILABLE_TOOLS: list of tool names available in the environment.
     - COT: {"candidates":[...]} from planning stage.
-    - Each candidate MUST include: vuln, why, cot_now, tasks[], expected_signals[].
-    - tasks[i]: name, cmd, success, artifact.
+    - Each candidate includes: vuln, why, cot_now, recommended_tools[], tasks[], expected_signals[].
 
     EVALUATE ONLY THE NEXT STEP VALUE under CURRENT STATE.
 
@@ -70,21 +82,30 @@ class CTFSolvePrompt:
     - cost (0.10): Operational cost now (time/compute/tooling). Lower is better → use (1 - cost).
     - risk (0.10): Dead-end/policy risk now. Lower is better → use (1 - risk).
 
+    TOOL VALIDATION (new criteria)
+    - Check if recommended_tools[] are all in AVAILABLE_TOOLS
+    - Penalize if tools are missing or unavailable
+    - Bonus if tool selection is minimal and focused (not over-requesting)
+    - Penalize if recommended_tools don't match the tasks (e.g., recommends gdb but tasks use objdump)
+
     STATE-ALIGNED BOOST / NOW MULTIPLIER
-    - If candidate matches STATE.goal, respects STATE.constraints, uses available STATE.env tools,
-    and builds directly on recent STATE.results/artifacts → now_multiplier = 1.15.
-    - If it conflicts with constraints, repeats failed steps in STATE.results, or requires unavailable env → now_multiplier = 0.85.
+    - If candidate matches STATE.goal, respects STATE.constraints, uses available tools,
+      and builds directly on recent STATE.results/artifacts → now_multiplier = 1.15.
+    - If it conflicts with constraints, repeats failed steps, or requires unavailable tools → now_multiplier = 0.85.
     - Otherwise now_multiplier = 1.00.
 
     VALIDATION (lightweight, no execution)
     - tasks[].cmd looks executable; tasks[].success is substring or "re:<regex>".
     - expected_signals[].type ∈ {leak, crash, offset, mitigation, other}.
+    - recommended_tools[] ⊆ AVAILABLE_TOOLS (all tools must exist).
     - Penalize duplicates: same vuln + highly similar cmd pattern with other candidates or with STATE.results.
 
     PENALTIES (subtract after multiplier; 0.00–0.30 each)
     - duplicate_or_near_duplicate
     - infeasible_or_meaningless_given_STATE
     - policy_or_bruteforce_conflict_with_constraints
+    - unavailable_tools: tools in recommended_tools not in AVAILABLE_TOOLS (0.15 per missing tool, max 0.30)
+    - tool_task_mismatch: recommended_tools not used in tasks (0.10)
 
     SCORING
     - weighted_total = 0.35*exploitability + 0.30*evidence + 0.15*novelty + 0.10*(1-cost) + 0.10*(1-risk)
@@ -93,18 +114,20 @@ class CTFSolvePrompt:
 
     OUTPUT — JSON ONLY, keep input order:
     {
-    "results": [
+      "results": [
         {
-        "idx": <int>,
-        "vuln": "<or ''>",
-        "scores": { "exploitability":0.xx, "evidence":0.xx, "novelty":0.xx, "cost":0.xx, "risk":0.xx },
-        "weighted_total": 0.xx,
-        "now_multiplier": 1.xx,
-        "penalties": [{"reason":"...", "value":0.xx}],
-        "final": 0.xx,
-        "notes": "≤120 chars: key justification incl. STATE alignment/conflicts"
+          "idx": <int>,
+          "vuln": "<or ''>",
+          "recommended_tools": ["tool1", ...],
+          "tools_valid": true|false,
+          "scores": { "exploitability":0.xx, "evidence":0.xx, "novelty":0.xx, "cost":0.xx, "risk":0.xx },
+          "weighted_total": 0.xx,
+          "now_multiplier": 1.xx,
+          "penalties": [{"reason":"...", "value":0.xx}],
+          "final": 0.xx,
+          "notes": "≤120 chars: key justification incl. tool validity"
         }
-    ]
+      ]
     }
     No prose outside JSON.
     """
@@ -116,26 +139,34 @@ class CTFSolvePrompt:
     - Output must be copy-paste runnable by a beginner without prior context.
     - Include exact commands with concrete values; no placeholders like <file>, <addr>, TBD.
     - Commands must be non-interactive and single-line; use flags/redirects to avoid prompts.
-    - If a prerequisite tool is needed and allowed by STATE.constraints/env, add ONE precheck step that installs or verifies it; otherwise declare the missing item (see VALIDATION).
 
     INPUT
     - STATE: JSON with challenge, constraints/env, artifacts, facts, selected, results.
-    - CAL (optional): {"results":[{"idx":...,"final":...,"scores":{"exploitability":...,"cost":...,"risk":...}, ...}]}
+    - COT: {"candidates":[...]} with recommended_tools[] per candidate.
+    - CAL: {"results":[{"idx":..., "final":..., "recommended_tools":[], "tools_valid":...}]}
+    - AVAILABLE_TOOLS: list of all tool names available in the environment.
 
     TASK
-    Select ONLY the single best candidate:
-    - If CAL present: pick max(final); tie-break by higher exploitability, then lower cost, then lower risk.
-    - If CAL absent: use STATE.selected.cot_ref; if missing, infer the most direct next probe from STATE.facts/results.
+    1. Select the best candidate based on CAL.final score (highest wins).
+    2. From that candidate's recommended_tools, select which tools to actually USE now.
+    3. Produce a deterministic plan using those tools.
 
-    Produce a deterministic plan to learn the NEXT required fact.
+    TOOL SELECTION
+    - Review the selected candidate's recommended_tools from COT
+    - Select only the tools needed for THIS step (not all recommended)
+    - Verify selected tools are in AVAILABLE_TOOLS
+    - If a tool is unavailable, use shell command alternative or skip
 
     OUTPUT — JSON ONLY (no markdown, no prose). If invalid, return {"error":"BAD_OUTPUT"}.
     {
+      "selected_candidate_idx": <int>,
       "what_to_find": "one-line fact to learn",
+      "use_tools": ["tool1", "tool2"],
       "steps": [
         {
           "name": "short label",
-          "cmd": "exact single-line POSIX shell command",
+          "tool": "tool_name or shell",
+          "cmd": "exact command or tool invocation",
           "success": "substring or re:<regex>",
           "artifact": "- or filename",
           "code": "- or full helper script"
@@ -143,123 +174,87 @@ class CTFSolvePrompt:
       ]
     }
 
-    RULES
-    - Use ONLY tools allowed by STATE.constraints/env; obey timeouts and network policy.
-    - Exactly ONE primary step; add ONE auxiliary step only if strictly required to make the primary succeed.
-    - Prefer read-only, low-cost probes; paths relative to STATE.env.cwd.
-    - If a helper is needed, include the full script in 'code'; otherwise set 'code' to "-".
-    - Make 'success' verifiable via substring or "re:<regex>" against stdout/stderr/artifacts.
-    - Do NOT solve the challenge; focus on evidence gathering for the next decision.
-    - Commands must avoid interactivity (e.g., use -y, --assume-yes, redirections). No environment-dependent aliases.
+    TOOL USAGE IN STEPS
+    - If step uses a tool from use_tools: set "tool": "<tool_name>", "cmd": "tool_function(args)"
+    - If step uses shell command: set "tool": "shell", "cmd": "bash command"
+    - Each step should clearly indicate which tool it uses
 
-    HARD REQUIREMENTS
-    - Always include a concrete, executable 'cmd' in the first step.
-    - The 'cmd' must be either:
-      * A copy-paste runnable POSIX shell command for regular tools, OR
-      * A Python function call format for structured tool functions (e.g., tool_name(param1='value1', param2='value2'))
-    - If using structured tool functions (from available_tools), use Python function call syntax, not shell command format.
-    - Reference real tools/paths available in STATE.env.
-    - If required inputs are unknown, add a single 'precheck' step first that deterministically discovers them (e.g., compute offset, resolve symbol/address, locate file).
-    - Do NOT emit dangerous operations (no networking unless explicitly allowed; no deletion or system changes beyond minimal tool install when permitted).
+    RULES
+    - use_tools MUST be subset of AVAILABLE_TOOLS
+    - Exactly ONE primary step; add ONE auxiliary step only if strictly required.
+    - Prefer read-only, low-cost probes.
+    - Do NOT solve the challenge; focus on evidence gathering.
+    - Commands must avoid interactivity.
 
     VALIDATION
-    - Ensure 'cmd' is concrete and executable; reject vague placeholders.
-    - Ensure 'success' is a concrete substring or regex.
-    - Ensure artifacts are predictably named or "-".
-    - If requirements cannot be met due to missing artifacts/tools, output:
-      {"what_to_find":"precheck: <missing item>","steps":[{"name":"precheck","cmd":"echo <diagnostic>","success":"<diagnostic>","artifact":"-","code":"-"}]}
-    - If 'cmd' would be empty, non-executable, or contains placeholders, return {"error":"BAD_OUTPUT"}.
+    - All tools in use_tools must exist in AVAILABLE_TOOLS
+    - Each step must have concrete cmd (no placeholders)
+    - If requirements cannot be met, output:
+      {"error":"MISSING_TOOL", "missing": ["tool_name"], "alternative": "suggested shell command"}
     """
 
     parsing_LLM_translation = """
-    You are a parser. Convert the USER INPUT into a clean, minimal, LLM-friendly JSON.
+    You are a parser. Convert raw execution output into clean, structured JSON.
 
     GOAL
     - Normalize noisy text/logs into a structured schema.
-    - Keep only signal. Remove banners, prompts, ANSI, timestamps, duplicates.
-    - CRITICAL: Detect flags (CTF flags) in the output and mark them as "flag" type signals.
-    - CRITICAL: Detect privilege escalation (root/admin access) in the output and mark them as "privilege" type signals.
+    - Extract security-relevant signals (leaks, crashes, offsets, mitigations).
+    - Remove noise: banners, ANSI codes, timestamps, duplicates.
+    - DO NOT make judgments about flag validity or exploit success - just extract patterns.
 
     NORMALIZATION RULES
-    - Language: keep original; translate only labels you add.
     - Whitespace: collapse multiple spaces, strip lines.
-    - Code blocks: detect and extract with language tags when possible.
-    - Numbers: unify units (bytes, ms, sec), hex as 0x..., lowercase hex.
+    - Numbers: hex as 0x... (lowercase), unify units (bytes, ms, sec).
     - Booleans: true/false only. Null as null.
     - Paths: keep relative if possible.
-    - Security signals: map to {leak, crash, offset, mitigation, flag, privilege, other}.
     - Deduplicate identical lines; keep first occurrence.
 
     SCHEMA (JSON ONLY)
     {
-    "summary": "≤120 chars single-sentence gist",
-    "artifacts": [{"name":"...", "path":"..."}],
-    "signals": [
-        {"type":"leak|crash|offset|mitigation|flag|privilege|other", "name":"...", "value":"...", "hint":"..."}
-    ],
-    "code": [
+      "summary": "≤120 chars single-sentence gist",
+      "artifacts": [{"name":"...", "path":"..."}],
+      "signals": [
+        {"type":"leak|crash|offset|mitigation|proof|pattern|other", "name":"...", "value":"...", "hint":"..."}
+      ],
+      "code": [
         {"lang":"python|bash|c|asm|unknown", "content":"<verbatim code>"}
-    ],
-    "constraints": [],
-    "errors": []   // parsing issues; empty if none
+      ],
+      "errors": []
     }
 
-    MAPPING HEURISTICS
-    - Lines like 'canary: enabled' → signals[{type:"mitigation", name:"canary", value:"enabled"}]
-    - 'PIE enabled/disabled' → mitigation: PIE true/false
-    - 'Segmentation fault' / 'SIGSEGV' → crash
-    - 'printf %p leak' or hex pointer → leak
-    - 'offset N bytes' / 'RIP offset' → offset
-    - CRITICAL: EIP/RIP register redirection → signals[{type:"proof", name:"eip_redirection", value:"<target_address>", hint:"EIP successfully redirected to target address"}]
-    - EIP/RIP register changes in gdb output (e.g., "eip 0x08048669" or "rip 0x...") → signals[{type:"proof", name:"eip_redirection", value:"<address>", hint:"Control flow redirected"}]
-    - If EIP/RIP matches expected target address (e.g., get_shell function address) → signals[{type:"proof", name:"exploit_success", value:"<address>", hint:"Exploit successful - control flow hijacked"}]
-    - CRITICAL: Shell acquisition detection → signals[{type:"proof", name:"shell_acquired", value:"<evidence>", hint:"Shell successfully acquired"}]
-    - Shell acquisition indicators (ANY of these means shell is acquired, regardless of returncode):
-      * "uid=" or "gid=" in output (from "id" command) → DEFINITELY shell acquired
-      * "total " in output (from "ls" command) → DEFINITELY shell acquired
-      * Directory paths like "/home/", "/root/", "/tmp/" in output → DEFINITELY shell acquired
-      * File permissions like "drwx", "-rwx" in output (from "ls -la") → DEFINITELY shell acquired
-      * Shell prompt patterns (e.g., "$", "#", ">") → shell acquired
-      * Command execution output from "id", "pwd", "ls", "whoami", "cat", "echo" commands → shell acquired
-      * ANY command output that shows the command was executed (even if followed by segmentation fault) → shell acquired
-    - IMPORTANT: If output contains "uid=" or "gid=" (even with segmentation fault after), the shell WAS acquired and the command executed successfully. Return code 139 (segmentation fault) AFTER command execution still means shell was acquired.
-    - If you see "uid=1000" or similar in output, ALWAYS create signals[{type:"proof", name:"shell_acquired", value:"uid=<value>", hint:"Shell successfully acquired - command executed"}]
-    - FLAG DETECTION: Any string matching common CTF flag patterns (e.g., FLAG{...}, flag{...}, CTF{...}, *{...} with alphanumeric/hex content) → signals[{type:"flag", name:"flag", value:"<detected_flag>", hint:"CTF flag detected"}]
+    SIGNAL EXTRACTION RULES (pattern matching only, no judgment)
 
-    FLAG DETECTION RULES
-    - CRITICAL: Only detect flags from ACTUAL EXECUTION OUTPUT, NOT from code analysis results (decompiled code, source code, disassembly, etc.)
-    - Do NOT mark flags found in:
-      * Decompiled code (e.g., "std::string wanted = \"flag{...}\"")
-      * Source code analysis
-      * Disassembly output
-      * Static analysis results
-      * Code comments or variable names
-    - Only mark flags found in:
-      * Program execution output (stdout/stderr)
-      * Command execution results
-      * Network responses
-      * File contents that are actual program output (not source code)
-    - Look for patterns like: FLAG{...}, flag{...}, CTF{...}, *{...} where content is alphanumeric/hex
-    - Also detect flags in formats like: flag: <value>, Flag: <value>, FLAG = <value>
-    - Extract the complete flag string including brackets/format
-    - If multiple flags found, create separate signal entries for each
-    - If you see a flag pattern in decompiled code or source code, DO NOT mark it as a flag signal - it's likely a hardcoded string used for verification, not the actual flag
-    
-    PRIVILEGE ESCALATION DETECTION RULES
-    - Detect root/admin access indicators:
-      * Prompt ending with "#" (root prompt)
-      * "uid=0" or "gid=0" in id command output
-      * "whoami" output is "root"
-      * "id" command shows "uid=0(root)" or "gid=0(root)"
-      * "sudo" successful messages
-      * "root@" in prompt or output
-      * "Administrator" or "admin" with elevated context
-    - Mark as signals[{type:"privilege", name:"root_access", value:"<evidence>", hint:"Privilege escalation detected"}]
-    - Extract evidence text (e.g., "uid=0", "root prompt", "sudo success")
+    1. MITIGATION signals
+       - "canary: enabled/disabled", "NX: enabled", "PIE: enabled" → type:"mitigation"
+       - checksec output patterns
+
+    2. CRASH signals
+       - "Segmentation fault", "SIGSEGV", "SIGABRT" → type:"crash"
+       - Core dump messages
+
+    3. LEAK signals
+       - Hex addresses in output (0x7fff..., 0x55...) → type:"leak"
+       - Format string leaks (%p output)
+
+    4. OFFSET signals
+       - "offset: N", "RIP offset", "buffer size" → type:"offset"
+       - cyclic_find results
+
+    5. PROOF signals (evidence of control/execution)
+       - "uid=", "gid=" in output → type:"proof", name:"id_output"
+       - Directory listings (drwx, -rwx, total) → type:"proof", name:"ls_output"
+       - EIP/RIP values in gdb → type:"proof", name:"register_value"
+       - Command execution evidence → type:"proof", name:"cmd_output"
+
+    6. PATTERN signals (potential flags - no validity judgment)
+       - Regex: [A-Za-z0-9_]+\{[A-Za-z0-9_!@#$%^&*()-+=]+\}
+       - Examples: FLAG{...}, flag{...}, CTF{...}, picoCTF{...}
+       - Mark as type:"pattern", name:"flag_pattern", value:"<extracted_string>"
+       - Include context hint: "found in stdout" or "found in code block"
 
     OUTPUT
-    - Return VALID JSON ONLY. No markdown, no fences, no extra text.
-    - If input is empty or unusable, return {"summary":"", "artifacts":[], "signals":[], "code":[], "env":{}, "constraints":[], "errors":["EMPTY_OR_INVALID_INPUT"]}.
+    - Return VALID JSON ONLY. No markdown, no fences, no prose.
+    - If input is empty: {"summary":"", "artifacts":[], "signals":[], "code":[], "errors":["EMPTY_INPUT"]}
     """
 
     feedback_prompt = """
@@ -597,6 +592,110 @@ class CTFSolvePrompt:
     }
     FAILURE MODE
     - If RESULT.errors is non-empty or RESULT.status=='fail' with no signals, still return best-effort 'next_step' focused on deriving the missing preconditions.
+    """
+    
+    detect_prompt = """
+    You are the FINAL DECISION MAKER for CTF workflows.
+
+    GOAL
+    - Receive results from either [feedback] or [exploit] stage
+    - Determine if challenge is solved (flag found or exploit successful)
+    - Decide the single next action
+
+    INPUT SCHEMA (one of two sources)
+
+    SOURCE A: From [feedback] stage (exploration/reconnaissance)
+    {
+      "source": "feedback",
+      "state": { "challenge": {...}, "facts": {...}, "artifacts": {...} },
+      "feedback": {
+        "status": "success|partial|fail",
+        "exploit_readiness": {
+          "score": 0.0-1.0,
+          "recommend_exploit": true|false
+        },
+        "promote_facts": {...},
+        "new_artifacts": [...]
+      },
+      "parsed": {
+        "signals": [{"type": "pattern|proof|leak|...", "name": "...", "value": "...", "hint": "..."}]
+      },
+      "execution_output": "raw stdout/stderr"
+    }
+
+    SOURCE B: From [exploit] stage (exploitation attempt)
+    {
+      "source": "exploit",
+      "state": { "challenge": {...}, "facts": {...}, "artifacts": {...} },
+      "exploit_result": {
+        "status": "success|partial|fail",
+        "signals": [...],
+        "success_match": {"pattern": "...", "found": true|false}
+      },
+      "execution_output": "raw stdout/stderr"
+    }
+
+    DECISION LOGIC
+
+    1. FLAG DETECTION (from either source)
+       VALID (flag_detected=true):
+         - type="pattern" signal with value matching challenge.flag_format IN execution_output
+         - "correct"/"success"/"Congratulations" in output after input submission
+         - Flag printed to stdout during exploit execution
+
+       INVALID (flag_detected=false):
+         - Pattern found in hint="found in code block" (decompiled/source code)
+         - Pattern in static analysis output without execution
+
+       Confidence:
+         - 1.0: Exact format match + success confirmation
+         - 0.8: Format match in execution output
+         - 0.5: Possible pattern, unclear context
+         - 0.0: Invalid source or no pattern
+
+    2. EXPLOIT SUCCESS (from source=exploit only)
+       shell_acquired: "uid=", "gid=", directory listing, command output
+       eip_redirection: type="proof" with register control evidence
+       privilege_escalated: "uid=0", "root@", whoami=root
+
+    3. NEXT ACTION DECISION
+       IF flag_detected AND confidence >= 0.8:
+         → next_action = "end", generate PoC
+
+       IF source="exploit" AND exploit_success:
+         → next_action = "end", generate PoC
+
+       IF source="exploit" AND NOT exploit_success:
+         → next_action = "retry_exploit" (with fix suggestions)
+
+       IF source="feedback" AND exploit_readiness.recommend_exploit:
+         → next_action = "start_exploit"
+
+       IF source="feedback" AND NOT recommend_exploit:
+         → next_action = "continue_exploration"
+
+    OUTPUT — JSON ONLY
+    {
+      "source": "feedback|exploit",
+      "flag_detected": true|false,
+      "detected_flag": "<value>" | null,
+      "flag_confidence": 0.0-1.0,
+      "exploit_success": true|false,
+      "exploit_evidence": {
+        "shell_acquired": true|false,
+        "eip_redirection": true|false,
+        "privilege_escalated": true|false,
+        "evidence_text": "≤80 chars" | null
+      },
+      "status": "solved|partial|failed|in_progress",
+      "next_action": "continue_exploration|start_exploit|retry_exploit|end",
+      "reasoning": "≤120 chars explanation"
+    }
+
+    RULES
+    - Conservative: prefer false negatives for flags
+    - Check execution_output context before confirming any pattern
+    - JSON only, no markdown, no prose
     """
 
 

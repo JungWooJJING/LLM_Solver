@@ -36,7 +36,6 @@ class ReversingTool:
         self._check_binary_exists()
     
     def _run_command(self, cmd: List[str], timeout: int = 30) -> Dict[str, any]:
-        """명령어 실행 헬퍼 함수"""
         try:
             result = subprocess.run(
                 cmd,
@@ -65,7 +64,6 @@ class ReversingTool:
             }
     
     def set_binary_path(self, binary_path: str):
-        """바이너리 경로 설정"""
         self.binary_path = binary_path
         self._check_binary_exists()
     
@@ -224,7 +222,6 @@ class ReversingTool:
             }, indent=2)
         
     def _find_function_by_address(self, fm, address_str: str):
-        """주소로 함수 찾기"""
         try:
             # 주소 문자열 정규화
             addr_str = address_str.replace("0x", "").replace("0X", "")
@@ -256,7 +253,6 @@ class ReversingTool:
     
     
     def _decompile_function(self, func, decomp, listing):
-        """함수 하나를 디컴파일하고 결과 반환"""
         try:
             func_name = func.getName()
             entry_point = func.getEntryPoint()
