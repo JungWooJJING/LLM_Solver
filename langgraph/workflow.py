@@ -15,20 +15,33 @@ except ImportError:
     from node import CoT_node, Cal_node, instruction_node, tool_selection_node, multi_instruction_node, execution_node, track_update_node, parsing_node, feedback_node, exploit_node, poc_node, help_node, option_input_node, detect_node
 
 def route_by_option(state: PlanningState) -> str:
-    # Recursion limit 체크
+    option = state.get("option", "")
+
+    # Recursion limit 체크 (단, --continue와 --quit은 항상 허용)
     workflow_step_count = state.get("workflow_step_count", 0)
     RECURSION_LIMIT = 50
     if workflow_step_count >= RECURSION_LIMIT:
         from rich.console import Console
         console = Console()
-        console.print(f"Recursion limit ({RECURSION_LIMIT}) reached. Please choose an option.", style="bold yellow")
-        console.print("  Use --continue to reset counters or --quit to exit.", style="cyan")
-        # 옵션이 비어있으면 사용자 입력 대기
-        option = state.get("option", "")
-        if not option:
-            return "invalid"  # help로 가서 옵션 안내
 
-    option = state.get("option", "")
+        # --continue는 카운터를 리셋하므로 항상 허용
+        if option == "--continue":
+            console.print("Recursion limit reached, but --continue resets counters.", style="bold green")
+            # 카운터 리셋은 option_input_node에서 이미 처리됨
+            pass  # 계속 진행
+        elif option == "--quit":
+            return "end"
+        elif option:
+            console.print(f"[!] Recursion limit ({RECURSION_LIMIT}) reached.", style="bold yellow")
+            console.print("  Only --continue (to reset) or --quit (to exit) are allowed.", style="cyan")
+            return "invalid"
+        else:
+            # 옵션이 비어있으면 사용자에게 선택하도록 안내
+            # NOTE: state 변경은 라우팅 함수가 아닌 option_input_node에서 처리
+            console.print(f"[!] Recursion limit ({RECURSION_LIMIT}) reached.", style="bold yellow")
+            console.print("  Use --continue to reset counters or --quit to exit.", style="cyan")
+            return "invalid"
+
     has_cot_result = bool(state.get("cot_result"))
 
     # 이미 작업이 진행된 상태인지 확인
@@ -200,66 +213,49 @@ def route_after_parsing(state: PlanningState) -> str:
         return "success_continue"
 
 def route_after_feedback(state: PlanningState) -> str:
+    """
+    순수 라우팅 함수 - state 변경 없이 라우팅 결정만 수행
+    NOTE: 카운터 증가는 feedback_node에서 처리됨
+    """
     from rich.console import Console
     console = Console()
-    
+
     feedback_json = state.get("feedback_json", {})
     tracks = state.get("vulnerability_tracks", {})
-    results = state.get("results", [])
-    
-    # Workflow step count 추적 및 recursion limit 체크
-    workflow_step_count = state.get("workflow_step_count", 0)
-    workflow_step_count += 1
-    state["workflow_step_count"] = workflow_step_count
-    
-    # 반복 횟수 추적 (--continue 시 리셋됨)
-    iteration_count = state.get("iteration_count", 0)
-    iteration_count += 1
-    state["iteration_count"] = iteration_count
-    
-    # 최대 반복 횟수 체크 (무한 루프 방지) - 지속적인 진행을 위해 여유있게 설정
-    MAX_ITERATIONS = 10  # 더 오래 지속적으로 진행하도록 증가
-    RECURSION_LIMIT = 50  # 충분한 여유를 두어 지속적인 진행 허용
 
+    # 카운터 읽기 (변경하지 않음 - feedback_node에서 이미 증가됨)
+    workflow_step_count = state.get("workflow_step_count", 0)
+    iteration_count = state.get("iteration_count", 0)
+
+    MAX_ITERATIONS = 10
+    RECURSION_LIMIT = 50
+
+    # 제한 체크
     if workflow_step_count >= RECURSION_LIMIT - 10:
         console.print(f"Approaching recursion limit: {workflow_step_count}/{RECURSION_LIMIT} steps", style="yellow")
         if workflow_step_count >= RECURSION_LIMIT:
             console.print(f"Recursion limit ({RECURSION_LIMIT}) reached. Ending workflow.", style="bold yellow")
             console.print("  Use --continue to reset counters or --quit to exit.", style="cyan")
-            # option_input으로 돌아가기 위해 state에 플래그 설정
-            state["option"] = ""  # 옵션을 비워서 다시 입력받도록
-            return "end"  # end를 반환하면 main workflow로 돌아가서 option_input으로 이동
+            return "end"
 
     if iteration_count >= MAX_ITERATIONS:
         console.print(f"Maximum iterations ({MAX_ITERATIONS}) reached. Ending workflow.", style="bold yellow")
         console.print(f"  Use --continue to reset and continue for another {MAX_ITERATIONS} iterations.", style="cyan")
         return "end"
-    
-    # === Exploit Readiness 기반 자동 Exploit 트리거 ===
-    # 자동 exploit 트리거를 비활성화하고 사용자가 --exploit 옵션을 직접 선택하도록 함
-    # exploit_readiness = state.get("exploit_readiness", {})
-    # exploit_score = exploit_readiness.get("score", 0.0)
-    # recommend_exploit = exploit_readiness.get("recommend_exploit", False)
-    #
-    # 자동 exploit 트리거는 비활성화됨 - 사용자가 명시적으로 --exploit 선택 필요
 
     # 성공 조건 확인
     status = feedback_json.get("status", "")
     if status == "success":
-        # 성공했지만 더 탐색할 수 있으면 계속, 아니면 종료
         active_tracks = [t for t in tracks.values() if t.get("status") in ["in_progress", "pending"]]
         if not active_tracks:
             console.print("Objective achieved and no active tracks. Ending workflow.", style="bold green")
             return "end"
-        # 자동으로 Planning으로 돌아가기 (--continue 옵션으로 설정하여 --file이 작동하지 않게 함)
         console.print("Objective achieved! Returning to Planning for next steps.", style="bold green")
-        state["option"] = "--continue"  # 자동 진행을 위해 --continue로 설정
         return "continue_planning"
-    
+
     # 활성 트랙 확인
     active_tracks = [t for t in tracks.values() if t.get("status") in ["in_progress", "pending"]]
     if not active_tracks:
-        # 모든 트랙이 완료되었거나 실패
         completed_tracks = [t for t in tracks.values() if t.get("status") == "completed"]
         failed_tracks = [t for t in tracks.values() if t.get("status") == "failed"]
 
@@ -270,35 +266,22 @@ def route_after_feedback(state: PlanningState) -> str:
             console.print("All tracks failed. Ending workflow.", style="bold red")
             return "end"
         else:
-            # active_tracks가 없을 때는 더 이상 Planning으로 돌아가지 않고 종료
-            # (이미 모든 트랙을 시도했거나 새로운 트랙을 만들 수 없는 상황)
-            console.print("No active tracks and no clear completion status. Ending workflow to prevent infinite loop.", style="yellow")
+            console.print("No active tracks. Ending workflow to prevent infinite loop.", style="yellow")
             console.print("  Use --continue to explore new attack vectors.", style="cyan")
             return "end"
 
-    # 진행 중이면 자동으로 Planning으로 돌아가기 (MAX_ITERATIONS까지 지속적으로 진행)
+    # 진행 중이면 계속
     if status in ["partial", "in_progress"]:
-        if iteration_count >= MAX_ITERATIONS:
-            console.print(f"Maximum iterations ({MAX_ITERATIONS}) reached. Returning to option selection.", style="yellow")
-            console.print("  Choose --continue to reset and continue exploration, or try a different option.", style="cyan")
-            return "end"
         console.print(f"Progress made. Continuing to Planning (iteration {iteration_count}/{MAX_ITERATIONS}).", style="cyan")
-        state["option"] = "--continue"  # 자동 진행을 위해 --continue로 설정
         return "continue_planning"
 
-    # 실패해도 MAX_ITERATIONS까지는 계속 시도 (지속적인 진행)
+    # 실패해도 계속 시도
     if status == "fail":
-        if iteration_count >= MAX_ITERATIONS:
-            console.print(f"Maximum iterations ({MAX_ITERATIONS}) reached after failures. Returning to option selection.", style="yellow")
-            console.print("  Choose --continue to reset and try a new approach, or try a different option.", style="cyan")
-            return "end"
-        console.print(f"Current approach failed, but continuing to try new approach (iteration {iteration_count}/{MAX_ITERATIONS}).", style="yellow")
-        state["option"] = "--continue"  # 자동 진행을 위해 --continue로 설정
+        console.print(f"Current approach failed, continuing to try new approach (iteration {iteration_count}/{MAX_ITERATIONS}).", style="yellow")
         return "continue_planning"
 
-    # 기본값: 무조건 종료하고 옵션 선택으로 복귀 (무한 루프 방지)
-    console.print(f"Feedback status: {status}. Returning to option selection to prevent infinite loop.", style="yellow")
-    console.print("  Choose --continue to continue exploration, or try a different option.", style="cyan")
+    # 기본값: 종료
+    console.print(f"Feedback status: {status}. Returning to option selection.", style="yellow")
     return "end"
 
 def route_after_exploit(state: PlanningState) -> str:
@@ -306,12 +289,14 @@ def route_after_exploit(state: PlanningState) -> str:
 
 
 def route_after_detect(state: PlanningState) -> str:
-
+    """
+    순수 라우팅 함수 - state 변경 없이 라우팅 결정만 수행
+    NOTE: retry_count 증가는 detect_node에서 처리됨
+    """
     from rich.console import Console
     console = Console()
 
     decision = state.get("detect_decision", "continue")
-    confidence = state.get("detect_confidence", 0.5)
 
     # 성공 케이스: PoC 생성
     if decision in ["flag_found", "shell_acquired", "privilege_escalated"]:
@@ -325,7 +310,6 @@ def route_after_detect(state: PlanningState) -> str:
 
     # 계속 분석
     if decision == "continue":
-        # Workflow step count 추적
         workflow_step_count = state.get("workflow_step_count", 0)
         iteration_count = state.get("iteration_count", 0)
         MAX_ITERATIONS = 10
@@ -335,7 +319,6 @@ def route_after_detect(state: PlanningState) -> str:
             console.print(f"Iteration limit reached. Ending workflow.", style="bold yellow")
             return "end"
 
-        state["option"] = "--continue"
         console.print(f"Continuing analysis (iteration {iteration_count + 1}/{MAX_ITERATIONS}).", style="cyan")
         return "continue_planning"
 
@@ -348,7 +331,7 @@ def route_after_detect(state: PlanningState) -> str:
             console.print(f"Maximum retries ({MAX_RETRIES}) reached. Ending.", style="bold red")
             return "end"
 
-        state["detect_retry_count"] = retry_count + 1
+        # NOTE: retry_count 증가는 detect_node에서 처리됨
         console.print(f"Retrying current approach (attempt {retry_count + 1}/{MAX_RETRIES}).", style="yellow")
         return "continue_planning"
 

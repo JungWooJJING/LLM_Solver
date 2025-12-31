@@ -1,6 +1,54 @@
 # graph/state.py
 from typing import TypedDict, List, Dict, Any, Literal
 from typing_extensions import Annotated
+import threading
+
+
+# Thread-safe 캐시 래퍼
+class ThreadSafeDict:
+    def __init__(self, data: dict = None):
+        self._data = data if data is not None else {}
+        self._lock = threading.RLock()
+
+    def get(self, key, default=None):
+        with self._lock:
+            return self._data.get(key, default)
+
+    def __getitem__(self, key):
+        with self._lock:
+            return self._data[key]
+
+    def __setitem__(self, key, value):
+        with self._lock:
+            self._data[key] = value
+
+    def __contains__(self, key):
+        with self._lock:
+            return key in self._data
+
+    def __iter__(self):
+        with self._lock:
+            return iter(self._data.copy())
+
+    def items(self):
+        with self._lock:
+            return list(self._data.items())
+
+    def keys(self):
+        with self._lock:
+            return list(self._data.keys())
+
+    def values(self):
+        with self._lock:
+            return list(self._data.values())
+
+    def update(self, other):
+        with self._lock:
+            self._data.update(other)
+
+    def to_dict(self):
+        with self._lock:
+            return self._data.copy()
 
 class Plan(TypedDict):
     # 현재 계획
@@ -378,5 +426,42 @@ def is_shell_acquired(text: str) -> bool:
     # 또는 강한 신호가 2개 이상
     if sum(strong_signals) >= 2:
         return True
+
+    return False
+
+
+def is_privilege_escalated(text: str) -> bool:
+    import re
+
+    if not text:
+        return False
+
+    # 1. uid=0 패턴 (root 권한)
+    if re.search(r"uid=0\(root\)", text):
+        return True
+
+    # 2. root 사용자 whoami 출력
+    if re.search(r"^root\s*$", text, re.MULTILINE):
+        return True
+
+    # 3. root 프롬프트
+    if "root@" in text and "#" in text:
+        return True
+
+    # 4. sudo 성공 메시지
+    if "is not in the sudoers file" not in text and "sorry" not in text.lower():
+        if re.search(r"root@|uid=0|euid=0", text):
+            return True
+
+    # 5. 권한 변경 성공 메시지
+    priv_patterns = [
+        r"privilege.*escalat",
+        r"got\s+root",
+        r"became\s+root",
+        r"now\s+root",
+    ]
+    for pattern in priv_patterns:
+        if re.search(pattern, text, re.IGNORECASE):
+            return True
 
     return False

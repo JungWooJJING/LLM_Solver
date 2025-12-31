@@ -112,8 +112,8 @@ class PwnableTool:
     
     
     def ropgadget_search(
-        self, 
-        search_pattern: str,
+        self,
+        search_pattern: Optional[str] = "",
         binary_path: Optional[str] = None,
         gadget_type: Optional[str] = None
     ) -> str:
@@ -786,14 +786,14 @@ def create_pwnable_tools(binary_path: Optional[str] = None) -> List[BaseTool]:
         StructuredTool.from_function(
             func=tool_instance.ropgadget_search,
             name="rop_gadget_search",
-            description="Searches for ROP gadgets using ROPgadget. Specify the gadget pattern to search with search_pattern (e.g., 'pop rdi', 'ret').",
+            description="Searches for ROP gadgets using ROPgadget. Optionally specify search_pattern to filter (e.g., 'pop rdi', 'ret'). If no pattern is given, returns common useful gadgets.",
             args_schema=type('ROPArgs', (BaseModel,), {
                 '__annotations__': {
-                    'search_pattern': str,
+                    'search_pattern': Optional[str],
                     'binary_path': Optional[str],
                     'gadget_type': Optional[str]
                 },
-                'search_pattern': Field(description="Gadget pattern to search (e.g., 'pop rdi', 'ret')"),
+                'search_pattern': Field(default="", description="Gadget pattern to search (e.g., 'pop rdi', 'ret'). Leave empty to find all common gadgets."),
                 'binary_path': Field(default=None, description="Binary path (optional)"),
                 'gadget_type': Field(default=None, description="Gadget type filter (optional)")
             })

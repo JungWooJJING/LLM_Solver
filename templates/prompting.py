@@ -5,6 +5,12 @@ class CTFSolvePrompt:
     You will be given current facts, artifacts, and context for a CTF challenge.
     You will also receive AVAILABLE_TOOLS: a list of tools you can recommend for this challenge.
 
+    ⚠️ CRITICAL: TOOL USAGE CONSTRAINT ⚠️
+    You MUST ONLY recommend tools that exist in AVAILABLE_TOOLS.
+    DO NOT recommend generic tool names like "ropper", "checksec", "gdb".
+    Instead, look at AVAILABLE_TOOLS and use the EXACT names provided there.
+    Example: If AVAILABLE_TOOLS has "ropgadget_search", use that - NOT "ropper" or "ROPgadget".
+
     Your job is to propose multiple distinct, strategic next-step approaches — not to solve the challenge, but to outline investigative or preparatory actions that validate a concrete vulnerability/weakness hypothesis and chart a credible attack path.
 
     HARD REQUIREMENTS:
@@ -12,17 +18,23 @@ class CTFSolvePrompt:
       - vuln: concise vulnerability term (e.g., Stack BOF, SQLi, SSTI, IDOR, ECB oracle, etc.)
       - why: concrete evidence in code terms (≤120 chars; function/string/pattern/mitigation)
       - cot_now: 2–4 sentences explaining what to do now and why (order/rationale)
-      - recommended_tools: list of tool names from AVAILABLE_TOOLS needed for this approach
-      - tasks: executable steps (deterministic commands)
+      - recommended_tools: list of EXACT tool names copied from AVAILABLE_TOOLS
+      - tasks: executable steps using tools from AVAILABLE_TOOLS (function call syntax)
       - expected_signals: signals a parser should extract for the next step
 
-    TOOL SELECTION GUIDELINES:
-    - Select tools from AVAILABLE_TOOLS that are relevant to the vulnerability type
-    - For pwn: checksec, gdb_run, cyclic, ropper, readelf, etc.
-    - For web: curl, sqlmap, ssrf_scan, etc.
-    - For reversing: ghidra_decompile, strings_extract, angr_symbolic, etc.
-    - Only recommend tools you will actually use in tasks
-    - Order tools by usage priority (first tool = most important)
+    ⚠️ TOOL SELECTION (MANDATORY) ⚠️
+    - FIRST: Read the AVAILABLE_TOOLS list completely
+    - THEN: Select tools by copying EXACT names from that list
+    - Common tool names (but ALWAYS verify in AVAILABLE_TOOLS):
+      * ROP gadgets: "rop_gadget_search"
+      * checksec: "checksec_analysis"
+      * symbols/readelf: "readelf_info"
+      * disassemble: "objdump_disassemble"
+      * strings: "strings_extract"
+      * gdb: "gdb_debug"
+      * decompile: "ghidra_decompile"
+    - NEVER guess tool names - copy them from AVAILABLE_TOOLS
+    - If no suitable tool exists in AVAILABLE_TOOLS, use "shell" and provide bash command
 
     SCORING PRIORITIES:
     - Exploitability clarity (0.35)
@@ -38,11 +50,12 @@ class CTFSolvePrompt:
           "vuln": "Stack BOF | SQLi | SSTI ...",
           "why": "concrete evidence ≤120 chars",
           "cot_now": "2–4 sentences on immediate plan & rationale",
-          "recommended_tools": ["tool1", "tool2", ...],
+          "recommended_tools": ["exact_name_from_AVAILABLE_TOOLS", ...],
           "tasks": [
             {
               "name": "short label",
-              "cmd": "exact terminal command",
+              "tool": "exact_name_from_AVAILABLE_TOOLS",
+              "cmd": "tool_name(param1='value1', param2='value2')",
               "success": "substring or re:<regex>",
               "artifact": "- or filename"
             }
@@ -59,9 +72,11 @@ class CTFSolvePrompt:
     }
 
     RULES:
-    - recommended_tools MUST only contain names from AVAILABLE_TOOLS
-    - If no suitable tool exists, use shell commands directly in tasks
-    - Do NOT invent tool names not in AVAILABLE_TOOLS
+    - recommended_tools MUST contain EXACT names copied from AVAILABLE_TOOLS
+    - tasks[].cmd MUST use function call syntax: tool_name(param='value')
+    - If no suitable tool exists in AVAILABLE_TOOLS, set tool="shell" and use bash syntax
+    - Do NOT invent tool names - only use what's in AVAILABLE_TOOLS
+    - Your output will be REJECTED if tool names don't match AVAILABLE_TOOLS
     """
 
     planning_prompt_Cal = """
@@ -135,6 +150,11 @@ class CTFSolvePrompt:
     instruction_prompt = """
     You are an instruction generator for ONE cycle in a CTF workflow.
 
+    ⚠️ CRITICAL CONSTRAINT ⚠️
+    You MUST ONLY use tools from the AVAILABLE_TOOLS list provided below.
+    DO NOT use any external commands (ropper, checksec, gdb, objdump, etc.) directly.
+    If a tool exists in AVAILABLE_TOOLS, you MUST use it instead of the shell command.
+
     BEGINNER MODE
     - Output must be copy-paste runnable by a beginner without prior context.
     - Include exact commands with concrete values; no placeholders like <file>, <addr>, TBD.
@@ -145,51 +165,68 @@ class CTFSolvePrompt:
     - COT: {"candidates":[...]} with recommended_tools[] per candidate.
     - CAL: {"results":[{"idx":..., "final":..., "recommended_tools":[], "tools_valid":...}]}
     - AVAILABLE_TOOLS: list of all tool names available in the environment.
+      *** YOU CAN ONLY USE TOOLS FROM THIS LIST ***
 
     TASK
     1. Select the best candidate based on CAL.final score (highest wins).
-    2. From that candidate's recommended_tools, select which tools to actually USE now.
-    3. Produce a deterministic plan using those tools.
+    2. Look at AVAILABLE_TOOLS list and select which tools to use.
+    3. Produce a deterministic plan using ONLY tools from AVAILABLE_TOOLS.
 
-    TOOL SELECTION
-    - Review the selected candidate's recommended_tools from COT
-    - Select only the tools needed for THIS step (not all recommended)
-    - Verify selected tools are in AVAILABLE_TOOLS
-    - If a tool is unavailable, use shell command alternative or skip
+    ⚠️ TOOL SELECTION (MANDATORY - READ CAREFULLY) ⚠️
+    - SCAN the AVAILABLE_TOOLS list FIRST before writing any command
+    - Common tool names (ALWAYS verify in AVAILABLE_TOOLS):
+      * ROP gadgets: "rop_gadget_search"
+      * checksec: "checksec_analysis"
+      * symbols/readelf: "readelf_info"
+      * disassemble: "objdump_disassemble"
+      * strings: "strings_extract"
+      * gdb: "gdb_debug"
+      * decompile: "ghidra_decompile"
+    - NEVER use shell commands like "ropper", "ROPgadget", "checksec", "readelf" directly
+    - The tool names in AVAILABLE_TOOLS are the EXACT names you must use
 
     OUTPUT — JSON ONLY (no markdown, no prose). If invalid, return {"error":"BAD_OUTPUT"}.
     {
       "selected_candidate_idx": <int>,
       "what_to_find": "one-line fact to learn",
-      "use_tools": ["tool1", "tool2"],
+      "use_tools": ["exact_tool_name_from_AVAILABLE_TOOLS"],
       "steps": [
         {
           "name": "short label",
-          "tool": "tool_name or shell",
-          "cmd": "exact command or tool invocation",
+          "tool": "exact_tool_name_from_AVAILABLE_TOOLS",
+          "cmd": "exact_tool_name(param1='value1', param2='value2')",
           "success": "substring or re:<regex>",
-          "artifact": "- or filename",
-          "code": "- or full helper script"
+          "artifact": "- or filename"
         }
       ]
     }
 
-    TOOL USAGE IN STEPS
-    - If step uses a tool from use_tools: set "tool": "<tool_name>", "cmd": "tool_function(args)"
-    - If step uses shell command: set "tool": "shell", "cmd": "bash command"
-    - Each step should clearly indicate which tool it uses
+    TOOL INVOCATION FORMAT (MANDATORY)
+    - MUST use the EXACT tool name from AVAILABLE_TOOLS
+    - Use function call syntax: tool_name(param='value', ...)
+    - Examples (using actual tool names):
+      * rop_gadget_search(binary_path='/path/to/bin', search_pattern='pop rdi')
+      * checksec_analysis(binary_path='/path/to/bin')
+      * readelf_info(binary_path='/path/to/bin', info_type='symbols')
+      * gdb_debug(binary_path='/path/to/bin', command='info functions')
+      * ghidra_decompile(binary_path='/path/to/bin', function_name='main')
+    - DO NOT use "ropper --file ..." or "ROPgadget --binary ..." - use the tool from AVAILABLE_TOOLS!
 
     RULES
-    - use_tools MUST be subset of AVAILABLE_TOOLS
+    - use_tools MUST contain EXACT names from AVAILABLE_TOOLS (copy-paste the name!)
     - Exactly ONE primary step; add ONE auxiliary step only if strictly required.
     - Prefer read-only, low-cost probes.
     - Do NOT solve the challenge; focus on evidence gathering.
     - Commands must avoid interactivity.
+    - NEVER use raw shell commands when a tool exists in AVAILABLE_TOOLS!
+    - If unsure about tool name, check AVAILABLE_TOOLS list again.
 
-    VALIDATION
-    - All tools in use_tools must exist in AVAILABLE_TOOLS
-    - Each step must have concrete cmd (no placeholders)
-    - If requirements cannot be met, output:
+    VALIDATION (YOUR OUTPUT WILL BE REJECTED IF):
+    - use_tools contains names NOT in AVAILABLE_TOOLS
+    - cmd uses shell syntax instead of tool function call
+    - tool field doesn't match a name in AVAILABLE_TOOLS
+
+    If the required tool is NOT in AVAILABLE_TOOLS, output:
       {"error":"MISSING_TOOL", "missing": ["tool_name"], "alternative": "suggested shell command"}
     """
 
@@ -247,7 +284,7 @@ class CTFSolvePrompt:
        - Command execution evidence → type:"proof", name:"cmd_output"
 
     6. PATTERN signals (potential flags - no validity judgment)
-       - Regex: [A-Za-z0-9_]+\{[A-Za-z0-9_!@#$%^&*()-+=]+\}
+       - Regex: [A-Za-z0-9_]+\\{[A-Za-z0-9_!@#$%^&*()-+=]+\\}
        - Examples: FLAG{...}, flag{...}, CTF{...}, picoCTF{...}
        - Mark as type:"pattern", name:"flag_pattern", value:"<extracted_string>"
        - Include context hint: "found in stdout" or "found in code block"
