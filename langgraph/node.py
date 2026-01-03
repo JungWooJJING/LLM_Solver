@@ -11,6 +11,26 @@ except ImportError:
 # 전역 console 객체
 console = Console()
 
+# 토큰 제한을 위한 출력 truncate 함수
+def truncate_output(text: str, max_chars: int = 50000) -> str:
+    """
+    LLM에 전달할 출력을 적절한 크기로 truncate.
+    Gemini 분당 토큰 한도(1M)를 초과하지 않도록 함.
+    """
+    if not text or len(text) <= max_chars:
+        return text
+
+    # 앞부분과 뒷부분을 유지하고 중간을 생략
+    keep_start = max_chars // 2
+    keep_end = max_chars // 2
+
+    truncated = (
+        text[:keep_start] +
+        f"\n\n... [TRUNCATED: {len(text) - max_chars} characters omitted] ...\n\n" +
+        text[-keep_end:]
+    )
+    return truncated
+
 # build_query import
 try:
     from utility.build_query import build_query
@@ -59,7 +79,10 @@ def CoT_node(state: State) -> State:
                 console.print("Continuing without decompilation...", style="yellow")
 
     console.print("=== CoT Run ===", style='bold green')
-    
+
+    # 분석이 시작되었음을 표시 (리미트 도달 후에도 유지됨)
+    state["analysis_started"] = True
+
     # 기존 트랙과 결과 정보 수집
     tracks = state.get("vulnerability_tracks", {})
     facts = state.get("facts", {})
@@ -462,12 +485,8 @@ def multi_instruction_node(state: State) -> State:
 
         instruction_json = core.safe_json_loads(instruction_return)
 
-        # 디버그: instruction_json 내용 확인
         steps = instruction_json.get("steps", [])
         if not steps:
-            console.print(f"    [DEBUG] {track_id}: No steps in instruction_json!", style="bold red")
-            console.print(f"    [DEBUG] instruction_json keys: {list(instruction_json.keys())}", style="dim")
-
             # MISSING_TOOL 에러 처리: alternative 명령어를 step으로 변환
             if instruction_json.get("error") == "MISSING_TOOL":
                 missing_tools = instruction_json.get("missing", [])
@@ -493,12 +512,6 @@ def multi_instruction_node(state: State) -> State:
                     }
                     steps = instruction_json.get("steps", [])
                     console.print(f"    [RECOVERY] Converted to {len(steps)} step(s)", style="green")
-            elif "error" in instruction_json:
-                console.print(f"    [DEBUG] Error: {instruction_json.get('error')}", style="red")
-                # Raw 응답 일부 출력 (처음 300자)
-                console.print(f"    [DEBUG] Raw response (first 300 chars): {instruction_return[:300] if instruction_return else 'EMPTY'}", style="dim")
-        else:
-            console.print(f"    [DEBUG] {track_id}: {len(steps)} step(s) found", style="dim")
 
         multi_instructions.append({
             "track_id": track_id,
@@ -628,7 +641,7 @@ def execution_node(state: State) -> State:
                 failed_info = failed_commands[cmd_hash]
                 attempt_count = failed_info.get("attempt_count", 0)
                 
-                console.print(f"  ⚠️  Skipping previously failed command: {name}", style="yellow")
+                console.print(f"  Skipping previously failed command: {name}", style="yellow")
                 console.print(f"  Command: {cmd}", style="dim")
                 console.print(f"  Previous error: {failed_info.get('error', 'Unknown error')[:100]}...", style="dim")
                 console.print(f"  Failed {attempt_count} time(s) before", style="dim")
@@ -648,7 +661,7 @@ def execution_node(state: State) -> State:
             if cmd_hash in command_cache:
                 cached_result = command_cache[cmd_hash]
                 if cached_result.get("success", False):
-                    console.print(f"  ✓ Using cached successful result for: {name}", style="green")
+                    console.print(f"  Using cached successful result for: {name}", style="green")
                     track_output.append({
                         "name": name,
                         "cmd": cmd,
@@ -748,12 +761,6 @@ def execution_node(state: State) -> State:
             toolset = [info["tool"] for info in all_tools.values()]
             tool_names = available_tool_names
 
-            # 디버그: 도구 상태 확인
-            if not toolset:
-                console.print(f"    [DEBUG] WARNING: toolset is still empty after fallback!", style="bold red")
-            else:
-                console.print(f"    [DEBUG] Available tools ({len(toolset)}): {[t.name for t in toolset[:5]]}...", style="dim")
-
             # Shell 명령어 → 도구 매핑 (LLM이 shell 명령어를 사용해도 도구로 변환)
             # 실제 도구 이름: checksec_analysis, rop_gadget_search, objdump_disassemble,
             #                strings_extract, readelf_info, one_gadget_search, gdb_debug, ghidra_decompile
@@ -783,17 +790,12 @@ def execution_node(state: State) -> State:
 
             # 1단계: 명시적 도구 호출 확인 (예: "checksec_analysis(...)")
             cmd_stripped = cmd.strip()
-            console.print(f"    [DEBUG] Checking cmd: '{cmd_stripped[:60]}...'", style="dim")
             for tool in toolset:
                 if cmd_stripped.startswith(tool.name):
                     is_tool_call = True
                     tool_name = tool.name
                     tool_instance = tool
-                    console.print(f"    [DEBUG] Matched tool: {tool.name}", style="green")
                     break
-
-            if not is_tool_call:
-                console.print(f"    [DEBUG] No direct tool match. Trying shell mapping...", style="dim")
 
             # 2단계: shell 명령어를 도구로 매핑 시도
             if not is_tool_call:
@@ -983,7 +985,7 @@ def execution_node(state: State) -> State:
                         stdout_text = f"Tool error (file not found): {str(e)}"
                         stderr_text = str(e)
                         returncode = 2  # 파일 없음
-                        console.print(f"    ❌ File not found: {e}", style="red")
+                        console.print(f"    File not found: {e}", style="red")
 
                         class ToolResult:
                             def __init__(self, stdout, stderr, returncode):
@@ -998,7 +1000,7 @@ def execution_node(state: State) -> State:
                         stdout_text = f"Tool error (network/timeout): {str(e)}"
                         stderr_text = str(e)
                         returncode = 3  # 네트워크 오류
-                        console.print(f"    ⚠️ Network/timeout error (retryable): {e}", style="yellow")
+                        console.print(f"    Network/timeout error (retryable): {e}", style="yellow")
 
                         class ToolResult:
                             def __init__(self, stdout, stderr, returncode):
@@ -1013,7 +1015,7 @@ def execution_node(state: State) -> State:
                         stdout_text = f"Tool error (invalid args): {str(e)}"
                         stderr_text = str(e)
                         returncode = 4  # 잘못된 인자
-                        console.print(f"    ❌ Invalid arguments: {e}", style="red")
+                        console.print(f"    Invalid arguments: {e}", style="red")
 
                         class ToolResult:
                             def __init__(self, stdout, stderr, returncode):
@@ -1029,7 +1031,7 @@ def execution_node(state: State) -> State:
                         stdout_text = f"Tool execution error ({error_type}): {str(e)}"
                         stderr_text = str(e)
                         returncode = 1
-                        console.print(f"    ❌ Tool error ({error_type}): {e}", style="red")
+                        console.print(f"    Tool error ({error_type}): {e}", style="red")
 
                         class ToolResult:
                             def __init__(self, stdout, stderr, returncode):
@@ -1088,7 +1090,7 @@ def execution_node(state: State) -> State:
                 }
                 
                 if has_shell_output:
-                    console.print(f"    🐚 Shell output detected in {name}", style="bold green")
+                    console.print(f"    Shell output detected in {name}", style="bold green")
                 
                 # 아티팩트 저장 (바이너리 모드로 저장 가능하도록)
                 if artifact != "-" and result.stdout:
@@ -1143,7 +1145,7 @@ def execution_node(state: State) -> State:
                         failed_commands[cmd_hash]["attempt_count"] += 1
                         failed_commands[cmd_hash]["timestamp"] = datetime.now().isoformat()
                     
-                    console.print(f"    ⚠️  Command failed - cached to prevent retry", style="yellow")
+                    console.print(f"    Command failed - cached to prevent retry", style="yellow")
                 
             except subprocess.TimeoutExpired:
                 console.print(f"    {name} (timeout)", style="red")
@@ -1234,7 +1236,7 @@ def execution_node(state: State) -> State:
 
     # 실행 상태 요약 출력
     if failed_commands:
-        console.print(f"\n  ⚠️  Failed commands cached: {len(failed_commands)}", style="yellow")
+        console.print(f"\n  Failed commands cached: {len(failed_commands)}", style="yellow")
 
     # 종합 execution_status 계산 (모든 트랙 고려)
     shell_count = sum(1 for s in track_statuses.values() if s == "shell_acquired")
@@ -1410,8 +1412,10 @@ def parsing_node(state: State) -> State:
             console.print(f"\n=== LLM_translation for {track_id} ===", style='bold green')
             # Parsing Agent에 필요한 정보만 필터링
             filtered_state = get_state_for_parsing(state)
+            # 출력이 너무 크면 truncate (토큰 한도 초과 방지)
+            truncated_output = truncate_output(result_output)
             # Rate limit은 _generate_with_retry에서 자동으로 처리됨
-            LLM_translation = ctx.parsing.LLM_translation_run(prompt_query=result_output, state=filtered_state)
+            LLM_translation = ctx.parsing.LLM_translation_run(prompt_query=truncated_output, state=filtered_state)
             parsed_results[track_id] = LLM_translation
         
         state["multi_parsing_results"] = parsed_results
@@ -1422,15 +1426,17 @@ def parsing_node(state: State) -> State:
     else:
         # 단일 instruction 모드
         result_to_parse = execution_output if execution_output else list(execution_results.values())[0] if execution_results else ""
-        
+
         if not result_to_parse:
             console.print("No execution output to parse.", style="yellow")
             return state
-        
+
         console.print("=== LLM_translation ===", style='bold green')
         # Parsing Agent에 필요한 정보만 필터링
         filtered_state = get_state_for_parsing(state)
-        LLM_translation = ctx.parsing.LLM_translation_run(prompt_query=result_to_parse, state=filtered_state)
+        # 출력이 너무 크면 truncate (토큰 한도 초과 방지)
+        truncated_result = truncate_output(result_to_parse)
+        LLM_translation = ctx.parsing.LLM_translation_run(prompt_query=truncated_result, state=filtered_state)
         state["parsing_result"] = LLM_translation
     
     # 파싱 결과에서 성공/실패 판단
@@ -1578,7 +1584,7 @@ def parsing_node(state: State) -> State:
 
             # 1. 플래그 형식 검증 (가장 먼저)
             if flag_format and not matches_flag_format(flag_value, flag_format):
-                console.print(f"⚠️  Flag format mismatch: Expected '{flag_format}', got '{flag_value[:50]}...'", style="yellow")
+                console.print(f"Flag format mismatch: Expected '{flag_format}', got '{flag_value[:50]}...'", style="yellow")
                 return False
 
             # 플래그가 실행 결과에 직접 포함되어 있는지 확인
@@ -1625,7 +1631,7 @@ def parsing_node(state: State) -> State:
                     
                     # 코드 분석 결과 패턴이 있으면 무시
                     if any(pattern in context for pattern in analysis_patterns):
-                        console.print(f"⚠️  Flag pattern found in code analysis output (ignoring): {flag_value[:50]}...", style="yellow")
+                        console.print(f"Flag pattern found in code analysis output (ignoring): {flag_value[:50]}...", style="yellow")
                         return False
                 
                 return True
@@ -1674,12 +1680,12 @@ def parsing_node(state: State) -> State:
                     break
 
             if not found_in_results and not found_in_output:
-                console.print(f"⚠️  Flag pattern found but not in execution output (ignoring): {flag_value[:50]}...", style="yellow")
+                console.print(f"Flag pattern found but not in execution output (ignoring): {flag_value[:50]}...", style="yellow")
                 console.print("   This might be a hardcoded string in source code, not an actual flag.", style="dim")
         
         # 입력값 후보들을 플래그 형식으로 변환
         if potential_input_values and is_input_value_challenge and flag_format:
-            console.print(f"💡 Found potential input values that need to be wrapped in flag format: {len(potential_input_values)}", style="cyan")
+            console.print(f"Found potential input values that need to be wrapped in flag format: {len(potential_input_values)}", style="cyan")
             
             # execution output에서 "correct" 키워드 확인
             has_correct_in_output = False
@@ -1692,19 +1698,19 @@ def parsing_node(state: State) -> State:
                     break
             
             if has_correct_in_output:
-                console.print("  ✓ 'correct' keyword found in execution output - high confidence for input values", style="green")
+                console.print("  'correct' keyword found in execution output - high confidence for input values", style="green")
             
             for input_value in potential_input_values:
                 # 플래그 형식 추출 (예: "DH{}" -> "DH{" + input_value + "}")
                 if "{}" in flag_format:
                     prefix = flag_format.split("{}")[0]
                     formatted_flag = f"{prefix}{{{input_value}}}"
-                    console.print(f"  ✓ Converting input value to flag format: {formatted_flag}", style="bold green")
+                    console.print(f"  Converting input value to flag format: {formatted_flag}", style="bold green")
                     valid_flags.append(formatted_flag)
                 elif "{" in flag_format:
                     # "DH{" 같은 형식
                     formatted_flag = flag_format + input_value + "}"
-                    console.print(f"  ✓ Converting input value to flag format: {formatted_flag}", style="bold green")
+                    console.print(f"  Converting input value to flag format: {formatted_flag}", style="bold green")
                     valid_flags.append(formatted_flag)
                 else:
                     # 형식이 명확하지 않으면 그냥 추가
@@ -1713,7 +1719,7 @@ def parsing_node(state: State) -> State:
         
         # 입력값 후보가 있지만 flag_format이 없는 경우도 처리
         elif potential_input_values and is_input_value_challenge:
-            console.print(f"⚠️  Found potential input values but flag format is not specified: {potential_input_values}", style="yellow")
+            console.print(f"Found potential input values but flag format is not specified: {potential_input_values}", style="yellow")
             console.print("   Adding as potential flags anyway.", style="dim")
             valid_flags.extend(potential_input_values)
         
@@ -1722,16 +1728,16 @@ def parsing_node(state: State) -> State:
             state["detected_flag"] = valid_flags[0]  # 첫 번째 flag 저장
             state["all_detected_flags"] = valid_flags  # 모든 flag 저장
             state["flag_detected"] = True
-            console.print(f"🚩 FLAG DETECTED (from execution output): {valid_flags[0]}", style="bold green")
+            console.print(f"FLAG DETECTED (from execution output): {valid_flags[0]}", style="bold green")
             console.print("Stopping workflow to generate PoC code", style="bold yellow")
             state["execution_status"] = "flag_detected"
             return state
         else:
-            console.print("⚠️  Flag patterns found in analysis but not in execution output. Continuing workflow.", style="yellow")
+            console.print("Flag patterns found in analysis but not in execution output. Continuing workflow.", style="yellow")
     
     # 입력값 감지 추가 로직: LLM이 놓친 경우를 대비하여 직접 "correct" 키워드 검사
     if is_input_value_challenge and flag_format:
-        console.print("💡 Input value challenge detected. Scanning for 'correct' output...", style="cyan")
+        console.print("Input value challenge detected. Scanning for 'correct' output...", style="cyan")
 
         # execution output에서 "correct" 검사 (대소문자 무시)
         execution_output = state.get("execution_output", "")
@@ -1746,7 +1752,7 @@ def parsing_node(state: State) -> State:
                 # 코드 분석이 아닌 실제 실행 결과인지 확인
                 if not any(pattern in result_lower for pattern in ["std::string", "char ", "wanted =", "if (", "void "]):
                     correct_found_in.append((track_id, result_text))
-                    console.print(f"  ✓ 'correct' output found in {track_id}", style="green")
+                    console.print(f"  'correct' output found in {track_id}", style="green")
 
         # "correct"가 발견되면 실행 결과에서 입력값 추출 시도 (flag_signals 유무와 관계없이)
         if correct_found_in:
@@ -1768,13 +1774,13 @@ def parsing_node(state: State) -> State:
                         if match:
                             input_value = match.group(1)
                             formatted_flag = f"{flag_format.replace('{}', '')}{{{input_value}}}"
-                            console.print(f"  ✓ Extracted input value from echo command: {input_value}", style="bold green")
-                            console.print(f"  ✓ Formatted flag: {formatted_flag}", style="bold green")
+                            console.print(f"  Extracted input value from echo command: {input_value}", style="bold green")
+                            console.print(f"  Formatted flag: {formatted_flag}", style="bold green")
 
                             state["detected_flag"] = formatted_flag
                             state["all_detected_flags"] = [formatted_flag]
                             state["flag_detected"] = True
-                            console.print(f"🚩 FLAG DETECTED (from correct output): {formatted_flag}", style="bold green")
+                            console.print(f"FLAG DETECTED (from correct output): {formatted_flag}", style="bold green")
                             console.print("Stopping workflow to generate PoC code", style="bold yellow")
                             state["execution_status"] = "flag_detected"
                             return state
@@ -1785,13 +1791,13 @@ def parsing_node(state: State) -> State:
                         if match:
                             input_value = match.group(1)
                             formatted_flag = f"{flag_format.replace('{}', '')}{{{input_value}}}"
-                            console.print(f"  ✓ Extracted input value from here-string: {input_value}", style="bold green")
-                            console.print(f"  ✓ Formatted flag: {formatted_flag}", style="bold green")
+                            console.print(f"  Extracted input value from here-string: {input_value}", style="bold green")
+                            console.print(f"  Formatted flag: {formatted_flag}", style="bold green")
 
                             state["detected_flag"] = formatted_flag
                             state["all_detected_flags"] = [formatted_flag]
                             state["flag_detected"] = True
-                            console.print(f"🚩 FLAG DETECTED (from correct output): {formatted_flag}", style="bold green")
+                            console.print(f"FLAG DETECTED (from correct output): {formatted_flag}", style="bold green")
                             console.print("Stopping workflow to generate PoC code", style="bold yellow")
                             state["execution_status"] = "flag_detected"
                             return state
@@ -1941,6 +1947,41 @@ def feedback_node(state: State) -> State:
             state["stuck_reason"] = reason
     except ImportError:
         pass  # progress_tracker가 없으면 무시
+
+    # 실패한 접근법 추적 (반복 방지용)
+    execution_status = state.get("execution_status", "")
+    if execution_status in ["fail", "partial"]:
+        failed_approaches = state.get("failed_approaches", [])
+
+        # 현재 시도한 접근법 정보 수집
+        current_approach = {
+            "iteration": state.get("iteration_count", 0),
+            "vuln_type": state.get("cot_json", {}).get("candidates", [{}])[0].get("vuln", "unknown") if state.get("cot_json") else "unknown",
+            "execution_results": {},
+            "failure_reason": feedback_json.get("issues", [])[:3] if isinstance(feedback_json.get("issues"), list) else [],
+        }
+
+        # 실행 결과에서 실패 원인 추출
+        execution_results = state.get("execution_results", {})
+        for step_name, result in execution_results.items():
+            if isinstance(result, str) and len(result) < 500:
+                # 필터에 걸린 경우 등 실패 원인 기록
+                if "*" in result or "wrong" in result.lower() or "error" in result.lower():
+                    current_approach["execution_results"][step_name] = result[:200]
+
+        # 중복 방지: 같은 접근법이 이미 있으면 추가 안 함
+        is_duplicate = False
+        for prev in failed_approaches:
+            if prev.get("vuln_type") == current_approach.get("vuln_type"):
+                # 같은 취약점 타입이고, 같은 실패 원인이면 중복
+                if prev.get("failure_reason") == current_approach.get("failure_reason"):
+                    is_duplicate = True
+                    break
+
+        if not is_duplicate and (current_approach["failure_reason"] or current_approach["execution_results"]):
+            failed_approaches.append(current_approach)
+            state["failed_approaches"] = failed_approaches[-10:]  # 최근 10개만 유지
+            console.print(f"  Recorded failed approach for future reference", style="dim")
 
     return state
 
@@ -2160,11 +2201,16 @@ def exploit_node(state: State) -> State:
     return state
 
 def help_node(state: State) -> State:
+    # 분석이 시작되었는지 확인하는 플래그 (명시적)
+    analysis_started = state.get("analysis_started", False)
     has_cot_result = bool(state.get("cot_result"))
+    has_tracks = bool(state.get("vulnerability_tracks"))
+    has_results = bool(state.get("results"))
 
     # 이미 작업이 진행된 상태인지 확인 (workflow.py의 has_progress와 동일한 조건)
-    # cot_result가 있어야 실제 분석이 시작된 것
-    has_progress = has_cot_result
+    # analysis_started 플래그가 true이거나, cot_result/tracks/results가 있으면 진행된 것
+    # NOTE: facts는 auto_analysis에서 채워지므로 진행 판단 기준에서 제외
+    has_progress = analysis_started or has_cot_result or has_tracks or has_results
 
     # 카테고리 확인
     challenge = state.get("challenge", [])
@@ -2237,9 +2283,10 @@ def option_input_node(state: State) -> State:
             console.print("Automatically continuing with --continue to loop_workflow...", style="cyan")
             # 자동으로 --continue 설정하고 카운터 리셋
             option = "--continue"
-            state["iteration_count"] = 0
+            # iteration_count는 1로 설정 (0으로 하면 초기 상태로 인식됨)
+            state["iteration_count"] = 1
             state["workflow_step_count"] = 0
-            console.print("Iteration count and workflow step count reset. Starting fresh cycle.", style="bold green")
+            console.print("Counters reset. Continuing with preserved state...", style="bold green")
         else:
             console.print("Please choose which option you want to choose.", style="blue")
             option = input("> ").strip()
@@ -2291,6 +2338,7 @@ def detect_node(state: State) -> State:
             "challenge": state.get("challenge", []),
             "facts": state.get("facts", {}),
             "artifacts": state.get("artifacts", {}),
+            "flag_format": state.get("flag_format", ""),
         },
         "feedback": state.get("feedback_json", {}),
         "exploit_result": {
@@ -2303,6 +2351,8 @@ def detect_node(state: State) -> State:
         # 실행 결과 전체 전달 (LLM이 직접 분석)
         "execution_output": combined_output[-8000:] if len(combined_output) > 8000 else combined_output,
         "exploit_readiness": state.get("exploit_readiness", {}),
+        # 분석 결과 (값 찾기 문제에서 중요)
+        "analysis_summary": state.get("cot_result", "")[-3000:] if state.get("cot_result") else "",
     }
 
     console.print("=== Detect Run (LLM Analysis) ===", style='bold green')
@@ -2347,42 +2397,64 @@ def detect_node(state: State) -> State:
         # state 업데이트 및 decision 결정
         # 우선순위: flag_detected > exploit_success > shell/privilege > next_action
 
+
         # 1. Flag 감지 (최우선 - next_action과 관계없이)
         if flag_detected and detected_flag:
             state["flag_detected"] = True
             state["detected_flag"] = detected_flag
             state["detect_decision"] = "flag_found"
             state["detect_confidence"] = float(flag_confidence) if flag_confidence else 1.0
-            console.print(f"🚩 FLAG DETECTED: {detected_flag}", style="bold green")
+            console.print(f"FLAG DETECTED: {detected_flag}", style="bold green")
             console.print("Routing to PoC generation...", style="bold yellow")
+            return state  # 바로 반환하여 다른 조건이 덮어쓰지 않도록
 
         # 2. Shell 획득
         elif shell_acquired or (exploit_success and "shell" in str(evidence_text).lower()):
             state["detect_decision"] = "shell_acquired"
             state["detect_confidence"] = 0.9
-            console.print(f"🐚 SHELL ACQUIRED: {evidence_text}", style="bold green")
+            console.print(f"SHELL ACQUIRED: {evidence_text}", style="bold green")
             console.print("Routing to PoC generation...", style="bold yellow")
+            return state
 
         # 3. 권한 상승
         elif privilege_escalated or (exploit_success and "root" in str(evidence_text).lower()):
             state["privilege_escalated"] = True
             state["detect_decision"] = "privilege_escalated"
             state["detect_confidence"] = 0.9
-            console.print(f"🔐 PRIVILEGE ESCALATED: {evidence_text}", style="bold green")
+            console.print(f"PRIVILEGE ESCALATED: {evidence_text}", style="bold green")
             console.print("Routing to PoC generation...", style="bold yellow")
+            return state
 
         # 4. Exploit 성공 (flag/shell 없이도 성공 판정된 경우)
         elif exploit_success or status == "solved":
             state["detect_decision"] = "shell_acquired"  # PoC 생성으로 라우팅
             state["detect_confidence"] = 0.8
-            console.print(f"✅ EXPLOIT SUCCESS: {evidence_text or reasoning}", style="bold green")
+            console.print(f"EXPLOIT SUCCESS: {evidence_text or reasoning}", style="bold green")
             console.print("Routing to PoC generation...", style="bold yellow")
+            return state
 
-        # 5. Exploit 준비 완료
+        # 5. Exploit 준비 완료 - exploit_readiness가 높거나 LLM이 start_exploit 권장
         elif next_action == "start_exploit":
-            state["detect_decision"] = "exploit_ready"
-            state["detect_confidence"] = 0.7
-            console.print("⚡ Ready for exploitation", style="bold yellow")
+            # exploit_readiness 점수 확인
+            feedback_json = state.get("feedback_json", {})
+            exploit_readiness = feedback_json.get("exploit_readiness", {})
+            readiness_score = exploit_readiness.get("score", 0) if isinstance(exploit_readiness, dict) else 0
+
+            # 연속 start_exploit 카운트 확인 (무한 루프 방지)
+            start_exploit_count = state.get("start_exploit_count", 0) + 1
+            state["start_exploit_count"] = start_exploit_count
+
+            # 3번 이상 start_exploit이 반복되면 강제로 exploit 실행
+            if start_exploit_count >= 3 or readiness_score >= 0.7:
+                state["detect_decision"] = "exploit_ready"
+                state["detect_confidence"] = 0.8
+                console.print(f"Forcing exploit execution (readiness: {readiness_score:.0%}, attempts: {start_exploit_count})", style="bold yellow")
+            else:
+                # 아직 정보가 부족하면 계속 탐색
+                state["detect_decision"] = "continue"
+                state["detect_confidence"] = 0.6
+                console.print(f"Ready for exploitation (readiness: {readiness_score:.0%})", style="bold yellow")
+                console.print(f"   Will force exploit after {3 - start_exploit_count} more iteration(s)", style="dim")
 
         # 6. Exploit 재시도
         elif next_action == "retry_exploit":
@@ -2403,7 +2475,7 @@ def detect_node(state: State) -> State:
         else:  # continue_exploration
             state["detect_decision"] = "continue"
             state["detect_confidence"] = 0.5
-            console.print("➡️ Continue exploration", style="cyan")
+            console.print("️ Continue exploration", style="cyan")
 
     else:
         # JSON 파싱 실패 시 기본값

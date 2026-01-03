@@ -281,7 +281,10 @@ def get_state_for_cot(state: PlanningState) -> Dict[str, Any]:
         "facts": state.get("facts", {}),
         "artifacts": state.get("artifacts", {}),
         "results": results[-10:] if results else [],  # 최근 10개만
-        
+
+        # 실패한 접근법 (반복 방지용)
+        "failed_approaches": state.get("failed_approaches", []),
+
         # 제약 조건
         "constraints": state.get("constraints", []),
     }

@@ -154,11 +154,17 @@ class PwnableTool:
         else:
             filtered_gadgets = all_gadgets
         
+        # 가젯 수 제한 (토큰 한도 초과 방지)
+        max_gadgets = 100
+        truncated = len(filtered_gadgets) > max_gadgets
+
         return json.dumps({
             "binary_path": target,
             "search_pattern": search_pattern,
             "gadget_count": len(filtered_gadgets),
-            "gadgets": filtered_gadgets
+            "gadgets": filtered_gadgets[:max_gadgets],
+            "truncated": truncated,
+            "hint": "Use search_pattern to filter specific gadgets" if truncated else None
         }, indent=2, ensure_ascii=False)
     
     def _parse_ropgadget_output(self, output: str) -> List[Dict[str, str]]:
@@ -205,18 +211,30 @@ class PwnableTool:
             cmd.extend(['-d', '--section', section])
         
         result = self._run_command(cmd)
-        
+
         if not result["success"]:
             return json.dumps({
                 "error": result.get("error", "objdump failed"),
                 "stderr": result.get("stderr", "")
             }, indent=2)
-        
+
+        # 출력이 너무 크면 truncate (토큰 한도 초과 방지)
+        disassembly = result["stdout"]
+        max_lines = 500
+        lines = disassembly.split('\n')
+        if len(lines) > max_lines:
+            truncated = '\n'.join(lines[:max_lines // 2]) + \
+                f"\n\n... [TRUNCATED: {len(lines) - max_lines} lines omitted. Use function_name or section to narrow scope] ...\n\n" + \
+                '\n'.join(lines[-max_lines // 2:])
+            disassembly = truncated
+
         return json.dumps({
             "binary_path": target,
             "function": function_name or "all",
             "section": section or "all",
-            "disassembly": result["stdout"]
+            "disassembly": disassembly,
+            "truncated": len(lines) > max_lines,
+            "total_lines": len(lines)
         }, indent=2, ensure_ascii=False)
     
     def strings_extract(
@@ -298,20 +316,33 @@ class PwnableTool:
             cmd.extend(['--section', section])
         
         result = self._run_command(cmd)
-        
+
         if not result["success"]:
             return json.dumps({
                 "error": result.get("error", "readelf failed"),
                 "stderr": result.get("stderr", "")
             }, indent=2)
-        
+
+        # symbols 출력이 너무 크면 truncate
+        elf_info = result["stdout"]
+        max_lines = 300
+        lines = elf_info.split('\n')
+        truncated = False
+        if len(lines) > max_lines:
+            elf_info = '\n'.join(lines[:max_lines // 2]) + \
+                f"\n\n... [TRUNCATED: {len(lines) - max_lines} lines omitted] ...\n\n" + \
+                '\n'.join(lines[-max_lines // 2:])
+            truncated = True
+
         return json.dumps({
             "binary_path": target,
             "info_type": info_type,
             "section": section or "all",
-            "elf_info": result["stdout"]
+            "elf_info": elf_info,
+            "truncated": truncated,
+            "total_lines": len(lines)
         }, indent=2, ensure_ascii=False)
-    
+
     def one_gadget_search(
         self,
         libc_path: str
@@ -641,8 +672,7 @@ class PwnableTool:
                     
                     try:
                         fm = program.getFunctionManager()
-                        listing = program.getListing()
-                        
+
                         func = None
                         
                         # 1. 주소 기반 검색 (우선순위 1)
@@ -682,7 +712,7 @@ class PwnableTool:
                                 "hint": "Please provide function_name or function_address"
                             }, indent=2, ensure_ascii=False)
                         
-                        func_result = self._decompile_function(func, decomp, listing)
+                        func_result = self._decompile_function(func, decomp)
                         if func_result:
                             results.append(func_result)
                     
@@ -733,28 +763,19 @@ class PwnableTool:
             return None
     
     
-    def _decompile_function(self, func, decomp, listing):
+    def _decompile_function(self, func, decomp):
         try:
             func_name = func.getName()
             entry_point = func.getEntryPoint()
-            
+
             # 디컴파일 (timeout 30초)
             c_code = decomp.decompile(func, 30)
-            
-            # 어셈블리 코드 추출
-            asm_lines = []
-            instr_iter = listing.getInstructions(func.getBody(), True)
-            while instr_iter.hasNext():
-                instr = instr_iter.next()
-                asm_lines.append(f"{instr.getAddress()}:\t{instr}")
-            
-            asm_code = "\n".join(asm_lines)
-            
+
+            # 어셈블리 코드는 제외 (토큰 절약)
             return {
                 "function_name": func_name,
                 "entry_point": "0x" + str(entry_point),
                 "decompiled_code": str(c_code),
-                "assembly_code": asm_code,
             }
         except Exception as e:
             return {

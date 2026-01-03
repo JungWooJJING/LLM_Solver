@@ -391,8 +391,23 @@ def main():
         try:
             final_state = workflow.invoke(current_state, config=config)
 
-            console.print("\n=== Workflow Completed ===", style="bold green")
-            break  # 정상 종료
+            # 워크플로우 완료 후 상태 업데이트
+            current_state.update(final_state)
+
+            # --quit 선택 시 프로그램 종료
+            if current_state.get("option") == "--quit":
+                console.print("\n=== Exiting Program ===", style="bold yellow")
+                break
+
+            # Flag가 감지되었는지 확인
+            if current_state.get("flag_detected") and current_state.get("detected_flag"):
+                console.print("\n=== Challenge Solved! ===", style="bold green")
+                console.print(f"Flag: {current_state.get('detected_flag')}", style="bold cyan")
+
+            # 옵션 선택으로 돌아감
+            console.print("\n=== Workflow Cycle Completed ===", style="bold green")
+            current_state["option"] = ""  # 옵션 리셋하여 다시 선택하도록
+            continue  # 루프 계속 - 옵션 선택으로 돌아감
 
         except KeyboardInterrupt:
             console.print("\n\nWorkflow interrupted by user.", style="bold yellow")
@@ -418,7 +433,7 @@ def main():
                 # state 보존하면서 카운터만 리셋, --continue로 자동 계속 진행
                 current_state["option"] = "--continue"
                 current_state["workflow_step_count"] = 0
-                current_state["iteration_count"] = 0
+                current_state["iteration_count"] = 0  # 리셋해도 analysis_started가 true이면 진행 상태 유지
                 consecutive_failures = 0
 
                 # 중요 정보 보존 확인
@@ -427,6 +442,7 @@ def main():
                 if "API_KEY" not in current_state:
                     current_state["API_KEY"] = initial_state["API_KEY"]
 
+                console.print("Counters reset. Continuing with preserved state...", style="bold green")
                 continue  # 루프 계속 - --continue로 자동 진행
 
             # 2. Max consecutive failures 체크

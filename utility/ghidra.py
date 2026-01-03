@@ -74,26 +74,16 @@ def ghdira_API(target: str, main_only: bool = True) -> str:
             # main_only가 True면 첫 번째 진입점만, False면 모든 진입점 출력
             funcs_to_process = [entry_funcs[0]] if main_only else entry_funcs
 
-            # 진입점 함수들만 출력
+            # 진입점 함수들만 출력 (C 코드만, 어셈블리 제외)
             for func in funcs_to_process:
                 name = func.getName()
                 try:
                     c_code = decomp.decompile(func, 30)
-
-                    asm_lines = []
-                    instr_iter = listing.getInstructions(func.getBody(), True)
-                    while instr_iter.hasNext():
-                        instr = instr_iter.next()
-                        asm_lines.append(f"{instr.getAddress()}:\t{instr}")
-
-                    asm_code = "\n".join(asm_lines)
                     entry = func.getEntryPoint()
 
                     result += f"=== MATCH: {name} {entry} ===\n"
                     result += "--- Decompiled Code ---\n"
                     result += f"{c_code}\n"
-                    result += "--- Assembly ---\n"
-                    result += f"{asm_code}\n"
                 except Exception as e:
                     print(f"[!] Failed {name}: {e}")
         finally:

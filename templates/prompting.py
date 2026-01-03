@@ -5,7 +5,7 @@ class CTFSolvePrompt:
     You will be given current facts, artifacts, and context for a CTF challenge.
     You will also receive AVAILABLE_TOOLS: a list of tools you can recommend for this challenge.
 
-    ⚠️ CRITICAL: TOOL USAGE CONSTRAINT ⚠️
+    CRITICAL: TOOL USAGE CONSTRAINT  
     You MUST ONLY recommend tools that exist in AVAILABLE_TOOLS.
     DO NOT recommend generic tool names like "ropper", "checksec", "gdb".
     Instead, look at AVAILABLE_TOOLS and use the EXACT names provided there.
@@ -22,7 +22,7 @@ class CTFSolvePrompt:
       - tasks: executable steps using tools from AVAILABLE_TOOLS (function call syntax)
       - expected_signals: signals a parser should extract for the next step
 
-    ⚠️ TOOL SELECTION (MANDATORY) ⚠️
+    ### TOOL SELECTION (MANDATORY) ###
     - FIRST: Read the AVAILABLE_TOOLS list completely
     - THEN: Select tools by copying EXACT names from that list
     - Common tool names (but ALWAYS verify in AVAILABLE_TOOLS):
@@ -35,6 +35,30 @@ class CTFSolvePrompt:
       * decompile: "ghidra_decompile"
     - NEVER guess tool names - copy them from AVAILABLE_TOOLS
     - If no suitable tool exists in AVAILABLE_TOOLS, use "shell" and provide bash command
+
+    ### CRITICAL: AVOID REPEATING FAILED APPROACHES ### 
+    - Check STATE.results for previous attempts and their outcomes
+    - If a payload/approach already FAILED, DO NOT suggest it again
+    - For filter bypass challenges: if a parameter contains filtered keywords, you MUST find alternative encoding/bypass
+    - ### CRITICAL: Filter scope includes ALL identifiers (names) AND values ###
+      * Input filters can apply to ANY identifier: parameter names, variable names, function names, object keys, HTML attributes, etc.
+      * If ANY identifier name contains a filtered keyword, that identifier becomes invalid
+      * Common mistake: assuming only parameter values are filtered, ignoring that identifier names themselves are filtered
+      * Always analyze filter logic from source code to determine what is filtered (identifiers, values, or both)
+      * Apply bypass techniques to identifier names if they contain filtered keywords:
+        * Dynamic construction (string concatenation, template literals, bracket notation)
+        * Encoding (URL encoding, HTML entities, hex encoding, Unicode)
+        * Alternative syntax or delivery mechanisms
+    - ### SOURCE CODE VERIFICATION ###
+      * Always verify that endpoints, functions, and features exist in source code before using them
+      * Do not assume common endpoints exist - check route definitions, function exports, API documentation
+      * If an endpoint doesn't exist, find alternative methods using available endpoints
+    - ### TOKEN/SECRET PREDICTION ###
+      * If token/secret generation logic is visible in source code, calculate it deterministically
+      * Identify the generation algorithm (hashing, encoding, mathematical operations)
+      * Extract required inputs (username, IP, timestamp, etc.) from context or source code
+      * Use appropriate libraries to replicate the generation logic
+    - ALWAYS analyze WHY a previous attempt failed before proposing the same approach
 
     SCORING PRIORITIES:
     - Exploitability clarity (0.35)
@@ -150,7 +174,7 @@ class CTFSolvePrompt:
     instruction_prompt = """
     You are an instruction generator for ONE cycle in a CTF workflow.
 
-    ⚠️ CRITICAL CONSTRAINT ⚠️
+    ### CRITICAL CONSTRAINT ###
     You MUST ONLY use tools from the AVAILABLE_TOOLS list provided below.
     DO NOT use any external commands (ropper, checksec, gdb, objdump, etc.) directly.
     If a tool exists in AVAILABLE_TOOLS, you MUST use it instead of the shell command.
@@ -172,7 +196,7 @@ class CTFSolvePrompt:
     2. Look at AVAILABLE_TOOLS list and select which tools to use.
     3. Produce a deterministic plan using ONLY tools from AVAILABLE_TOOLS.
 
-    ⚠️ TOOL SELECTION (MANDATORY - READ CAREFULLY) ⚠️
+    ### TOOL SELECTION (MANDATORY - READ CAREFULLY) ###
     - SCAN the AVAILABLE_TOOLS list FIRST before writing any command
     - Common tool names (ALWAYS verify in AVAILABLE_TOOLS):
       * ROP gadgets: "rop_gadget_search"
@@ -239,6 +263,12 @@ class CTFSolvePrompt:
     - Remove noise: banners, ANSI codes, timestamps, duplicates.
     - DO NOT make judgments about flag validity or exploit success - just extract patterns.
 
+    ### CRITICAL: FLAG PATTERN RULES ###
+    - ONLY extract flag patterns that ACTUALLY APPEAR in the input text
+    - NEVER generate, guess, or fabricate flag values
+    - If no flag pattern exists in input, do NOT create one
+    - Copy the EXACT string from input - do not modify or complete partial flags
+
     NORMALIZATION RULES
     - Whitespace: collapse multiple spaces, strip lines.
     - Numbers: hex as 0x... (lowercase), unify units (bytes, ms, sec).
@@ -283,15 +313,19 @@ class CTFSolvePrompt:
        - EIP/RIP values in gdb → type:"proof", name:"register_value"
        - Command execution evidence → type:"proof", name:"cmd_output"
 
-    6. PATTERN signals (potential flags - no validity judgment)
+    6. PATTERN signals (potential flags - STRICT EXTRACTION ONLY)
        - Regex: [A-Za-z0-9_]+\\{[A-Za-z0-9_!@#$%^&*()-+=]+\\}
        - Examples: FLAG{...}, flag{...}, CTF{...}, picoCTF{...}
-       - Mark as type:"pattern", name:"flag_pattern", value:"<extracted_string>"
+       - ONLY extract if the EXACT pattern exists in input text
+       - NEVER fabricate or guess flag values
+       - Mark as type:"pattern", name:"flag_pattern", value:"<EXACT_STRING_FROM_INPUT>"
        - Include context hint: "found in stdout" or "found in code block"
+       - If pattern is in decompiled code or source → hint:"found in code block (not execution output)"
 
     OUTPUT
     - Return VALID JSON ONLY. No markdown, no fences, no prose.
     - If input is empty: {"summary":"", "artifacts":[], "signals":[], "code":[], "errors":["EMPTY_INPUT"]}
+    - If no flag pattern in input, do NOT add a pattern signal
     """
 
     feedback_prompt = """
@@ -435,17 +469,39 @@ class CTFSolvePrompt:
     You are a PoC (Proof of Concept) code generator for CTF challenges.
 
     CONTEXT
-    - A FLAG has been successfully detected during execution.
-    - Your task is to generate a complete, runnable PoC script that reproduces the exploit and retrieves the flag.
+    - An exploit has been successfully executed (shell acquired, privilege escalated, or flag found).
+    - Your task is to generate a complete, runnable PoC script that reproduces the exploit.
+
+    ### CRITICAL: FLAG OUTPUT RULES ###
+    - ONLY include "flag" field if a flag was ACTUALLY detected in execution output
+    - If exploit succeeded but no flag was found → set "flag": null
+    - NEVER fabricate, guess, or generate a flag value
+    - If detected_flag input is empty/null → set "flag": null in output
+
+    ### CRITICAL: FILTER/WAF BYPASS IN PoC ###
+    - If the exploit used filter bypass techniques, your PoC MUST include them
+    - ### REMEMBER: Filter scope includes ALL identifiers (names), not just values ###
+      * If ANY identifier name (parameter, variable, function, key, attribute) contains filtered keywords, use bypass techniques:
+        - Dynamic construction (string concatenation, template literals, bracket notation)
+        - Encoding (URL encoding, HTML entities, hex encoding, Unicode)
+        - Alternative syntax or delivery mechanisms
+    - ### SOURCE CODE VERIFICATION ###
+      * Always verify endpoints exist in source code before using them in PoC
+      * Do not assume common endpoints exist - check route definitions in source code
+      * If an endpoint doesn't exist, find alternative methods using available endpoints
+    - ### TOKEN/SECRET PREDICTION ###
+      * If token/secret generation logic is visible in source code, calculate it deterministically
+      * Identify the generation algorithm and required inputs from source code
+      * Use appropriate libraries to replicate the generation logic
 
     GOAL
     - Produce a complete, standalone PoC script that demonstrates the exploit.
-    - The script should be executable and produce the same flag that was detected.
+    - The script should be executable and achieve the same result (shell, privilege escalation, or flag).
     - Include all necessary setup, payload construction, and execution logic.
 
     INPUTS
-    - Detected flag: The flag that was found during execution
-    - Execution history: Previous steps, commands, and artifacts that led to flag discovery
+    - Detected flag: The flag that was found (may be null if exploit succeeded without flag output)
+    - Execution history: Previous steps, commands, and artifacts that led to success
     - Target info: binary/service, protections, environment details
     - Artifacts: Generated files, offsets, addresses, and other discovered facts
 
@@ -453,8 +509,9 @@ class CTFSolvePrompt:
     Schema:
     {
       "technique": "Brief description of the exploit technique used",
-      "flag": "The detected flag value",
-      "summary": "One-line summary of how the flag was obtained",
+      "flag": "<EXACT_DETECTED_FLAG>" | null,
+      "exploit_result": "flag_captured|shell_acquired|privilege_escalated",
+      "summary": "One-line summary of what the exploit achieves",
       "poc_script": "<COMPLETE STANDALONE SCRIPT (Python/pwntools preferred)>",
       "script_language": "python|bash|c|other",
       "dependencies": ["list of required tools/libraries"],
@@ -466,12 +523,14 @@ class CTFSolvePrompt:
     - Must be complete and runnable without modification
     - Include all necessary imports and setup
     - Use discovered facts (offsets, addresses, etc.) from execution history
-    - Print the flag clearly when executed
+    - If flag was detected, print it clearly when executed
+    - If no flag but shell/privilege: demonstrate that capability
     - Handle both local and remote scenarios if applicable
     - Include error handling where appropriate
 
     RESPOND
     - STRICT JSON as above. No prose outside JSON.
+    - If no flag was detected, set "flag": null - DO NOT make up a flag value
     """
 
     exploit_prompt = """
@@ -483,6 +542,33 @@ class CTFSolvePrompt:
     - If any value (offset/addr/key/…) is unknown, first add a PREP step to derive it deterministically and write it to an artifact.
       Then write 'script_py' that LOADS those values from the produced artifacts at runtime.
 
+    ### CRITICAL: FILTER/WAF BYPASS REQUIREMENTS ###
+    - If the target has input filters (XSS, SQLi, command injection filters), you MUST bypass them
+    - ### CRITICAL: Filter scope includes ALL identifiers (names) AND values ###
+      * Input filters can apply to ANY identifier: parameter names, variable names, function names, object keys, HTML attributes, CSS properties, etc.
+      * If ANY identifier name contains a filtered keyword, that identifier becomes invalid
+      * Common mistake: assuming only values are filtered, ignoring that identifier names themselves are filtered
+      * Always analyze filter logic from source code to determine what is filtered (identifiers, values, or both)
+    - Bypass techniques for filtered content (apply to names, attributes, and values):
+      * Encoding: URL encoding, HTML entities, hex encoding, Unicode encoding
+      * Dynamic construction: String concatenation, template literals, variable interpolation
+      * Filter evasion: Double keywords (if filter removes once), case variations, whitespace insertion
+      * Alternative syntax: Different tags, attributes, or delivery mechanisms
+    - ANALYZE the filter logic from source code before crafting payload
+      * Identify filtered keywords/patterns from source code
+      * Determine filter scope: identifier names (parameters, variables, functions, keys, attributes), values, or all
+      * Test filter behavior if a test endpoint is available
+    - ### SOURCE CODE VERIFICATION ###
+      * Always verify that endpoints, functions, and features exist in source code before using them
+      * Do not assume common endpoints exist - check route definitions, function exports, API documentation
+      * If an endpoint doesn't exist, find alternative methods using available endpoints
+    - ### TOKEN/SECRET PREDICTION ###
+      * If token/secret generation logic is visible in source code, calculate it deterministically
+      * Identify the generation algorithm (hashing, encoding, mathematical operations)
+      * Extract required inputs (username, IP, timestamp, etc.) from context or source code
+      * Use appropriate libraries to replicate the generation logic
+      * If token is provided in response (cookie, session, HTML), extract it from there
+
     INPUTS
     - Target info: binary/service, local|remote, host/port
     - Protections/stack: arch, NX/PIE/RELRO/Canary, sandbox/seccomp, WAF, etc.
@@ -490,6 +576,7 @@ class CTFSolvePrompt:
     - Constraints: brute-force/time caps, network policy, tool limits
     - Environment: OS, libc/ld, Python/pwntools availability
     - Artifacts: source/ELF, checksec, gdb/WinDbg logs, disassembly, dumps
+    - PREVIOUS_FAILURES: list of failed approaches - DO NOT repeat these
 
     OUTPUT — JSON ONLY (no markdown/fences). If invalid, return {"error":"BAD_OUTPUT"}.
     Schema:
@@ -639,6 +726,12 @@ class CTFSolvePrompt:
     - Determine if challenge is solved (flag found or exploit successful)
     - Decide the single next action
 
+    ### CRITICAL: FLAG OUTPUT RULES ###
+    - ONLY output detected_flag if the EXACT flag string appears in execution_output
+    - NEVER generate, guess, or fabricate a flag value
+    - If exploit succeeded but no flag in output → set flag_detected=false, detected_flag=null
+    - If you see shell/root access but no flag printed → report exploit_success=true, but detected_flag=null
+
     INPUT SCHEMA (one of two sources)
 
     SOURCE A: From [feedback] stage (exploration/reconnaissance)
@@ -674,33 +767,72 @@ class CTFSolvePrompt:
 
     DECISION LOGIC
 
-    1. FLAG DETECTION (from either source)
-       VALID (flag_detected=true):
-         - type="pattern" signal with value matching challenge.flag_format IN execution_output
-         - "correct"/"success"/"Congratulations" in output after input submission
-         - Flag printed to stdout during exploit execution
+    1. FLAG DETECTION (STRICT RULES - NO HALLUCINATION)
+       VALID (flag_detected=true, detected_flag=<exact_value>):
+         - The EXACT flag string appears VERBATIM in execution_output
+         - type="pattern" signal with value that EXISTS in execution_output
+         - String matches challenge.flag_format AND is found in execution_output
 
-       INVALID (flag_detected=false):
+       INVALID (flag_detected=false, detected_flag=null):
          - Pattern found in hint="found in code block" (decompiled/source code)
          - Pattern in static analysis output without execution
+         - Exploit succeeded but flag not printed in output
+         - Shell acquired but flag not yet retrieved
+         - You are "guessing" what the flag might be
+
+        ### NEVER set detected_flag to a value you generated or guessed
+        ### If unsure, set flag_detected=false, detected_flag=null
 
        Confidence:
-         - 1.0: Exact format match + success confirmation
-         - 0.8: Format match in execution output
-         - 0.5: Possible pattern, unclear context
-         - 0.0: Invalid source or no pattern
+         - 1.0: Exact format match + string found verbatim in execution_output
+         - 0.8: Format match, string in execution_output
+         - 0.0: Not found in output OR guessed/fabricated
 
     2. EXPLOIT SUCCESS (from source=exploit only)
        shell_acquired: "uid=", "gid=", directory listing, command output
        eip_redirection: type="proof" with register control evidence
        privilege_escalated: "uid=0", "root@", whoami=root
 
-    3. NEXT ACTION DECISION
+       NOTE: exploit_success=true does NOT mean flag_detected=true
+       You can have successful exploit without flag output
+
+    3. SPECIAL CASE: ANALYSIS-BASED FLAG CONSTRUCTION
+       Some challenges require you to FIND or DERIVE the flag through analysis, not execution.
+       The flag is NOT printed in output - you must construct it from discovered information.
+
+       Common patterns:
+       - Reversing: Find comparison value → flag is FORMAT{value}
+         Example: param == 0x13371337 → DH{322376503}
+       - Crypto: Derive key/plaintext → flag is FORMAT{result}
+         Example: XOR key is "secret" → FLAG{secret}
+       - Forensics: Extract hidden data → flag is FORMAT{data}
+         Example: Found base64 "ZmxhZw==" → flag{decoded_value}
+       - Misc: Solve puzzle → flag is FORMAT{answer}
+
+       When to construct flag (NOT hallucination):
+       - Challenge description explicitly states the flag format
+       - You found the specific value through legitimate analysis
+       - The value matches what the challenge asks for
+       - Example: "플래그는 DH{정답값}" + found value 0x13371337 → DH{322376503}
+
+       How to construct:
+       1. Check challenge description for flag format (e.g., "DH{값}", "FLAG{answer}")
+       2. Find the target value through analysis (decompile, decrypt, decode, etc.)
+       3. Convert if needed (hex→decimal, encode→decode, etc.)
+       4. Combine format + value → detected_flag
+       5. Set flag_detected=true, flag_confidence=0.9
+
+       This is VALID because:
+       - You're following the challenge's explicit instructions
+       - The value was found through analysis, not guessed
+       - The flag format comes from the challenge description
+
+    4. NEXT ACTION DECISION
        IF flag_detected AND confidence >= 0.8:
          → next_action = "end", generate PoC
 
-       IF source="exploit" AND exploit_success:
-         → next_action = "end", generate PoC
+       IF source="exploit" AND exploit_success AND NOT flag_detected:
+         → next_action = "end", report success (flag retrieval may need manual step)
 
        IF source="exploit" AND NOT exploit_success:
          → next_action = "retry_exploit" (with fix suggestions)
@@ -715,7 +847,7 @@ class CTFSolvePrompt:
     {
       "source": "feedback|exploit",
       "flag_detected": true|false,
-      "detected_flag": "<value>" | null,
+      "detected_flag": "<EXACT_VALUE_FROM_OUTPUT>" | null,
       "flag_confidence": 0.0-1.0,
       "exploit_success": true|false,
       "exploit_evidence": {
@@ -730,8 +862,10 @@ class CTFSolvePrompt:
     }
 
     RULES
+    - NEVER fabricate or guess flag values - only report what's in execution_output
     - Conservative: prefer false negatives for flags
     - Check execution_output context before confirming any pattern
+    - If exploit succeeded but no flag visible → report success without flag
     - JSON only, no markdown, no prose
     """
 

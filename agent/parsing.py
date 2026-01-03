@@ -31,8 +31,11 @@ class ParserAgent:
         else:
             raise ValueError(f"Invalid model: {model}. Supported: gpt-5.2, gemini-1.5-flash, gemini-1.5-flash-latest, gemini-3-flash-preview")
     
-    def _generate_with_retry(self, generate_func, max_retries=3):
+    def _generate_with_retry(self, generate_func, max_retries=5):
+        """Rate limit 오류 시 지수 백오프로 재시도"""
         import re
+        base_delay = 60  # 기본 대기 시간 60초
+
         for attempt in range(max_retries):
             try:
                 return generate_func()
@@ -40,13 +43,18 @@ class ParserAgent:
                 error_str = str(e).lower()
                 # Rate limit 또는 리소스 소진 오류 감지
                 if "resource" in error_str or "rate" in error_str or "quota" in error_str or "429" in error_str:
-                    retry_delay = 40  # 기본값 40초
+                    # API 응답에서 권장 대기 시간 추출
+                    retry_delay = base_delay
                     delay_match = re.search(r'retry.*?(\d+\.?\d*)\s*s', str(e), re.IGNORECASE)
                     if delay_match:
-                        retry_delay = float(delay_match.group(1)) + 5
+                        retry_delay = float(delay_match.group(1)) + 10  # 여유분 10초 추가
+
+                    # 지수 백오프: 실패할수록 대기 시간 증가
+                    retry_delay = max(retry_delay, base_delay * (1.5 ** attempt))
+                    retry_delay = min(retry_delay, 300)  # 최대 5분
 
                     if attempt < max_retries - 1:
-                        print(f"Rate limit exceeded. Waiting {retry_delay}s before retry (attempt {attempt + 1}/{max_retries})...")
+                        print(f"Rate limit exceeded. Waiting {retry_delay:.1f}s before retry (attempt {attempt + 1}/{max_retries})...")
                         time.sleep(retry_delay)
                         continue
                     else:

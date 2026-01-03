@@ -42,11 +42,15 @@ def route_by_option(state: PlanningState) -> str:
             console.print("  Use --continue to reset counters or --quit to exit.", style="cyan")
             return "invalid"
 
+    # 분석이 시작되었는지 확인하는 플래그 (명시적)
+    analysis_started = state.get("analysis_started", False)
     has_cot_result = bool(state.get("cot_result"))
+    has_tracks = bool(state.get("vulnerability_tracks"))
+    has_results = bool(state.get("results"))
 
     # 이미 작업이 진행된 상태인지 확인
-    # cot_result가 있어야 실제 분석이 시작된 것 (auto_analysis의 facts는 초기 분석일 뿐)
-    has_progress = has_cot_result
+    # analysis_started 플래그가 True이거나 실제 분석 결과가 있으면 진행 중
+    has_progress = analysis_started or has_cot_result or has_tracks or has_results
 
     # 카테고리 확인
     challenge = state.get("challenge", [])
@@ -387,13 +391,14 @@ def _create_analysis_workflow():
     graph.add_edge("exploit", "detect")
 
     # Detect 결과에 따라 다음 단계 결정
+    # NOTE: 단일 사이클 워크플로우 - detect 후 무조건 종료 (옵션 선택으로 돌아감)
     graph.add_conditional_edges(
         "detect",
         route_after_detect,
         {
             "poc": "poc",  # 성공: PoC 코드 생성
             "exploit": "exploit",  # Exploit 준비 완료: Exploit 실행
-            "continue_planning": "CoT",  # 계속 분석
+            "continue_planning": END,  # 단일 사이클: 한 번 실행 후 옵션 선택으로 돌아감
             "end": END  # 종료
         }
     )

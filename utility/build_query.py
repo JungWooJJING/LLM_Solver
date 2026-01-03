@@ -143,14 +143,14 @@ def build_query(option: str, code: str = "", state = None, CoT = None, Cal = Non
             for cmd_hash, cmd_info in command_cache.items():
                 cmd = cmd_info.get('cmd', '')
                 if cmd and cmd not in seen_cmds:
-                    executed_list.append(f"✓ {cmd}")
+                    executed_list.append(f"{cmd}")
                     seen_cmds.add(cmd)
 
             # 2. failed_commands에서 실패한 명령어 추출
             for cmd_hash, cmd_info in failed_commands.items():
                 cmd = cmd_info.get('cmd', '')
                 if cmd and cmd not in seen_cmds:
-                    executed_list.append(f"✗ {cmd} (FAILED)")
+                    executed_list.append(f"{cmd} (FAILED)")
                     seen_cmds.add(cmd)
 
             # 3. all_track_outputs에서 실행된 명령어 추출 (최신 실행 결과)
@@ -160,9 +160,9 @@ def build_query(option: str, code: str = "", state = None, CoT = None, Cal = Non
                         cmd = output.get("cmd", "")
                         if cmd and cmd not in seen_cmds:
                             if output.get("success", False):
-                                executed_list.append(f"✓ {cmd}")
+                                executed_list.append(f"{cmd}")
                             else:
-                                executed_list.append(f"✗ {cmd} (FAILED)")
+                                executed_list.append(f"{cmd} (FAILED)")
                             seen_cmds.add(cmd)
 
             # 4. results 배열에서 실행된 명령어 추출 (이전 실행 이력)
@@ -174,9 +174,9 @@ def build_query(option: str, code: str = "", state = None, CoT = None, Cal = Non
                         cmd = output.get("cmd", "")
                         if cmd and cmd not in seen_cmds:
                             if output.get("success", False):
-                                executed_list.append(f"✓ {cmd}")
+                                executed_list.append(f"{cmd}")
                             else:
-                                executed_list.append(f"✗ {cmd} (FAILED)")
+                                executed_list.append(f"{cmd} (FAILED)")
                             seen_cmds.add(cmd)
                 elif isinstance(track_outputs, dict):
                     # 딕셔너리 형식인 경우 (하위 호환성)
@@ -186,18 +186,18 @@ def build_query(option: str, code: str = "", state = None, CoT = None, Cal = Non
                                 cmd = output.get("cmd", "")
                                 if cmd and cmd not in seen_cmds:
                                     if output.get("success", False):
-                                        executed_list.append(f"✓ {cmd}")
+                                        executed_list.append(f"{cmd}")
                                     else:
-                                        executed_list.append(f"✗ {cmd} (FAILED)")
+                                        executed_list.append(f"{cmd} (FAILED)")
                                     seen_cmds.add(cmd)
 
                 # 직접 cmd 필드가 있는 경우
                 cmd = result.get("cmd", "")
                 if cmd and cmd not in seen_cmds:
                     if result.get("ok", False) or result.get("success", False):
-                        executed_list.append(f"✓ {cmd}")
+                        executed_list.append(f"{cmd}")
                     else:
-                        executed_list.append(f"✗ {cmd} (FAILED)")
+                        executed_list.append(f"{cmd} (FAILED)")
                     seen_cmds.add(cmd)
 
             if executed_list:
