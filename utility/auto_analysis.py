@@ -101,7 +101,43 @@ def analyze_pwnable(binary_path: str) -> Dict[str, Any]:
             "confidence": "medium"
         })
 
-    # 6. strings에서 힌트 찾기
+    # 6. Heap 관련 함수 감지 (malloc, free, calloc, realloc)
+    stdout, _, _ = run_command(f"objdump -d '{binary_path}' 2>/dev/null | grep -E '<malloc@|<free@|<calloc@|<realloc@'")
+    if stdout:
+        heap_funcs = set()
+        malloc_count = stdout.count('<malloc@')
+        free_count = stdout.count('<free@')
+
+        if '<malloc@' in stdout:
+            heap_funcs.add("malloc")
+        if '<free@' in stdout:
+            heap_funcs.add("free")
+        if '<calloc@' in stdout:
+            heap_funcs.add("calloc")
+        if '<realloc@' in stdout:
+            heap_funcs.add("realloc")
+
+        if heap_funcs:
+            analysis["heap_info"] = {
+                "functions": list(heap_funcs),
+                "malloc_count": malloc_count,
+                "free_count": free_count
+            }
+
+            # UAF 가능성 감지: malloc과 free 둘 다 있으면
+            if "malloc" in heap_funcs and "free" in heap_funcs:
+                analysis["suggested_vuln"].append({
+                    "type": "Heap Vulnerability (UAF/Double-Free)",
+                    "evidence": f"Heap functions detected: {', '.join(heap_funcs)} (malloc:{malloc_count}, free:{free_count})",
+                    "confidence": "medium",
+                    "hints": [
+                        "Check if freed pointers are NULLed",
+                        "Look for chunk size constraints in alloc functions",
+                        "Identify if same-sized chunks from different types can overlap"
+                    ]
+                })
+
+    # 7. strings에서 힌트 찾기
     stdout, _, _ = run_command(f"strings '{binary_path}' 2>/dev/null | grep -iE 'flag|password|secret|admin|root|shell|bin/sh' | head -10")
     if stdout:
         for line in stdout.strip().split('\n'):
@@ -331,6 +367,20 @@ def format_analysis_summary(analysis: Dict[str, Any], category: str) -> str:
             lines.append("\n=== Suggested Vulnerabilities ===")
             for vuln in analysis["suggested_vuln"]:
                 lines.append(f"  [{vuln['confidence'].upper()}] {vuln['type']}: {vuln['evidence']}")
+                # Heap 취약점의 경우 힌트 추가
+                if vuln.get("hints"):
+                    for hint in vuln["hints"]:
+                        lines.append(f"    → {hint}")
+
+        if analysis.get("heap_info"):
+            lines.append("\n=== Heap Analysis ===")
+            hi = analysis["heap_info"]
+            lines.append(f"  Functions: {', '.join(hi.get('functions', []))}")
+            lines.append(f"  malloc calls: {hi.get('malloc_count', 0)}, free calls: {hi.get('free_count', 0)}")
+            lines.append("  Strategy hints:")
+            lines.append("    - If size > 0x408 possible: Use unsorted bin for libc leak")
+            lines.append("    - If size <= 0x408: Tcache/fastbin attacks, need heap leak first")
+            lines.append("    - Check for size constraints (if size >= 0x100, etc.)")
 
     elif category == "web":
         if analysis.get("technologies"):

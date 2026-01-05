@@ -14,6 +14,11 @@ CATEGORY_FEWSHOTS = {
         ("bof", FEWSHOT.pwn_stack_bof),
         ("format", FEWSHOT.pwn_format_string),
         ("ret2libc", FEWSHOT.pwn_ret2libc),
+        ("heap_uaf", FEWSHOT.pwn_heap_uaf),
+        ("heap_tcache", FEWSHOT.pwn_heap_tcache),
+        ("heap_unsorted", FEWSHOT.pwn_heap_unsorted_bin),
+        ("heap_double_free", FEWSHOT.pwn_heap_double_free),
+        ("heap_overflow", FEWSHOT.pwn_heap_overflow),
     ],
     "reversing": [
         ("static", FEWSHOT.rev_static_analysis),
@@ -43,7 +48,7 @@ KEYWORD_FEWSHOTS = {
     "file inclusion": FEWSHOT.web_LFI,
     "path traversal": FEWSHOT.web_LFI,
 
-    # Pwnable
+    # Pwnable - Stack
     "bof": FEWSHOT.pwn_stack_bof,
     "buffer overflow": FEWSHOT.pwn_stack_bof,
     "stack": FEWSHOT.pwn_stack_bof,
@@ -56,6 +61,25 @@ KEYWORD_FEWSHOTS = {
     "ret2libc": FEWSHOT.pwn_ret2libc,
     "rop": FEWSHOT.pwn_ret2libc,
     "nx enabled": FEWSHOT.pwn_ret2libc,
+
+    # Pwnable - Heap (NEW)
+    "heap": FEWSHOT.pwn_heap_uaf,
+    "uaf": FEWSHOT.pwn_heap_uaf,
+    "use after free": FEWSHOT.pwn_heap_uaf,
+    "use-after-free": FEWSHOT.pwn_heap_uaf,
+    "malloc": FEWSHOT.pwn_heap_uaf,
+    "free": FEWSHOT.pwn_heap_uaf,
+    "double free": FEWSHOT.pwn_heap_double_free,
+    "double-free": FEWSHOT.pwn_heap_double_free,
+    "tcache": FEWSHOT.pwn_heap_tcache,
+    "fastbin": FEWSHOT.pwn_heap_fastbin_dup,
+    "unsorted": FEWSHOT.pwn_heap_unsorted_bin,
+    "unsorted bin": FEWSHOT.pwn_heap_unsorted_bin,
+    "libc leak": FEWSHOT.pwn_heap_unsorted_bin,
+    "main_arena": FEWSHOT.pwn_heap_unsorted_bin,
+    "heap overflow": FEWSHOT.pwn_heap_overflow,
+    "chunk": FEWSHOT.pwn_heap_uaf,
+    "house of": FEWSHOT.pwn_heap_house_of_force,
 
     # Reversing
     "license": FEWSHOT.rev_static_analysis,
@@ -155,6 +179,22 @@ PWNABLE-SPECIFIC HINTS:
 - Calculate offsets precisely using cyclic patterns
 - Consider the attack chain: leak -> calculate -> exploit
 - Check for win functions, gadgets, or shellcode opportunities
+
+HEAP EXPLOITATION STRATEGY (if malloc/free detected):
+1. IDENTIFY PRIMITIVES: What can you alloc/free/edit/show?
+2. CHECK SIZE CONSTRAINTS:
+   - size >= 0x100? Only large allocs allowed
+   - size > 0x408? Can use unsorted bin for LIBC LEAK (fd/bk → main_arena)
+   - size <= 0x408? Tcache only, need different leak method
+3. LEAK STRATEGY BY SIZE:
+   - Large chunk (>0x408): Free → unsorted bin → fd/bk has libc addr
+   - Small chunk (<=0x408): Tcache fd has heap addr only
+4. COMMON PATTERNS:
+   - UAF: Same chunk reused by different object types (func ptr overwrite)
+   - Double-free: A→B→A in tcache/fastbin → arbitrary alloc
+   - Heap overflow: Corrupt adjacent chunk's metadata or data
+5. INDEX VALIDATION: Check for negative index bypass (if idx < 10 allows -1)
+6. LIBC VERSION: Affects tcache protections (2.29+ has key check, 2.34+ removes hooks)
 """,
         "reversing": """
 REVERSING-SPECIFIC HINTS:

