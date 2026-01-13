@@ -63,8 +63,10 @@ class ParserAgent:
                     raise
         raise Exception("Max retries exceeded")
 
-    def _call_gemini(self, system_instruction: str, user_content: str):
+    def _call_gemini(self, system_instruction: str, user_content: str, debug: bool = True):
         from google.genai import types
+        from rich.console import Console
+        console = Console()
 
         config = types.GenerateContentConfig(
             system_instruction=system_instruction if system_instruction else None,
@@ -75,6 +77,33 @@ class ParserAgent:
             contents=user_content,
             config=config
         )
+
+        # 디버깅: 응답 상태 출력
+        if debug:
+            if response is None:
+                console.print("  [API] Gemini returned None", style="bold red")
+                return '{"error": "Gemini returned None"}'
+
+            # safety filter 확인
+            if hasattr(response, 'candidates') and response.candidates:
+                candidate = response.candidates[0]
+                if hasattr(candidate, 'finish_reason'):
+                    finish_reason = str(candidate.finish_reason)
+                    if 'SAFETY' in finish_reason.upper() or 'BLOCK' in finish_reason.upper():
+                        console.print(f"  [API] Response blocked: {finish_reason}", style="bold red")
+                        return '{"error": "blocked", "reason": "' + finish_reason + '"}'
+
+            text = response.text
+            if not text or text.strip() == "":
+                console.print("  [API] Empty response from Gemini", style="bold yellow")
+                if hasattr(response, 'prompt_feedback') and response.prompt_feedback:
+                    console.print(f"  [API] Prompt feedback: {response.prompt_feedback}", style="dim")
+                return '{"error": "empty response"}'
+
+            # 응답 길이만 표시 (내용이 너무 길 수 있음)
+            console.print(f"  [API] Response OK ({len(text)} chars)", style="dim green")
+            return text
+
         return response.text
 
     def LLM_translation_run(self, prompt_query: str = "", state: str = ""):

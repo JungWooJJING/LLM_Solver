@@ -11,6 +11,16 @@ STATE_SPEC = (
     "Policies: obey constraints; build on artifacts/results.\n"
 )
 
+NO_GUESSING_POLICY = """
+### ABSOLUTE NO GUESSING POLICY ###
+NEVER assume, invent, or guess any value. Every claim must be backed by actual source code or tool output.
+- Do NOT assume menu structures, sub-menus, or interfaces that don't exist in code
+- Do NOT assume function signatures - count EXACT scanf/read/printf calls
+- Do NOT assume prompt strings - copy EXACTLY from source
+- Do NOT assume endpoints, parameters, or data structures not in source
+- If you haven't seen it in the provided code/output, you don't know it
+"""
+
 def build_query(option: str, code: str = "", state = None, CoT = None, Cal = None, plan = None, Instruction = None, planning_context = None, available_tools = None, tool_category = None, fallback_mode = None):
     if option == "--file":
         import json
@@ -23,6 +33,7 @@ def build_query(option: str, code: str = "", state = None, CoT = None, Cal = Non
 
         prompt = (
             "You are a planning assistant for CTF automation.\n\n"
+            + NO_GUESSING_POLICY + "\n\n"
             "You will be given the content of a file related to a CTF challenge "
             "(e.g., source code, binary disassembly, script, or captured data).\n"
             "Do NOT solve or exploit. Propose several DISTINCT next-step investigative/preparatory actions for the very next cycle.\n\n"
@@ -63,6 +74,7 @@ def build_query(option: str, code: str = "", state = None, CoT = None, Cal = Non
 
         prompt = (
             "You are a planning assistant for CTF automation using Ghidra outputs.\n\n"
+            + NO_GUESSING_POLICY + "\n\n"
             "You will be given per-function artifacts from Ghidra (function name, decompiled C, disassembly, xrefs, strings).\n"
             "Do NOT solve or exploit. Propose several DISTINCT next-step investigative/preparatory actions for the very next cycle.\n\n"
             "[Ghidra Functions]\n{code}\n\n"
@@ -375,12 +387,22 @@ def build_query(option: str, code: str = "", state = None, CoT = None, Cal = Non
         return prompt
 
     elif option == "--exploit":
+        tools_info = ""
+        if available_tools:
+            tools_info = (
+                "\n### AVAILABLE_TOOLS:\n{tools}\n\n"
+                "If you need to use one_gadget, check if 'one_gadget_search' is in AVAILABLE_TOOLS.\n"
+                "If it exists, use the tool instead of subprocess.\n\n"
+            ).format(tools=json.dumps(available_tools, indent=2, ensure_ascii=False) if isinstance(available_tools, list) else available_tools)
+        
         prompt = (
             "You are an exploitation/execution assistant across multiple CTF domains "
             "(pwn, web, crypto, reversing, forensics, mobile, cloud, ML, misc).\n\n"
+            + NO_GUESSING_POLICY + "\n\n"
             "Inputs:\n"
             "[plan.json]\n{plan}\n\n"
             "[state.json]\n{state}\n\n"
+            "{tools_info}"
             "ROLE\n"
             "- Produce ONE concrete, testable attack path or automation script for the CURRENT objective.\n"
             "- Do NOT guess unknown values. Use only facts in state/plan/artifacts. "
@@ -420,7 +442,8 @@ def build_query(option: str, code: str = "", state = None, CoT = None, Cal = Non
             "- ML: inference or prompt attack must be offline/sandbox; success=metric/trace token.\n"
         ).format(
             plan=plan,
-            state=state  ,
+            state=state,
+            tools_info=tools_info
         )
         return prompt
 

@@ -90,7 +90,12 @@ class State(TypedDict):
     binary_path: str  # 바이너리 경로
     url: str  # 웹 타겟 URL
     target_info: Dict[str, Any]  # 타겟 상세 정보 (추가)
-    
+
+    # libc 및 one_gadget 정보 (자동 탐지)
+    libc_path: str  # 탐지된 libc 파일 경로
+    one_gadget_offsets: List[Dict[str, str]]  # [{"address": "0x...", "constraints": "..."}]
+    one_gadget_raw: str  # one_gadget 원본 출력
+
     # 보호 기법
     protections: Dict[str, Any]  # checksec 결과, 보호 기법 정보
     mitigations: List[str]  # 활성화된 보호 기법 목록 (NX, PIE, RELRO, Canary 등)

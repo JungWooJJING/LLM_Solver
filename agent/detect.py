@@ -33,6 +33,8 @@ class DetectAgent:
     def _call_gemini(self, system_instruction: str, user_content: str):
         """새로운 google-genai SDK를 사용한 Gemini API 호출"""
         from google.genai import types
+        from rich.console import Console
+        console = Console()
 
         config = types.GenerateContentConfig(
             system_instruction=system_instruction if system_instruction else None,
@@ -43,7 +45,27 @@ class DetectAgent:
             contents=user_content,
             config=config
         )
-        return response.text
+
+        # 디버깅: 응답 상태 출력
+        if response is None:
+            console.print("  [API] Gemini returned None", style="bold red")
+            return '{"error": "Gemini returned None"}'
+
+        if hasattr(response, 'candidates') and response.candidates:
+            candidate = response.candidates[0]
+            if hasattr(candidate, 'finish_reason'):
+                finish_reason = str(candidate.finish_reason)
+                if 'SAFETY' in finish_reason.upper() or 'BLOCK' in finish_reason.upper():
+                    console.print(f"  [API] Response blocked: {finish_reason}", style="bold red")
+                    return '{"error": "blocked"}'
+
+        text = response.text
+        if not text or text.strip() == "":
+            console.print("  [API] Empty response from Gemini", style="bold yellow")
+            return '{"error": "empty response"}'
+
+        console.print(f"  [API] Response OK ({len(text)} chars)", style="dim green")
+        return text
 
     def detect_run(self, prompt_query: str):
         detect_prompt = [

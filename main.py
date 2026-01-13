@@ -394,8 +394,9 @@ def main():
             # 워크플로우 완료 후 상태 업데이트
             current_state.update(final_state)
 
-            # --quit 선택 시 프로그램 종료
-            if current_state.get("option") == "--quit":
+            # --quit 선택 시 프로그램 종료 (final_state와 current_state 모두 확인)
+            option = current_state.get("option") or final_state.get("option", "")
+            if option == "--quit":
                 console.print("\n=== Exiting Program ===", style="bold yellow")
                 break
 
@@ -414,6 +415,10 @@ def main():
             break  # 사용자 중단
 
         except RuntimeError as e:
+            # --quit 옵션 확인 (예외 발생 전에 설정되었을 수 있음)
+            if current_state.get("option") == "--quit":
+                console.print("\n=== Exiting Program ===", style="bold yellow")
+                break
             # GraphRecursionError는 RuntimeError를 상속하므로 먼저 체크
             error_str = str(e).lower()
             error_type = type(e).__name__
@@ -463,6 +468,11 @@ def main():
                 break
 
         except Exception as e:
+            # --quit 옵션 확인 (예외 발생 전에 설정되었을 수 있음)
+            if current_state.get("option") == "--quit":
+                console.print("\n=== Exiting Program ===", style="bold yellow")
+                break
+            
             # 그 외 모든 예외
             console.print(f"\nError in workflow: {e}", style="bold red")
             import traceback

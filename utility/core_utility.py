@@ -37,11 +37,18 @@ class Core:
     def multi_line_input(self):
         console.print("Enter multiple lines. Type <<<END>>> on a new line to finish input.", style="bold yellow")
         lines = []
-        while True:
-            line = input(" ")
-            if line.strip() == "<<<END>>>":
-                break
-            lines.append(line)
+        try:
+            while True:
+                try:
+                    line = input(" ")
+                    if line.strip() == "<<<END>>>":
+                        break
+                    lines.append(line)
+                except (KeyboardInterrupt, EOFError):
+                    console.print("\n\nInput cancelled. Exiting...", style="bold yellow")
+                    raise SystemExit(0)
+        except SystemExit:
+            raise
         return "\n".join(lines)
     
     def cleanUp(self, all=True):

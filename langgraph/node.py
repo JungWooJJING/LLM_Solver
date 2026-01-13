@@ -13,10 +13,7 @@ console = Console()
 
 # 토큰 제한을 위한 출력 truncate 함수
 def truncate_output(text: str, max_chars: int = 50000) -> str:
-    """
-    LLM에 전달할 출력을 적절한 크기로 truncate.
-    Gemini 분당 토큰 한도(1M)를 초과하지 않도록 함.
-    """
+
     if not text or len(text) <= max_chars:
         return text
 
@@ -122,8 +119,75 @@ def CoT_node(state: State) -> State:
         CoT_query = build_query(option = option, code = user_input, state = state, plan = state.get("plan", {}), planning_context = planning_context, available_tools = available_tools)
 
     elif option == "--auto":
-        # Auto 모드: 자동으로 분석 시작 (--file과 유사하게 처리)
-        user_input = state.get("user_input", "") or state.get("binary_path", "")
+        # Auto 모드: 자동으로 분석 시작
+        user_input = state.get("user_input", "")
+        binary_path = state.get("binary_path", "")
+
+        # user_input이 없고 binary_path가 있으면, 바이너리 자동 분석 수행
+        if not user_input and binary_path:
+            console.print("=== Auto Analysis: Extracting binary info... ===", style='bold cyan')
+            import subprocess
+            import os
+
+            analysis_parts = []
+
+            # 1. strings 추출
+            try:
+                strings_result = subprocess.run(
+                    ['strings', binary_path],
+                    capture_output=True, text=True, timeout=10
+                )
+                if strings_result.stdout:
+                    # 의미있는 문자열만 필터링 (4자 이상)
+                    strings_lines = [s for s in strings_result.stdout.split('\n') if len(s) >= 4][:100]
+                    if strings_lines:
+                        analysis_parts.append("=== Strings (first 100) ===\n" + '\n'.join(strings_lines))
+            except Exception as e:
+                console.print(f"  strings extraction failed: {e}", style="dim")
+
+            # 2. objdump 심볼
+            try:
+                objdump_result = subprocess.run(
+                    ['objdump', '-t', binary_path],
+                    capture_output=True, text=True, timeout=10
+                )
+                if objdump_result.stdout:
+                    # 주요 심볼만 추출
+                    symbols = [line for line in objdump_result.stdout.split('\n') if line.strip()][:50]
+                    if symbols:
+                        analysis_parts.append("=== Symbols (objdump -t) ===\n" + '\n'.join(symbols))
+            except Exception as e:
+                console.print(f"  objdump failed: {e}", style="dim")
+
+            # 3. file 명령어
+            try:
+                file_result = subprocess.run(
+                    ['file', binary_path],
+                    capture_output=True, text=True, timeout=5
+                )
+                if file_result.stdout:
+                    analysis_parts.append("=== File type ===\n" + file_result.stdout.strip())
+            except Exception as e:
+                pass
+
+            # 4. Ghidra 디컴파일 시도 (선택적)
+            try:
+                ghidra_result = ghdira_API(binary_path)
+                if ghidra_result:
+                    analysis_parts.append("=== Decompiled Code (Ghidra) ===\n" + ghidra_result[:5000])  # 처음 5000자만
+            except Exception as e:
+                console.print(f"  Ghidra decompile skipped: {e}", style="dim")
+
+            if analysis_parts:
+                user_input = '\n\n'.join(analysis_parts)
+                state["user_input"] = user_input
+                console.print(f"  Extracted {len(analysis_parts)} analysis sections", style="green")
+            else:
+                # 분석 실패 시 경로라도 전달
+                user_input = f"Binary path: {binary_path}\n(Auto-analysis failed, please analyze manually)"
+                state["user_input"] = user_input
+                console.print("  No analysis results, using binary path", style="yellow")
+
         if tracks or facts or artifacts:
             CoT_query = build_query(option = "--file", code = user_input, state = state, planning_context = planning_context, available_tools = available_tools)
         else:
@@ -213,12 +277,13 @@ def instruction_node(state: State) -> State:
 
 
 def tool_selection_node(state: State) -> State:
-    """
-    모든 도구를 로드하고 AVAILABLE_TOOLS 목록을 state에 저장.
-    실제 도구 선택은 LLM이 CoT → Cal → Instruction 단계에서 수행.
-    """
+
     from datetime import datetime
     from tool import create_pwnable_tools, create_reversing_tools, create_web_tools
+    import subprocess
+    import os
+    import json
+    import re
 
     console.print("=== Tool Loading Node ===", style='bold magenta')
 
@@ -229,6 +294,7 @@ def tool_selection_node(state: State) -> State:
     # 모든 도구 카테고리 로드
     all_tools = {}
     all_tool_names = []
+    pwn_tool_instance = None  # one_gadget_search 호출용
 
     # Pwnable tools
     try:
@@ -236,6 +302,9 @@ def tool_selection_node(state: State) -> State:
         for tool in pwn_tools:
             all_tools[tool.name] = {"tool": tool, "category": "pwnable"}
             all_tool_names.append(tool.name)
+            # one_gadget_search 도구 인스턴스 저장
+            if tool.name == "one_gadget_search":
+                pwn_tool_instance = tool
         console.print(f"  Loaded {len(pwn_tools)} pwnable tools", style="cyan")
     except Exception as e:
         console.print(f"  Failed to load pwnable tools: {e}", style="yellow")
@@ -276,10 +345,135 @@ def tool_selection_node(state: State) -> State:
 
     state["tool_descriptions"] = "\n".join(tool_descriptions)
 
+    # === AUTO LIBC DETECTION AND ONE_GADGET SEARCH ===
+    console.print("\n=== Checking for libc... ===", style='bold cyan')
+
+    libc_path = _detect_libc_path(binary_path, challenge)
+
+    if libc_path:
+        console.print(f"  Found libc: {libc_path}", style="green")
+        state["libc_path"] = libc_path
+
+        # 자동으로 one_gadget_search 실행
+        one_gadget_result = _auto_one_gadget_search(libc_path)
+
+        if one_gadget_result and one_gadget_result.get("gadgets"):
+            state["one_gadget_offsets"] = one_gadget_result["gadgets"]
+            state["one_gadget_raw"] = one_gadget_result.get("raw_output", "")
+
+            # facts에도 저장 (exploit/poc 생성 시 참조용)
+            facts = state.get("facts", {})
+            facts["one_gadget_offsets"] = one_gadget_result["gadgets"]
+            facts["libc_path"] = libc_path
+            state["facts"] = facts
+
+            console.print(f"  Found {len(one_gadget_result['gadgets'])} one_gadget offsets:", style="green")
+            for gadget in one_gadget_result["gadgets"][:3]:  # 처음 3개만 표시
+                console.print(f"    {gadget['address']}: {gadget['constraints'][:50]}...", style="dim")
+        else:
+            console.print("  No one_gadget offsets found or tool failed", style="yellow")
+            state["one_gadget_offsets"] = []
+    else:
+        console.print("  No libc detected in challenge directory", style="dim")
+        state["one_gadget_offsets"] = []
+
     console.print(f"\n=== Tool Loading Complete: {len(all_tools)} tools available ===", style="bold green")
     console.print(f"  Tools: {', '.join(all_tool_names[:10])}{'...' if len(all_tool_names) > 10 else ''}", style="dim")
 
     return state
+
+
+def _detect_libc_path(binary_path: str, challenge: list) -> str:
+
+    import os
+    import glob
+
+    # 1. binary_path에서 디렉토리 추출
+    if binary_path:
+        binary_dir = os.path.dirname(binary_path)
+    elif challenge and len(challenge) > 0:
+        binary_dir = challenge[0].get("binary_path", "")
+        if binary_dir:
+            binary_dir = os.path.dirname(binary_dir)
+    else:
+        binary_dir = "."
+
+    if not binary_dir:
+        binary_dir = "."
+
+    # 2. libc 파일 패턴 검색
+    libc_patterns = [
+        "libc.so*",
+        "libc-*.so",
+        "libc*.so*",
+        "*libc*.so*",
+    ]
+
+    for pattern in libc_patterns:
+        matches = glob.glob(os.path.join(binary_dir, pattern))
+        if matches:
+            # 가장 최근 수정된 파일 선택
+            libc_file = max(matches, key=os.path.getmtime)
+            if os.path.isfile(libc_file):
+                return os.path.abspath(libc_file)
+
+    # 3. challenge 정보에서 libc 경로 확인
+    if challenge and len(challenge) > 0:
+        challenge_info = challenge[0]
+        # files 필드에서 libc 찾기
+        files = challenge_info.get("files", [])
+        for f in files:
+            if "libc" in f.lower() and f.endswith(".so"):
+                if os.path.isfile(f):
+                    return os.path.abspath(f)
+
+    return ""
+
+
+def _auto_one_gadget_search(libc_path: str) -> dict:
+
+    import subprocess
+    import re
+
+    if not libc_path or not os.path.isfile(libc_path):
+        return {"gadgets": [], "error": "Invalid libc path"}
+
+    try:
+        result = subprocess.run(
+            ['one_gadget', libc_path],
+            capture_output=True,
+            text=True,
+            timeout=30
+        )
+
+        if result.returncode != 0 and not result.stdout:
+            return {"gadgets": [], "error": result.stderr, "raw_output": ""}
+
+        # 출력 파싱: 각 줄에서 0x로 시작하는 주소만 추출
+        gadgets = []
+        for line in result.stdout.split('\n'):
+            line = line.strip()
+            if not line:
+                continue
+            # 줄의 시작이 0x로 시작하는 경우만 (constraint 라인의 0x 값 제외)
+            match = re.match(r'^(0x[0-9a-fA-F]+)\s+(.+)$', line)
+            if match:
+                gadgets.append({
+                    "address": match.group(1),
+                    "constraints": match.group(2).strip()
+                })
+
+        return {
+            "gadgets": gadgets,
+            "raw_output": result.stdout
+        }
+
+    except subprocess.TimeoutExpired:
+        return {"gadgets": [], "error": "one_gadget timeout"}
+    except FileNotFoundError:
+        return {"gadgets": [], "error": "one_gadget not installed"}
+    except Exception as e:
+        return {"gadgets": [], "error": str(e)}
 
 
 def multi_instruction_node(state: State) -> State:
@@ -302,6 +496,9 @@ def multi_instruction_node(state: State) -> State:
 
     # tool_selection_node에서 설정한 available_tools 가져오기
     global_available_tools = state.get("available_tools", [])
+
+    # 디버그: state에 available_tools가 있는지 확인
+    console.print(f"  [DEBUG] available_tools in state: {len(global_available_tools)} items", style="dim")
 
     # ===== Fallback: 서브그래프 state 격리 문제 해결 =====
     # available_tools가 비어있으면 직접 로드
@@ -537,10 +734,7 @@ def multi_instruction_node(state: State) -> State:
 
 
 def execution_node(state: State) -> State:
-    """
-    multi_instructions의 각 트랙에 대해 명령을 자동으로 실행
-    실패한 명령어는 캐시에 저장하여 반복 실행 방지
-    """
+
     import subprocess
     from datetime import datetime
     import hashlib
@@ -1417,6 +1611,20 @@ def parsing_node(state: State) -> State:
             # Rate limit은 _generate_with_retry에서 자동으로 처리됨
             LLM_translation = ctx.parsing.LLM_translation_run(prompt_query=truncated_output, state=filtered_state)
             parsed_results[track_id] = LLM_translation
+            # 디버깅: 파싱 결과 출력
+            if LLM_translation:
+                console.print(f"  [Parsing] Result: {len(LLM_translation)} chars", style="dim cyan")
+                # JSON 파싱 시도하여 요약 출력
+                try:
+                    parsed_json = core.safe_json_loads(LLM_translation)
+                    if isinstance(parsed_json, dict):
+                        signals_count = len(parsed_json.get("signals", []))
+                        errors_count = len(parsed_json.get("errors", []))
+                        console.print(f"  [Parsing] Signals: {signals_count}, Errors: {errors_count}", style="dim")
+                except:
+                    pass
+            else:
+                console.print("  [Parsing] Empty result!", style="bold red")
         
         state["multi_parsing_results"] = parsed_results
         # 첫 번째 결과를 기본값으로 설정
@@ -1438,6 +1646,19 @@ def parsing_node(state: State) -> State:
         truncated_result = truncate_output(result_to_parse)
         LLM_translation = ctx.parsing.LLM_translation_run(prompt_query=truncated_result, state=filtered_state)
         state["parsing_result"] = LLM_translation
+        # 디버깅: 파싱 결과 출력
+        if LLM_translation:
+            console.print(f"  [Parsing] Result: {len(LLM_translation)} chars", style="dim cyan")
+            try:
+                parsed_json = core.safe_json_loads(LLM_translation)
+                if isinstance(parsed_json, dict):
+                    signals_count = len(parsed_json.get("signals", []))
+                    errors_count = len(parsed_json.get("errors", []))
+                    console.print(f"  [Parsing] Signals: {signals_count}, Errors: {errors_count}", style="dim")
+            except:
+                pass
+        else:
+            console.print("  [Parsing] Empty result!", style="bold red")
     
     # 파싱 결과에서 성공/실패 판단
     # Multi-Track 모드인지 확인
@@ -1489,20 +1710,18 @@ def parsing_node(state: State) -> State:
     challenge_description = challenge.get("description", "").lower() if challenge else ""
 
     # Challenge description에서 입력값 관련 힌트 확인
-    is_input_value_challenge = any(keyword in challenge_description for keyword in [
-        "입력값", "입력", "input", "correct를 출력", "correct 출력", "올바른 입력", "올바른 값을 찾",
-        "찾으세요", "입력값을 찾아", "입력값을 찾아서", "dh{} 포맷에 넣어", "포맷에 넣어",
-        "검증하여", "문자열 입력", "정해진 방법", "인증해주세요"
-    ])
+    # 더 구체적인 키워드만 사용 (일반적인 "input", "입력" 제외)
+    input_challenge_keywords = [
+        "입력값을 찾", "올바른 입력", "올바른 값을 찾", "correct를 출력", "correct 출력",
+        "찾으세요", "입력값을 찾아", "dh{} 포맷에 넣어", "포맷에 넣어서 인증",
+        "검증하여 correct", "검증하여 wrong", "crack me", "crackme", "keygen"
+    ]
+    is_input_value_challenge = any(keyword in challenge_description for keyword in input_challenge_keywords)
 
     # Challenge description을 state에 저장 (없으면 user_input에서 가져오기)
     if not challenge_description:
         user_input = state.get("user_input", "").lower()
-        is_input_value_challenge = any(keyword in user_input for keyword in [
-            "입력값", "입력", "input", "correct를 출력", "correct 출력", "올바른 입력", "올바른 값을 찾",
-            "찾으세요", "입력값을 찾아", "입력값을 찾아서", "dh{} 포맷에 넣어", "포맷에 넣어",
-            "검증하여", "문자열 입력", "정해진 방법", "인증해주세요"
-        ])
+        is_input_value_challenge = any(keyword in user_input for keyword in input_challenge_keywords)
 
     if flag_signals:
         # 실행 결과에서 플래그가 감지되었는지 확인
@@ -1860,17 +2079,26 @@ def parsing_node(state: State) -> State:
         state["execution_status"] = "success"
         state["instruction_retry_count"] = 0
         console.print("Execution successful - Shell acquired (exploit working!)", style="bold green")
-    elif has_success_signal and not has_errors:
+    elif has_success_signal:
+        # 성공 신호가 있으면 에러가 있어도 성공으로 처리 (부분 성공)
         state["execution_status"] = "success"
-        # 성공 시 재시도 횟수 리셋
         state["instruction_retry_count"] = 0
-        console.print("Execution successful - useful signals found", style="bold green")
-    elif has_errors or current_status == "fail":
+        if has_errors:
+            console.print("Execution successful - useful signals found (with some errors)", style="bold green")
+        else:
+            console.print("Execution successful - useful signals found", style="bold green")
+    elif has_errors and not has_success_signal:
+        # 에러만 있고 성공 신호가 전혀 없는 경우에만 실패
         state["execution_status"] = "fail"
-        console.print("Execution failed - errors detected", style="bold red")
+        console.print("Execution failed - errors detected, no useful signals", style="bold red")
+    elif current_status == "fail":
+        # 이전에 이미 실패로 표시된 경우
+        state["execution_status"] = "fail"
+        console.print("Execution failed - marked as fail by execution node", style="bold red")
     else:
+        # 에러도 없고 성공 신호도 없는 경우 - 진행 중
         state["execution_status"] = "partial"
-        console.print("Execution partial - some progress made", style="yellow")
+        console.print("Execution partial - saving progress and continuing", style="yellow")
     
     return state
 
@@ -2030,6 +2258,22 @@ def poc_node(state: State) -> State:
         "protections": state.get("protections", {}),
         "mitigations": state.get("mitigations", [])
     }
+
+    # === ONE_GADGET OFFSETS INJECTION ===
+    # 자동으로 탐지된 one_gadget 오프셋이 있으면 컨텍스트에 추가
+    one_gadget_offsets = state.get("one_gadget_offsets", [])
+    libc_path = state.get("libc_path", "")
+    if one_gadget_offsets:
+        poc_context["one_gadget_info"] = {
+            "libc_path": libc_path,
+            "offsets": one_gadget_offsets,
+            "usage_note": (
+                "These one_gadget offsets were extracted from the actual libc. "
+                "Use them directly: libc_base + int(offset['address'], 16). "
+                "DO NOT run subprocess or hardcode different values."
+            )
+        }
+        console.print(f"  Injected {len(one_gadget_offsets)} one_gadget offsets into PoC context", style="cyan")
     
     # PoC 생성 이유 표시
     if privilege_escalated:
@@ -2042,9 +2286,13 @@ def poc_node(state: State) -> State:
     
     console.print("=== Generating PoC Script ===", style='bold green')
     
-    # PoC Agent 실행
+    # PoC Agent 실행 (one_gadget_info 전달)
+    one_gadget_info_for_poc = poc_context.get("one_gadget_info")
     try:
-        poc_result = ctx.exploit.poc_run(prompt_query="[CONTEXT]\n" + poc_query)
+        poc_result = ctx.exploit.poc_run(
+            prompt_query="[CONTEXT]\n" + poc_query,
+            one_gadget_info=one_gadget_info_for_poc
+        )
         
         # PoC 결과 파싱 및 저장
         poc_json = core.safe_json_loads(poc_result)
@@ -2094,14 +2342,18 @@ def exploit_node(state: State) -> State:
     
     plan = state.get("plan", {})
     
+    # AVAILABLE_TOOLS 전달
+    available_tools = state.get("available_tools", [])
+    
     exploit_query = build_query(
         option = "--exploit", 
         state = json.dumps(state_for_json, ensure_ascii=False, indent=2), 
-        plan = json.dumps(plan, ensure_ascii=False, indent=2) if isinstance(plan, dict) else plan
+        plan = json.dumps(plan, ensure_ascii=False, indent=2) if isinstance(plan, dict) else plan,
+        available_tools = available_tools
     )
     console.print("=== Exploit Run ===", style='bold green')
 
-    exploit_return = ctx.exploit.exploit_run(prompt_query = exploit_query)
+    exploit_return = ctx.exploit.exploit_run(prompt_query = exploit_query, available_tools = available_tools)
     
     # Exploit 결과 저장
     state["exploit_result"] = exploit_return
@@ -2128,13 +2380,37 @@ def exploit_node(state: State) -> State:
         "url": state.get("url", ""),
         "protections": state.get("protections", {}),
         "mitigations": state.get("mitigations", []),
-        "plan": plan
+        "plan": plan,
+        "available_tools": state.get("available_tools", [])
     }
+
+    # === ONE_GADGET OFFSETS INJECTION ===
+    # 자동으로 탐지된 one_gadget 오프셋이 있으면 컨텍스트에 추가
+    one_gadget_offsets = state.get("one_gadget_offsets", [])
+    libc_path = state.get("libc_path", "")
+    if one_gadget_offsets:
+        poc_context["one_gadget_info"] = {
+            "libc_path": libc_path,
+            "offsets": one_gadget_offsets,
+            "usage_note": (
+                "These one_gadget offsets were extracted from the actual libc. "
+                "Use them directly: libc_base + int(offset['address'], 16). "
+                "DO NOT run subprocess or hardcode different values."
+            )
+        }
+        console.print(f"  Injected {len(one_gadget_offsets)} one_gadget offsets into PoC context", style="cyan")
     
     poc_query = json.dumps(poc_context, ensure_ascii=False, indent=2)
-    
+
+    # one_gadget_info 추출 (poc_run에 전달)
+    one_gadget_info_for_poc = poc_context.get("one_gadget_info")
+
     try:
-        poc_result = ctx.exploit.poc_run(prompt_query="[CONTEXT]\n" + poc_query)
+        poc_result = ctx.exploit.poc_run(
+            prompt_query="[CONTEXT]\n" + poc_query,
+            available_tools=available_tools,
+            one_gadget_info=one_gadget_info_for_poc
+        )
         
         # PoC 결과 파싱 및 저장
         poc_json = core.safe_json_loads(poc_result)
@@ -2289,10 +2565,18 @@ def option_input_node(state: State) -> State:
             console.print("Counters reset. Continuing with preserved state...", style="bold green")
         else:
             console.print("Please choose which option you want to choose.", style="blue")
-            option = input("> ").strip()
+            try:
+                option = input("> ").strip()
+            except (KeyboardInterrupt, EOFError):
+                console.print("\n\nExiting program...", style="bold yellow")
+                option = "--quit"
     else:
         console.print("Please choose which option you want to choose.", style="blue")
-        option = input("> ").strip()
+        try:
+            option = input("> ").strip()
+        except (KeyboardInterrupt, EOFError):
+            console.print("\n\nExiting program...", style="bold yellow")
+            option = "--quit"
 
     # 카테고리별 옵션 유효성 검사
     if option == "--ghidra" and category not in ["pwnable", "reversing"]:
@@ -2312,12 +2596,7 @@ def option_input_node(state: State) -> State:
 
 
 def detect_node(state: State) -> State:
-    """
-    Detect Agent 노드: 최종 결정자
-    - Feedback 또는 Exploit 결과를 종합하여 다음 행동 결정
-    - flag 발견, 쉘 획득, 계속 진행, 종료 등 최종 판단
-    - 모든 판단은 LLM이 직접 수행 (하드코딩 없음)
-    """
+
     ctx = state["ctx"]
     core = ctx.core
 

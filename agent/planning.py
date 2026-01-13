@@ -112,6 +112,55 @@ class PlanningAgent:
         else:
             raise ValueError(f"Invalid model: {model}. Supported: gpt-5.2, gemini-1.5-flash, gemini-1.5-flash-latest, gemini-3-flash-preview")
 
+    def _generate_with_retry(self, generate_func, max_retries=5):
+        """Rate limit 및 서버 오류 시 지수 백오프로 재시도"""
+        import time
+        import re
+        base_delay = 10  # 기본 대기 시간 10초
+
+        for attempt in range(max_retries):
+            try:
+                return generate_func()
+            except Exception as e:
+                error_str = str(e).lower()
+                error_code = ""
+                # 에러 코드 추출 (503, 429 등)
+                code_match = re.search(r'(\d{3})', str(e))
+                if code_match:
+                    error_code = code_match.group(1)
+                
+                # 일시적 오류 감지 (503, 429, 500, 502, 504 등)
+                is_temporary_error = (
+                    "503" in error_code or "429" in error_code or 
+                    "500" in error_code or "502" in error_code or "504" in error_code or
+                    "resource" in error_str or "rate" in error_str or 
+                    "quota" in error_str or "overloaded" in error_str or
+                    "unavailable" in error_str or "timeout" in error_str
+                )
+                
+                if is_temporary_error:
+                    # API 응답에서 권장 대기 시간 추출
+                    retry_delay = base_delay
+                    delay_match = re.search(r'retry.*?(\d+\.?\d*)\s*s', str(e), re.IGNORECASE)
+                    if delay_match:
+                        retry_delay = float(delay_match.group(1)) + 5  # 여유분 5초 추가
+
+                    # 지수 백오프: 실패할수록 대기 시간 증가
+                    retry_delay = max(retry_delay, base_delay * (1.5 ** attempt))
+                    retry_delay = min(retry_delay, 120)  # 최대 2분
+
+                    if attempt < max_retries - 1:
+                        console.print(f"API 서버 오류 ({error_code if error_code else 'temporary'}). {retry_delay:.1f}초 후 재시도 중... (시도 {attempt + 1}/{max_retries})", style="yellow")
+                        time.sleep(retry_delay)
+                        continue
+                    else:
+                        console.print(f"최대 재시도 횟수({max_retries}) 초과. API 서버가 과부하 상태입니다.", style="bold red")
+                        raise
+                else:
+                    # 일시적 오류가 아니면 즉시 재시도하지 않음
+                    raise
+        raise Exception("Max retries exceeded")
+
     def _call_gemini(self, system_instruction: str, user_content: str):
         from google.genai import types
 
@@ -119,12 +168,37 @@ class PlanningAgent:
             system_instruction=system_instruction if system_instruction else None,
         )
 
-        response = self.client.models.generate_content(
-            model=self.gemini_model,
-            contents=user_content,
-            config=config
-        )
-        return response.text
+        def _generate():
+            response = self.client.models.generate_content(
+                model=self.gemini_model,
+                contents=user_content,
+                config=config
+            )
+
+            # 디버깅: 응답 상태 출력
+            if response is None:
+                console.print("  [API] Gemini returned None", style="bold red")
+                return '{"error": "Gemini returned None"}'
+
+            # safety filter 확인
+            if hasattr(response, 'candidates') and response.candidates:
+                candidate = response.candidates[0]
+                if hasattr(candidate, 'finish_reason'):
+                    finish_reason = str(candidate.finish_reason)
+                    if 'SAFETY' in finish_reason.upper() or 'BLOCK' in finish_reason.upper():
+                        console.print(f"  [API] Response blocked: {finish_reason}", style="bold red")
+                        return '{"error": "blocked", "reason": "' + finish_reason + '"}'
+
+            text = response.text
+            if not text or text.strip() == "":
+                console.print("  [API] Empty response from Gemini", style="bold yellow")
+                return '{"error": "empty response"}'
+
+            console.print(f"  [API] Response OK ({len(text)} chars)", style="dim green")
+            return text
+
+        # 재시도 로직으로 감싸기
+        return self._generate_with_retry(_generate)
         
         
     def run_CoT(self, prompt_query: str, ctx, state: dict = None):

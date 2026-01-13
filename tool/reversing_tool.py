@@ -3,7 +3,7 @@ import json
 import re
 import os
 import shlex
-from typing import Optional, List, Dict, Any
+from typing import Optional, List, Dict, Any, Union
 from pathlib import Path
 from langchain_core.tools import BaseTool, StructuredTool
 from pydantic import BaseModel, Field
@@ -316,28 +316,70 @@ class ReversingTool:
             "result": cleaned_output
         }, indent=2, ensure_ascii=False)
     
-    def angr_symbolic_execution(self, binary_path: Optional[str] = None, find_address: str = None, avoid_address: Optional[str] = None) -> str:
+    def angr_symbolic_execution(
+        self,
+        binary_path: Optional[str] = None,
+        find_address = None,  # str, int, or hex accepted
+        avoid_address = None,  # str, int, list accepted
+        avoid_addresses = None,  # alias for avoid_address (list support)
+        timeout: int = 120,
+        max_active_states: int = 50,
+        input_type: str = "stdin"
+    ) -> str:
         """
         Angr를 사용하여 심볼릭 실행을 수행합니다.
-        
+
         Args:
             binary_path: 바이너리 경로 (선택사항, self.binary_path 사용 가능)
-            find_address: 도달하고자 하는 주소 (16진수 문자열, 예: "0x401200" 또는 "401200")
-            avoid_address: 피하고자 하는 주소 (16진수 문자열, 선택사항)
-        
+            find_address: 도달하고자 하는 주소 (문자열/정수/hex, 예: "0x401200", 0x401200, 4199936)
+            avoid_address: 피하고자 하는 주소 (문자열/정수/리스트, 선택사항)
+            avoid_addresses: avoid_address의 별칭 (리스트 지원)
+            timeout: 최대 실행 시간 (초, 기본: 120초)
+            max_active_states: 최대 활성 상태 수 (상태 폭발 방지, 기본: 50)
+            input_type: 입력 타입 - "stdin", "argv", "both" (기본: stdin)
+
         Returns:
             JSON 형식의 실행 결과
         """
         target = binary_path or self.binary_path
         if not target:
             return json.dumps({"error": "binary_path is required"})
-        
+
         if not Path(target).exists():
             return json.dumps({"error": f"Binary not found: {target}"}, indent=2)
-        
+
         if not find_address:
             return json.dumps({"error": "find_address is required"}, indent=2)
-        
+
+        # 주소 정규화 함수 (int, str, hex 모두 처리)
+        def normalize_address(addr) -> str:
+            if addr is None:
+                return None
+            if isinstance(addr, int):
+                return hex(addr)
+            if isinstance(addr, str):
+                return addr
+            return str(addr)
+
+        # find_address 정규화
+        find_address = normalize_address(find_address)
+
+        # avoid_address/avoid_addresses 통합 처리
+        avoid_list = []
+        if avoid_addresses:
+            if isinstance(avoid_addresses, list):
+                avoid_list.extend([normalize_address(a) for a in avoid_addresses])
+            else:
+                avoid_list.append(normalize_address(avoid_addresses))
+        if avoid_address:
+            if isinstance(avoid_address, list):
+                avoid_list.extend([normalize_address(a) for a in avoid_address])
+            else:
+                avoid_list.append(normalize_address(avoid_address))
+
+        # 중복 제거
+        avoid_list = list(set([a for a in avoid_list if a]))
+
         if not ANGR_AVAILABLE:
             return json.dumps({
                 "error": "angr is not available. Protobuf version conflict or angr not installed.",
@@ -345,55 +387,152 @@ class ReversingTool:
                 "find_address": find_address,
                 "suggestion": "Install compatible protobuf version or use alternative tools"
             }, indent=2, ensure_ascii=False)
-        
-        try:
-            # 주소 문자열을 정수로 변환
-            def parse_address(addr_str: str) -> int:
-                addr_str = addr_str.replace("0x", "").replace("0X", "")
-                return int(addr_str, 16)
-            
-            find_addr_int = parse_address(find_address)
-            avoid_addr_int = None
-            if avoid_address:
-                avoid_addr_int = parse_address(avoid_address)
-            
-            project = angr.Project(target)
-            sm = project.factory.simulation_manager()
-            
-            if avoid_addr_int:
-                sm.explore(find=find_addr_int, avoid=avoid_addr_int)
-            else:
-                sm.explore(find=find_addr_int)
-            
-            if not sm.found:
-                return json.dumps({
+
+        import signal
+        import threading
+
+        # 타임아웃 처리를 위한 결과 저장 변수
+        result_container = {"result": None, "error": None}
+
+        def run_angr():
+            try:
+                # 주소 문자열을 정수로 변환
+                def parse_address(addr_str: str) -> int:
+                    addr_str = addr_str.replace("0x", "").replace("0X", "")
+                    return int(addr_str, 16)
+
+                find_addr_int = parse_address(find_address)
+
+                # avoid 주소 리스트를 정수로 변환
+                avoid_addrs_int = []
+                for addr in avoid_list:
+                    try:
+                        avoid_addrs_int.append(parse_address(addr))
+                    except:
+                        pass
+
+                # 프로젝트 생성 (auto_load_libs=False로 메모리 절약)
+                project = angr.Project(target, auto_load_libs=False)
+
+                # 입력 타입에 따른 초기 상태 설정
+                if input_type == "argv":
+                    # argv를 심볼릭으로 설정 (최대 50바이트)
+                    argv_len = 50
+                    sym_argv = angr.claripy.BVS("argv1", argv_len * 8)
+                    initial_state = project.factory.entry_state(args=[target, sym_argv])
+                elif input_type == "both":
+                    # stdin과 argv 모두 심볼릭
+                    argv_len = 50
+                    sym_argv = angr.claripy.BVS("argv1", argv_len * 8)
+                    initial_state = project.factory.entry_state(args=[target, sym_argv])
+                else:
+                    # 기본: stdin만 심볼릭
+                    initial_state = project.factory.entry_state()
+
+                sm = project.factory.simulation_manager(initial_state)
+
+                # 상태 폭발 방지를 위한 step 제한 탐색
+                steps = 0
+                max_steps = 10000  # 최대 스텝 수
+
+                while sm.active and steps < max_steps:
+                    # 상태 수 제한 - 너무 많으면 랜덤 샘플링
+                    if len(sm.active) > max_active_states:
+                        sm.move(from_stash='active', to_stash='pruned', filter_func=lambda s: True)
+                        # 활성 상태에서 일부만 유지
+                        import random
+                        kept_states = random.sample(list(sm.pruned), min(max_active_states, len(sm.pruned)))
+                        sm.active = kept_states
+                        sm.pruned = []
+
+                    sm.step()
+                    steps += 1
+
+                    # 목표 주소 도달 확인
+                    for state in sm.active:
+                        if state.addr == find_addr_int:
+                            sm.found.append(state)
+                            sm.active.remove(state)
+
+                    # 회피 주소에 도달한 상태 제거 (여러 주소 지원)
+                    if avoid_addrs_int:
+                        sm.active = [s for s in sm.active if s.addr not in avoid_addrs_int]
+
+                    # 찾으면 종료
+                    if sm.found:
+                        break
+
+                if not sm.found:
+                    result_container["result"] = {
+                        "binary_path": target,
+                        "find_address": find_address,
+                        "avoid_addresses": avoid_list if avoid_list else None,
+                        "error": f"Target address not reached (explored {steps} steps, final active states: {len(sm.active)})",
+                        "suggestion": "Try adjusting find/avoid addresses, or increase timeout/max_active_states"
+                    }
+                    return
+
+                found_state = sm.found[0]
+
+                # 입력 추출
+                results = {}
+
+                # stdin 입력 추출
+                try:
+                    stdin_input = found_state.posix.dumps(0)
+                    if stdin_input:
+                        results["stdin_input"] = stdin_input.decode('latin-1', errors='replace')
+                except Exception:
+                    pass
+
+                # argv 입력 추출 (argv 모드인 경우)
+                if input_type in ["argv", "both"]:
+                    try:
+                        # solver로 argv 값 추출
+                        for arg in found_state.solver.get_variables('argv'):
+                            solved = found_state.solver.eval(arg[1], cast_to=bytes)
+                            results["argv_input"] = solved.decode('latin-1', errors='replace').rstrip('\x00')
+                            break
+                    except Exception:
+                        pass
+
+                result_container["result"] = {
                     "binary_path": target,
                     "find_address": find_address,
-                    "avoid_address": avoid_address,
-                    "error": "Target address not reached"
-                }, indent=2, ensure_ascii=False)
-            
-            result_input = sm.found[0].posix.dumps(0)
-            
+                    "avoid_addresses": avoid_list if avoid_list else None,
+                    "steps_explored": steps,
+                    **results
+                }
+
+            except ValueError as e:
+                result_container["error"] = f"Invalid address format: {str(e)}"
+            except Exception as e:
+                import traceback
+                result_container["error"] = f"Angr symbolic execution failed: {str(e)}"
+                result_container["traceback"] = traceback.format_exc()
+
+        # 스레드로 실행하여 타임아웃 처리
+        thread = threading.Thread(target=run_angr)
+        thread.start()
+        thread.join(timeout=timeout)
+
+        if thread.is_alive():
+            # 타임아웃 - 스레드 강제 종료는 안전하지 않으므로 경고 반환
             return json.dumps({
                 "binary_path": target,
                 "find_address": find_address,
-                "avoid_address": avoid_address,
-                "result": result_input.decode('latin-1', errors='replace') if isinstance(result_input, bytes) else str(result_input)
+                "error": f"Symbolic execution timed out after {timeout} seconds",
+                "suggestion": "Try with simpler constraints, reduce max_active_states, or increase timeout"
             }, indent=2, ensure_ascii=False)
-            
-        except ValueError as e:
+
+        if result_container["error"]:
             return json.dumps({
-                "error": f"Invalid address format: {str(e)}",
+                "error": result_container["error"],
+                "traceback": result_container.get("traceback", ""),
                 "binary_path": target
             }, indent=2)
-        except Exception as e:
-            import traceback
-            return json.dumps({
-                "error": f"Angr symbolic execution failed: {str(e)}",
-                "traceback": traceback.format_exc(),
-                "binary_path": target
-            }, indent=2)
+
+        return json.dumps(result_container["result"], indent=2, ensure_ascii=False)
 
     def extract_strings(
         self,
@@ -689,16 +828,24 @@ def create_reversing_tools(binary_path: Optional[str] = None, challenge_info: Op
         StructuredTool.from_function(
             func=tool_instance.angr_symbolic_execution,
             name="angr_symbolic_execution",
-            description=f"{challenge_context}Performs symbolic execution using Angr. Finds input that reaches a specific address.",
+            description=f"{challenge_context}Performs symbolic execution using Angr. Finds input that reaches a specific address. Includes timeout and state explosion protection. Accepts addresses as string or int (e.g., '0x401200', 0x401200, 4199936).",
             args_schema=type('AngrArgs', (BaseModel,), {
                 '__annotations__': {
                     'binary_path': Optional[str],
-                    'find_address': str,
-                    'avoid_address': Optional[str]
+                    'find_address': Union[str, int],
+                    'avoid_address': Optional[Union[str, int]],
+                    'avoid_addresses': Optional[List[Union[str, int]]],
+                    'timeout': int,
+                    'max_active_states': int,
+                    'input_type': str
                 },
                 'binary_path': Field(default=None, description="Binary path (optional)"),
-                'find_address': Field(description="Target address to reach (hex string, e.g., '0x401200' or '401200')"),
-                'avoid_address': Field(default=None, description="Address to avoid (hex string, optional)")
+                'find_address': Field(description="Target address to reach (string or int, e.g., '0x401200', 0x401200, 4199936)"),
+                'avoid_address': Field(default=None, description="Single address to avoid (string or int, optional)"),
+                'avoid_addresses': Field(default=None, description="List of addresses to avoid (list of string or int, optional)"),
+                'timeout': Field(default=120, description="Maximum execution time in seconds (default: 120)"),
+                'max_active_states': Field(default=50, description="Maximum active states to prevent state explosion (default: 50)"),
+                'input_type': Field(default="stdin", description="Input type: 'stdin', 'argv', or 'both' (default: stdin)")
             })
         ),
         StructuredTool.from_function(
